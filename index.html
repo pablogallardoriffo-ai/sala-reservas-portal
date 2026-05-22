@@ -1,138 +1,215 @@
-import React, { useMemo, useState } from 'react';
-import { motion } from 'framer-motion';
-import { CalendarDays, Upload, Shield, BarChart3, DoorOpen, Search, Plus, Lock, History, Users, CheckCircle2, AlertTriangle, Trash2, UserPlus, Building } from 'lucide-react';
-import { Card, CardContent } from '@/components/ui/card';
-import { Button } from '@/components/ui/button';
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <title>Portal de Salas DUOC UC</title>
+  <script src="https://unpkg.com/react@18/umd/react.development.js"></script>
+  <script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
 
-const ROLES = [
-  { id: 'admin', label: 'Administrador', icon: Shield, password: '010203', description: 'Control total: salas, usuarios, SABANA y configuración.' },
-  { id: 'reservador', label: 'Reservador', icon: CalendarDays, password: '', description: 'Gestiona reservas manuales y edición.' },
-  { id: 'usuario', label: 'Administrativo / Docente', icon: Users, password: '', description: 'Consulta y solicita reservas.' },
-  { id: 'subdireccion', label: 'Subdirección', icon: BarChart3, password: '', description: 'Reportes e indicadores institucionales.' },
-];
+  <style>
+    body {
+      font-family: Arial;
+      margin: 0;
+      background: #f5f5f5;
+    }
 
-const MODULES = [
-  ['08:01', 1, '08:40'], ['08:41', 2, '09:20'], ['09:31', 3, '10:10'], ['10:11', 4, '10:50'],
-  ['11:01', 5, '11:40'], ['11:41', 6, '12:20'], ['12:31', 7, '13:10'], ['13:11', 8, '13:50'],
-  ['14:01', 9, '14:40'], ['14:41', 10, '15:20'], ['15:31', 11, '16:10'], ['16:11', 12, '16:50'],
-  ['17:01', 13, '17:40'], ['17:41', 14, '18:20'], ['18:21', 15, '19:00'], ['19:01', 16, '19:40'],
-  ['19:41', 17, '20:20'], ['20:31', 18, '21:10'], ['21:11', 19, '21:50'], ['21:50', 20, '22:30'],
-];
+    header {
+      background: #002855;
+      color: white;
+      padding: 20px;
+    }
 
-function classNames(...xs) { return xs.filter(Boolean).join(' '); }
+    .container {
+      padding: 20px;
+      max-width: 1200px;
+      margin: auto;
+    }
 
-export default function PortalReservasSalas() {
-  const [activeRole, setActiveRole] = useState('admin');
-  const [password, setPassword] = useState('010203');
-  const [unlocked, setUnlocked] = useState({ admin: true });
+    .roles {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 10px;
+    }
 
-  // NUEVO: gestión dinámica
-  const [rooms, setRooms] = useState([
-    { id: '1', name: 'VI-S41', capacity: 40, type: 'SALA CLASES' }
-  ]);
-  const [users, setUsers] = useState([]);
-  const [newRoom, setNewRoom] = useState({ name: '', capacity: '', type: '' });
-  const [newUser, setNewUser] = useState({ name: '', role: 'usuario', password: '' });
-  const tryLogin = () => {
-    if (activeRole === 'admin' && password === '010203') setUnlocked({ ...unlocked, admin: true });
-    else if (password.trim().length >= 4) setUnlocked({ ...unlocked, [activeRole]: true });
-  };
-  const isUnlocked = unlocked[activeRole];
+    .card {
+      background: white;
+      padding: 15px;
+      border: 1px solid #ddd;
+      cursor: pointer;
+    }
 
+    .active {
+      background: #ffe082;
+    }
 
-  const addRoom = () => {
-    if (!newRoom.name) return;
-    setRooms([...rooms, { id: Date.now().toString(), ...newRoom }]);
-    setNewRoom({ name: '', capacity: '', type: '' });
+    input, select {
+      margin: 5px;
+      padding: 5px;
+    }
+
+    button {
+      padding: 5px 10px;
+      margin: 5px;
+      cursor: pointer;
+    }
+
+    .panel {
+      margin-top: 20px;
+      display: grid;
+      grid-template-columns: repeat(2, 1fr);
+      gap: 20px;
+    }
+
+    .box {
+      background: white;
+      padding: 15px;
+      border: 1px solid #ccc;
+    }
+
+    .item {
+      display: flex;
+      justify-content: space-between;
+      border-bottom: 1px solid #eee;
+      padding: 5px 0;
+    }
+  </style>
+</head>
+
+<body>
+
+<header>
+  <h1>Portal de Gestión de Salas - DUOC UC</h1>
+</header>
+
+<div id="root"></div>
+
+<script type="text/babel">
+
+function App() {
+  const [role, setRole] = React.useState("admin");
+  const [password, setPassword] = React.useState("010203");
+  const [logged, setLogged] = React.useState({ admin: true });
+
+  const [rooms, setRooms] = React.useState([]);
+  const [users, setUsers] = React.useState([]);
+
+  const [newRoom, setNewRoom] = React.useState({ name:"", capacity:"", type:"" });
+  const [newUser, setNewUser] = React.useState({ name:"", password:"", role:"usuario" });
+
+  const login = () => {
+    if(password.length >= 4){
+      setLogged({...logged, [role]: true});
+    }
   };
 
-  const deleteRoom = (id) => setRooms(rooms.filter(r => r.id !== id));
-  const addUser = () => {
-    if (!newUser.name || !newUser.password) return;
-    setUsers([...users, { id: Date.now().toString(), ...newUser }]);
-    setNewUser({ name: '', role: 'usuario', password: '' });
+  const addRoom = () => {
+    if(!newRoom.name) return;
+    setRooms([...rooms, {...newRoom, id: Date.now()}]);
+    setNewRoom({ name:"", capacity:"", type:"" });
   };
 
-  const deleteUser = (id) => setUsers(users.filter(u => u.id !== id));
+  const deleteRoom = (id) => {
+    setRooms(rooms.filter(r => r.id !== id));
+  };
 
+  const addUser = () => {
+    if(!newUser.name || !newUser.password) return;
+    setUsers([...users, {...newUser, id: Date.now()}]);
+    setNewUser({ name:"", password:"", role:"usuario" });
+  };
+
+  const deleteUser = (id) => {
+    setUsers(users.filter(u => u.id !== id));
+  };
 
   return (
-    <div className="min-h-screen bg-white text-[#002855]">
-      <header className="bg-[#002855] text-white">
-        <div className="max-w-7xl mx-auto px-6 py-6 flex justify-between items-center">
-          <h1 className="text-2xl font-bold">Portal de Salas · DUOC UC</h1>
-          <span className="text-sm">Gestión institucional</span>
+    <div className="container">
+
+      <div className="roles">
+        {["admin","reservador","usuario","subdireccion"].map(r => (
+          <div key={r}
+            onClick={() => setRole(r)}
+            className={`card ${role===r ? "active":""}`}>
+            <b>{r}</b>
+          </div>
+        ))}
+      </div>
+
+      {!logged[role] && (
+        <div>
+          <h3>Ingreso</h3>
+          <input type="password" value={password} onChange={e=>setPassword(e.target.value)} />
+          <button onClick={login}>Entrar</button>
         </div>
-      </header>
+      )}
 
-      <main className="max-w-7xl mx-auto px-6 py-6">
+      {logged[role] && role === "admin" && (
+        <div className="panel">
 
+          <div className="box">
+            <h3>Gestionar Salas</h3>
 
-        <section className="grid md:grid-cols-4 gap-3">
-          {ROLES.map(r => {
-            const Icon = r.icon;
-            return (
-              <button key={r.id} onClick={() => setActiveRole(r.id)} className={classNames('p-4 border rounded-xl text-left', activeRole === r.id ? 'border-yellow-400 bg-yellow-50' : 'border-gray-200')}>
-                <Icon className="mb-2" />
-                <b>{r.label}</b>
-                <p className="text-xs">{r.description}</p>
-              </button>
-            );
-          })}
-        </section>
+            <input placeholder="Nombre"
+              value={newRoom.name}
+              onChange={e=>setNewRoom({...newRoom,name:e.target.value})}/>
 
-        {!isUnlocked && (
-          <div className="mt-6">
-            <input type="password" value={password} onChange={e => setPassword(e.target.value)} className="border p-2" />
-            <Button onClick={tryLogin}>Entrar</Button>
-          </div>
-        )}
+            <input placeholder="Capacidad"
+              value={newRoom.capacity}
+              onChange={e=>setNewRoom({...newRoom,capacity:e.target.value})}/>
 
-        {isUnlocked && activeRole === 'admin' && (
-          <div className="grid md:grid-cols-2 gap-6 mt-6">
+            <input placeholder="Tipo"
+              value={newRoom.type}
+              onChange={e=>setNewRoom({...newRoom,type:e.target.value})}/>
 
-            <Card>
-              <CardContent>
-                <h2 className="font-bold mb-3 flex items-center gap-2"><Building /> Gestionar salas</h2>
-                <div className="flex gap-2 mb-3">
-                  <input placeholder="Nombre" value={newRoom.name} onChange={e => setNewRoom({...newRoom, name: e.target.value})} />
-                  <input placeholder="Capacidad" value={newRoom.capacity} onChange={e => setNewRoom({...newRoom, capacity: e.target.value})} />
-                  <input placeholder="Tipo" value={newRoom.type} onChange={e => setNewRoom({...newRoom, type: e.target.value})} />
-                  <Button onClick={addRoom}><Plus /></Button>
-                </div>
-                {rooms.map(r => (
-                  <div key={r.id} className="flex justify-between border p-2 mb-2">
-                    <span>{r.name}</span>
-                    <Trash2 onClick={() => deleteRoom(r.id)} className="cursor-pointer" />
-                  </div>
-                ))}
-              </CardContent>
-            </Card>
+            <button onClick={addRoom}>Crear</button>
 
-            <Card>
-              <CardContent>
-                <h2 className="font-bold mb-3 flex items-center gap-2"><UserPlus /> Gestionar usuarios</h2>
-                <div className="flex gap-2 mb-3">
-                  <input placeholder="Nombre" value={newUser.name} onChange={e => setNewUser({...newUser, name: e.target.value})} />
-                  <input placeholder="Clave" value={newUser.password} onChange={e => setNewUser({...newUser, password: e.target.value})} />
-                  <select value={newUser.role} onChange={e => setNewUser({...newUser, role: e.target.value})}>
-                    <option value="usuario">Usuario</option>
-                    <option value="reservador">Reservador</option>
-                    <option value="subdireccion">Subdirección</option>
-                  </select>
-                  <Button onClick={addUser}><Plus /></Button>
-                </div>
-                {users.map(u => (
-                  <div key={u.id} className="flex justify-between border p-2 mb-2">
-                    <span>{u.name} ({u.role})</span>
-                    <Trash2 onClick={() => deleteUser(u.id)} className="cursor-pointer" />
-                  </div>
-                ))}
-              </CardContent>
-            </Card>
-          </div>
-        )}
-      </main>
+            {rooms.map(r => (
+              <div key={r.id} className="item">
+                {r.name}
+                <button onClick={()=>deleteRoom(r.id)}>X</button>
+              </div>
+            ))}
+          </div>
+
+          <div className="box">
+            <h3>Gestionar Usuarios</h3>
+
+            <input placeholder="Nombre"
+              value={newUser.name}
+              onChange={e=>setNewUser({...newUser,name:e.target.value})}/>
+
+            <input placeholder="Clave"
+              value={newUser.password}
+              onChange={e=>setNewUser({...newUser,password:e.target.value})}/>
+
+            <select value={newUser.role}
+              onChange={e=>setNewUser({...newUser,role:e.target.value})}>
+              <option value="usuario">Usuario</option>
+              <option value="reservador">Reservador</option>
+              <option value="subdireccion">Subdirección</option>
+            </select>
+
+            <button onClick={addUser}>Crear</button>
+
+            {users.map(u => (
+              <div key={u.id} className="item">
+                {u.name} ({u.role})
+                <button onClick={()=>deleteUser(u.id)}>X</button>
+              </div>
+            ))}
+          </div>
+
+        </div>
+      )}
+
     </div>
   );
 }
+
+ReactDOM.createRoot(document.getElementById("root")).render(<App />);
+
+</script>
+
+</body>
+</html>
