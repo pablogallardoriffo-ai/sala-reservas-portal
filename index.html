@@ -1,0 +1,728 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Portal de Reserva de Salas</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            padding: 20px;
+        }
+
+        .container {
+            width: 100%;
+            max-width: 1200px;
+        }
+
+        /* LOGIN */
+        .login-container {
+            background: white;
+            border-radius: 15px;
+            box-shadow: 0 10px 40px rgba(0,0,0,0.2);
+            padding: 50px;
+            max-width: 400px;
+            margin: 0 auto;
+            display: none;
+        }
+
+        .login-container.active {
+            display: block;
+        }
+
+        .login-container h1 {
+            color: #333;
+            margin-bottom: 30px;
+            text-align: center;
+        }
+
+        .form-group {
+            margin-bottom: 20px;
+        }
+
+        .form-group label {
+            display: block;
+            color: #555;
+            margin-bottom: 8px;
+            font-weight: 500;
+        }
+
+        .form-group input {
+            width: 100%;
+            padding: 12px;
+            border: 2px solid #ddd;
+            border-radius: 8px;
+            font-size: 14px;
+            transition: border-color 0.3s;
+        }
+
+        .form-group input:focus {
+            outline: none;
+            border-color: #667eea;
+        }
+
+        button {
+            width: 100%;
+            padding: 12px;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            border: none;
+            border-radius: 8px;
+            font-size: 16px;
+            font-weight: bold;
+            cursor: pointer;
+            transition: transform 0.2s;
+        }
+
+        button:hover {
+            transform: scale(1.02);
+        }
+
+        .demo-info {
+            background: #f0f4ff;
+            border-left: 4px solid #667eea;
+            padding: 15px;
+            margin-top: 20px;
+            border-radius: 5px;
+            font-size: 12px;
+            color: #555;
+        }
+
+        /* DASHBOARD */
+        .dashboard {
+            display: none;
+        }
+
+        .dashboard.active {
+            display: block;
+        }
+
+        .dashboard-header {
+            background: white;
+            padding: 20px;
+            border-radius: 15px;
+            margin-bottom: 30px;
+            box-shadow: 0 5px 20px rgba(0,0,0,0.1);
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .dashboard-header h1 {
+            color: #333;
+        }
+
+        .user-info {
+            text-align: right;
+        }
+
+        .user-info p {
+            color: #666;
+            margin-bottom: 5px;
+        }
+
+        .logout-btn {
+            background: #ff6b6b;
+            padding: 8px 15px;
+            width: auto;
+        }
+
+        .dashboard-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+            gap: 20px;
+            margin-bottom: 30px;
+        }
+
+        .card {
+            background: white;
+            border-radius: 15px;
+            padding: 25px;
+            box-shadow: 0 5px 20px rgba(0,0,0,0.1);
+            transition: transform 0.3s;
+        }
+
+        .card:hover {
+            transform: translateY(-5px);
+        }
+
+        .card h2 {
+            color: #667eea;
+            margin-bottom: 15px;
+            font-size: 20px;
+        }
+
+        .card p {
+            color: #666;
+            line-height: 1.6;
+            margin-bottom: 15px;
+        }
+
+        .card button {
+            background: #667eea;
+            padding: 10px 20px;
+            width: auto;
+            border-radius: 8px;
+        }
+
+        .stats {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 20px;
+            margin-top: 30px;
+        }
+
+        .stat-box {
+            background: white;
+            padding: 20px;
+            border-radius: 10px;
+            text-align: center;
+            box-shadow: 0 5px 20px rgba(0,0,0,0.1);
+        }
+
+        .stat-number {
+            font-size: 32px;
+            font-weight: bold;
+            color: #667eea;
+            margin-bottom: 10px;
+        }
+
+        .stat-label {
+            color: #666;
+            font-size: 14px;
+        }
+
+        /* MODAL */
+        .modal {
+            display: none;
+            position: fixed;
+            z-index: 1000;
+            left: 0;
+            top: 0;
+            width: 100%;
+            height: 100%;
+            background-color: rgba(0,0,0,0.4);
+        }
+
+        .modal.active {
+            display: flex;
+            justify-content: center;
+            align-items: center;
+        }
+
+        .modal-content {
+            background-color: #fefefe;
+            padding: 30px;
+            border-radius: 15px;
+            max-width: 500px;
+            width: 90%;
+            box-shadow: 0 10px 40px rgba(0,0,0,0.3);
+        }
+
+        .modal-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 20px;
+        }
+
+        .modal-header h2 {
+            color: #333;
+        }
+
+        .close {
+            font-size: 28px;
+            font-weight: bold;
+            color: #aaa;
+            cursor: pointer;
+        }
+
+        .close:hover {
+            color: #000;
+        }
+
+        /* TABLA */
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            background: white;
+            border-radius: 10px;
+            overflow: hidden;
+            box-shadow: 0 5px 20px rgba(0,0,0,0.1);
+        }
+
+        thead {
+            background: #667eea;
+            color: white;
+        }
+
+        th, td {
+            padding: 15px;
+            text-align: left;
+            border-bottom: 1px solid #eee;
+        }
+
+        tr:hover {
+            background: #f9f9f9;
+        }
+
+        .badge {
+            display: inline-block;
+            padding: 5px 12px;
+            border-radius: 20px;
+            font-size: 12px;
+            font-weight: bold;
+        }
+
+        .badge-pendiente {
+            background: #fff3cd;
+            color: #856404;
+        }
+
+        .badge-aprobada {
+            background: #d4edda;
+            color: #155724;
+        }
+
+        .badge-rechazada {
+            background: #f8d7da;
+            color: #721c24;
+        }
+
+        .section {
+            background: white;
+            border-radius: 15px;
+            padding: 25px;
+            margin-bottom: 30px;
+            box-shadow: 0 5px 20px rgba(0,0,0,0.1);
+        }
+
+        .section h2 {
+            color: #333;
+            margin-bottom: 20px;
+            border-bottom: 2px solid #667eea;
+            padding-bottom: 10px;
+        }
+
+        @media (max-width: 768px) {
+            .login-container {
+                padding: 30px;
+            }
+
+            .dashboard-header {
+                flex-direction: column;
+                gap: 15px;
+            }
+
+            .user-info {
+                text-align: left;
+            }
+
+            .modal-content {
+                width: 95%;
+            }
+        }
+    </style>
+</head>
+<body>
+    <!-- LOGIN -->
+    <div class="login-container active" id="loginContainer">
+        <h1>🏛️ Portal de Reserva de Salas</h1>
+        <form onsubmit="login(event)">
+            <div class="form-group">
+                <label>Email:</label>
+                <input type="email" id="email" placeholder="admin@institucion.edu" required>
+            </div>
+            <div class="form-group">
+                <label>Contraseña:</label>
+                <input type="password" id="password" placeholder="010203" required>
+            </div>
+            <button type="submit">Iniciar Sesión</button>
+            <div class="demo-info">
+                <strong>Demo:</strong><br>
+                Email: admin@institucion.edu<br>
+                Contraseña: 010203
+            </div>
+        </form>
+    </div>
+
+    <!-- DASHBOARD -->
+    <div class="dashboard" id="dashboard">
+        <div class="dashboard-header">
+            <div>
+                <h1>Dashboard</h1>
+                <p>Bienvenido al Portal de Reserva de Salas</p>
+            </div>
+            <div class="user-info">
+                <p><strong id="userName">Usuario</strong></p>
+                <p id="userRole" style="font-size: 12px; color: #999;"></p>
+                <button class="logout-btn" onclick="logout()">Cerrar Sesión</button>
+            </div>
+        </div>
+
+        <!-- SECCIONES POR ROL -->
+        <div id="adminSection" style="display: none;">
+            <div class="dashboard-grid">
+                <div class="card">
+                    <h2>👥 Gestionar Usuarios</h2>
+                    <p>Crear, editar y eliminar usuarios del sistema con diferentes roles.</p>
+                    <button onclick="showModal('usuarios')">Ir a Usuarios</button>
+                </div>
+
+                <div class="card">
+                    <h2>📊 Cargar Programación</h2>
+                    <p>Importar datos de programación académica desde XLSX.</p>
+                    <button onclick="showModal('programacion')">Cargar XLSX</button>
+                </div>
+
+                <div class="card">
+                    <h2>🏢 Gestionar Salas</h2>
+                    <p>Administrar salas, capacidades y disponibilidad.</p>
+                    <button onclick="showModal('salas')">Ver Salas</button>
+                </div>
+            </div>
+
+            <div class="stats">
+                <div class="stat-box">
+                    <div class="stat-number">156</div>
+                    <div class="stat-label">Total de Salas</div>
+                </div>
+                <div class="stat-box">
+                    <div class="stat-number">42</div>
+                    <div class="stat-label">Usuarios Activos</div>
+                </div>
+                <div class="stat-box">
+                    <div class="stat-number">128</div>
+                    <div class="stat-label">Reservas Este Mes</div>
+                </div>
+                <div class="stat-box">
+                    <div class="stat-number">78%</div>
+                    <div class="stat-label">Ocupación Promedio</div>
+                </div>
+            </div>
+        </div>
+
+        <div id="docenteSection" style="display: none;">
+            <div class="dashboard-grid">
+                <div class="card">
+                    <h2>📚 Mi Programación</h2>
+                    <p>Visualiza tus asignaturas, horarios y salas asignadas.</p>
+                    <button onclick="showModal('miProgramacion')">Ver Programación</button>
+                </div>
+
+                <div class="card">
+                    <h2>🏢 Disponibilidad de Salas</h2>
+                    <p>Consulta qué salas están disponibles para tus clases.</p>
+                    <button onclick="showModal('disponibilidad')">Consultar</button>
+                </div>
+            </div>
+        </div>
+
+        <div id="reservadorSection" style="display: none;">
+            <div class="dashboard-grid">
+                <div class="card">
+                    <h2>📅 Nueva Reserva</h2>
+                    <p>Crea una nueva reserva seleccionando sala, fecha y horario.</p>
+                    <button onclick="showModal('nuevaReserva')">Crear Reserva</button>
+                </div>
+
+                <div class="card">
+                    <h2>📋 Mis Reservas</h2>
+                    <p>Visualiza todas tus reservas pendientes y aprobadas.</p>
+                    <button onclick="showModal('misReservas')">Ver Reservas</button>
+                </div>
+
+                <div class="card">
+                    <h2>📆 Calendario</h2>
+                    <p>Consulta disponibilidad en el calendario interactivo.</p>
+                    <button onclick="showModal('calendario')">Abrir Calendario</button>
+                </div>
+            </div>
+        </div>
+
+        <div id="subdirectorSection" style="display: none;">
+            <div class="dashboard-grid">
+                <div class="card">
+                    <h2>✅ Aprobaciones</h2>
+                    <p>Aprueba o rechaza reservas solicitadas.</p>
+                    <button onclick="showModal('aprobaciones')">Ver Pendientes</button>
+                </div>
+
+                <div class="card">
+                    <h2>📊 Reportes</h2>
+                    <p>Genera reportes de ocupación por sala y período.</p>
+                    <button onclick="showModal('reportes')">Ver Reportes</button>
+                </div>
+
+                <div class="card">
+                    <h2>📈 Ocupación</h2>
+                    <p>Analiza uso de espacios y tendencias.</p>
+                    <button onclick="showModal('ocupacion')">Ver Análisis</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- MODAL -->
+    <div class="modal" id="modal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h2 id="modalTitle">Título</h2>
+                <span class="close" onclick="closeModal()">&times;</span>
+            </div>
+            <div id="modalBody">
+                <!-- Contenido dinámico -->
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // USUARIOS DEMO
+        const users = {
+            'admin@institucion.edu': { password: '010203', name: 'Administrador', role: 'admin' },
+            'docente@institucion.edu': { password: '123456', name: 'Docente', role: 'docente' },
+            'reservador@institucion.edu': { password: '123456', name: 'Reservador', role: 'reservador' },
+            'subdirector@institucion.edu': { password: '123456', name: 'Subdirector', role: 'subdirector' }
+        };
+
+        let currentUser = null;
+
+        function login(e) {
+            e.preventDefault();
+            const email = document.getElementById('email').value;
+            const password = document.getElementById('password').value;
+
+            if (users[email] && users[email].password === password) {
+                currentUser = { email, ...users[email] };
+                localStorage.setItem('currentUser', JSON.stringify(currentUser));
+                showDashboard();
+            } else {
+                alert('Credenciales incorrectas');
+            }
+        }
+
+        function logout() {
+            currentUser = null;
+            localStorage.removeItem('currentUser');
+            document.getElementById('loginContainer').classList.add('active');
+            document.getElementById('dashboard').classList.remove('active');
+        }
+
+        function showDashboard() {
+            document.getElementById('loginContainer').classList.remove('active');
+            document.getElementById('dashboard').classList.add('active');
+            document.getElementById('userName').textContent = currentUser.name;
+            document.getElementById('userRole').textContent = 'Rol: ' + currentUser.role.charAt(0).toUpperCase() + currentUser.role.slice(1);
+
+            // Mostrar sección según rol
+            document.getElementById('adminSection').style.display = currentUser.role === 'admin' ? 'block' : 'none';
+            document.getElementById('docenteSection').style.display = currentUser.role === 'docente' ? 'block' : 'none';
+            document.getElementById('reservadorSection').style.display = currentUser.role === 'reservador' ? 'block' : 'none';
+            document.getElementById('subdirectorSection').style.display = currentUser.role === 'subdirector' ? 'block' : 'none';
+        }
+
+        function showModal(type) {
+            const modal = document.getElementById('modal');
+            const modalTitle = document.getElementById('modalTitle');
+            const modalBody = document.getElementById('modalBody');
+
+            const modals = {
+                usuarios: {
+                    title: '👥 Gestionar Usuarios',
+                    content: `
+                        <table>
+                            <thead>
+                                <tr>
+                                    <th>Email</th>
+                                    <th>Nombre</th>
+                                    <th>Rol</th>
+                                    <th>Acciones</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                <tr>
+                                    <td>admin@institucion.edu</td>
+                                    <td>Administrador</td>
+                                    <td><span class="badge" style="background: #d4edda; color: #155724;">Admin</span></td>
+                                    <td><button onclick="alert('Editar usuario')">Editar</button></td>
+                                </tr>
+                                <tr>
+                                    <td>docente@institucion.edu</td>
+                                    <td>Juan Docente</td>
+                                    <td><span class="badge" style="background: #cfe2ff; color: #084298;">Docente</span></td>
+                                    <td><button onclick="alert('Editar usuario')">Editar</button></td>
+                                </tr>
+                                <tr>
+                                    <td>reservador@institucion.edu</td>
+                                    <td>María Reservador</td>
+                                    <td><span class="badge" style="background: #fff3cd; color: #856404;">Reservador</span></td>
+                                    <td><button onclick="alert('Editar usuario')">Editar</button></td>
+                                </tr>
+                                <tr>
+                                    <td>subdirector@institucion.edu</td>
+                                    <td>Director Académico</td>
+                                    <td><span class="badge" style="background: #f8d7da; color: #721c24;">Subdirector</span></td>
+                                    <td><button onclick="alert('Editar usuario')">Editar</button></td>
+                                </tr>
+                            </tbody>
+                        </table>
+                        <br>
+                        <button onclick="alert('Agregar nuevo usuario')">+ Agregar Usuario</button>
+                    `
+                },
+                misReservas: {
+                    title: '📋 Mis Reservas',
+                    content: `
+                        <table>
+                            <thead>
+                                <tr>
+                                    <th>Sala</th>
+                                    <th>Fecha</th>
+                                    <th>Horario</th>
+                                    <th>Estado</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                <tr>
+                                    <td>VI-S22</td>
+                                    <td>2024-06-15</td>
+                                    <td>09:00 - 11:00</td>
+                                    <td><span class="badge badge-aprobada">Aprobada</span></td>
+                                </tr>
+                                <tr>
+                                    <td>VI-LC1</td>
+                                    <td>2024-06-16</td>
+                                    <td>14:00 - 16:00</td>
+                                    <td><span class="badge badge-pendiente">Pendiente</span></td>
+                                </tr>
+                            </tbody>
+                        </table>
+                    `
+                },
+                nuevaReserva: {
+                    title: '📅 Nueva Reserva',
+                    content: `
+                        <form onsubmit="alert('Reserva creada exitosamente'); closeModal(); return false;">
+                            <div class="form-group">
+                                <label>Sala:</label>
+                                <select required style="width: 100%; padding: 10px; border: 1px solid #ddd; border-radius: 5px;">
+                                    <option>VI-S22 - Sala de Clases 33</option>
+                                    <option>VI-S23 - Sala de Clases 45</option>
+                                    <option>VI-LC1 - Laboratorio PC</option>
+                                    <option>VI-G1 - Gimnasio</option>
+                                </select>
+                            </div>
+                            <div class="form-group">
+                                <label>Fecha:</label>
+                                <input type="date" required style="width: 100%; padding: 10px; border: 1px solid #ddd; border-radius: 5px;">
+                            </div>
+                            <div class="form-group">
+                                <label>Horario:</label>
+                                <select required style="width: 100%; padding: 10px; border: 1px solid #ddd; border-radius: 5px;">
+                                    <option>08:00 - 10:00</option>
+                                    <option>10:00 - 12:00</option>
+                                    <option>14:00 - 16:00</option>
+                                    <option>16:00 - 18:00</option>
+                                </select>
+                            </div>
+                            <div class="form-group">
+                                <label>Motivo:</label>
+                                <textarea required style="width: 100%; padding: 10px; border: 1px solid #ddd; border-radius: 5px; font-family: inherit;"></textarea>
+                            </div>
+                            <button type="submit">Crear Reserva</button>
+                        </form>
+                    `
+                },
+                aprobaciones: {
+                    title: '✅ Reservas Pendientes',
+                    content: `
+                        <table>
+                            <thead>
+                                <tr>
+                                    <th>Usuario</th>
+                                    <th>Sala</th>
+                                    <th>Fecha</th>
+                                    <th>Estado</th>
+                                    <th>Acción</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                <tr>
+                                    <td>María Reservador</td>
+                                    <td>VI-LC1</td>
+                                    <td>2024-06-16</td>
+                                    <td><span class="badge badge-pendiente">Pendiente</span></td>
+                                    <td>
+                                        <button onclick="alert('✓ Reserva aprobada'); closeModal();" style="background: #28a745; padding: 5px 10px; width: auto;">Aprobar</button>
+                                        <button onclick="alert('✗ Reserva rechazada'); closeModal();" style="background: #dc3545; padding: 5px 10px; width: auto; margin-left: 5px;">Rechazar</button>
+                                    </td>
+                                </tr>
+                            </tbody>
+                        </table>
+                    `
+                },
+                reportes: {
+                    title: '📊 Reportes de Ocupación',
+                    content: `
+                        <div class="form-group">
+                            <label>Período:</label>
+                            <select style="width: 100%; padding: 10px; border: 1px solid #ddd; border-radius: 5px;">
+                                <option>Junio 2024</option>
+                                <option>Mayo 2024</option>
+                                <option>Abril 2024</option>
+                            </select>
+                        </div>
+                        <div class="form-group">
+                            <label>Tipo de Reporte:</label>
+                            <select style="width: 100%; padding: 10px; border: 1px solid #ddd; border-radius: 5px;">
+                                <option>Ocupación por Sala</option>
+                                <option>Disponibilidad</option>
+                                <option>Uso Total</option>
+                            </select>
+                        </div>
+                        <button onclick="alert('📊 Reporte generado: Ocupación promedio 78%'); closeModal();">Generar Reporte</button>
+                        <button onclick="alert('📥 Descargando PDF...'); closeModal();" style="background: #6c757d; margin-left: 10px; width: auto;">Descargar PDF</button>
+                    `
+                }
+            };
+
+            const modal = modals[type] || { title: 'Modal', content: '<p>Contenido no disponible</p>' };
+            modalTitle.textContent = modal.title;
+            modalBody.innerHTML = modal.content;
+            document.getElementById('modal').classList.add('active');
+        }
+
+        function closeModal() {
+            document.getElementById('modal').classList.remove('active');
+        }
+
+        // Verificar si hay usuario guardado
+        window.addEventListener('load', () => {
+            const saved = localStorage.getItem('currentUser');
+            if (saved) {
+                currentUser = JSON.parse(saved);
+                showDashboard();
+            }
+        });
+
+        // Cerrar modal al hacer click fuera
+        window.onclick = (event) => {
+            const modal = document.getElementById('modal');
+            if (event.target === modal) {
+                closeModal();
+            }
+        };
+    </script>
+</body>
+</html>
