@@ -898,6 +898,18 @@ function createDb({ mode, supabase }){
     return () => supabase.removeChannel(ch);
   };
 
+  /* ----- ESTADÍSTICAS DE USO (cloud) ----- */
+  const getStats = async () => {
+    if(!isCloud) return null;
+    const tables = ['salas','modulos','programacion','reservas','app_users'];
+    const results = await Promise.all(tables.map(t =>
+      supabase.from(t).select('*', { count:'exact', head:true })
+    ));
+    const rows = {};
+    tables.forEach((t,i)=> { rows[t] = results[i].count || 0; });
+    return { rows };
+  };
+
   return {
     isCloud, mode,
     loadAll, login,
@@ -905,7 +917,7 @@ function createDb({ mode, supabase }){
     createSala, updateSala, deleteSala,
     createUser, updateUser, deleteUser,
     replaceProgramacion, seedFromBundle,
-    subscribe,
+    subscribe, getStats,
   };
 }
 
@@ -1156,9 +1168,60 @@ function Shell({ user, mode, onReconfigure, onLogout, view, setView, children, t
 }
 
 /* ========= DASHBOARD ========= */
-function Dashboard({ data, reservas, user }){
+function Dashboard({ data, reservas, user, db }){
   const today = new Date(); const todayIso = today.toISOString().slice(0,10);
   const dow = today.getDay()===0 ? 6 : today.getDay()-1;
+
+  // Estado de la BD compartida (solo admin + cloud)
+  const [dbStats, setDbStats] = useState(null);
+  useEffect(()=>{
+    if(user.role !== 'admin' || !db?.isCloud) return;
+    let cancelled = false;
+    const fetch = async () => {
+      try {
+        const s = await db.getStats();
+        if(!cancelled) setDbStats(s);
+      } catch(e){ console.error('getStats:', e); }
+    };
+    fetch();
+    const t = setInterval(fetch, 5*60*1000); // refresh cada 5 min
+    return () => { cancelled = true; clearInterval(t); };
+  },[db, user]);
+
+  const bdUso = useMemo(()=>{
+    if(!dbStats) return null;
+    // Estimación de bytes por fila (incluye padding, indices, overhead Postgres)
+    const SIZE_PER_ROW = { salas:200, modulos:80, programacion:280, reservas:400, app_users:220 };
+    const FREE_LIMIT_BYTES = 500 * 1024 * 1024; // 500 MB free tier
+    const FREE_EGRESS_GB   = 5;
+    const FREE_REALTIME_MSG_M = 2;
+    const FREE_REALTIME_CON   = 200;
+
+    let rawBytes = 0;
+    Object.entries(dbStats.rows).forEach(([t,n])=> { rawBytes += n * (SIZE_PER_ROW[t]||200); });
+    const totalBytes = Math.round(rawBytes * 1.4); // overhead indices+sistema
+    const pctUsado = (totalBytes / FREE_LIMIT_BYTES) * 100;
+    const pctLibre = 100 - pctUsado;
+
+    // Fecha de reseteo: 1er día del próximo mes
+    const now = new Date();
+    const nextReset = new Date(now.getFullYear(), now.getMonth()+1, 1);
+    const diasParaReset = Math.ceil((nextReset - now) / 86400000);
+
+    return {
+      totalBytes, pctUsado, pctLibre, FREE_LIMIT_BYTES,
+      nextReset, diasParaReset,
+      FREE_EGRESS_GB, FREE_REALTIME_MSG_M, FREE_REALTIME_CON,
+      rows: dbStats.rows,
+    };
+  },[dbStats]);
+
+  // Link directo a la consola Supabase del proyecto (deriva ref desde la URL configurada)
+  const supaProjectUrl = useMemo(()=>{
+    const url = window.SUPABASE_CONFIG?.url || '';
+    const m = url.match(/https:\/\/([a-z0-9]+)\.supabase\.co/);
+    return m ? `https://supabase.com/dashboard/project/${m[1]}/settings/usage` : null;
+  },[]);
 
   const stats = useMemo(()=>{
     const totalSalas = data.salas.length;
@@ -1167,6 +1230,13 @@ function Dashboard({ data, reservas, user }){
     const pendientes  = reservas.filter(r => r.es==='pendiente').length;
     return { totalSalas, clasesHoy, reservasHoy, pendientes };
   },[data, reservas, dow, todayIso]);
+
+  const fmtBytes = (b) => {
+    if(b < 1024) return `${b} B`;
+    if(b < 1024*1024) return `${(b/1024).toFixed(1)} KB`;
+    if(b < 1024*1024*1024) return `${(b/(1024*1024)).toFixed(1)} MB`;
+    return `${(b/(1024*1024*1024)).toFixed(2)} GB`;
+  };
 
   const ocupacionPorTipo = useMemo(()=>{
     const m = {};
@@ -1274,6 +1344,86 @@ function Dashboard({ data, reservas, user }){
           <div className="icon">{I.bell}</div>
         </div>
       </div>
+
+      {user.role==='admin' && db?.isCloud && bdUso && (() => {
+        const pct = bdUso.pctUsado;
+        const cls  = pct < 50 ? 'success' : pct < 80 ? 'warn' : 'danger';
+        const barCol = pct < 50 ? 'var(--success)' : pct < 80 ? 'var(--warning)' : 'var(--danger)';
+        const fechaReset = bdUso.nextReset.toLocaleDateString('es-CL', {day:'numeric', month:'long', year:'numeric'});
+        return (
+          <div className="card">
+            <div className="card-header">
+              <div>
+                <h3>☁️ Estado de la base de datos compartida</h3>
+                <div className="sub">Supabase Free tier · resetea recursos mensuales el <b>1 de cada mes</b> ({fechaReset} · faltan {bdUso.diasParaReset} días)</div>
+              </div>
+              {supaProjectUrl && (
+                <a href={supaProjectUrl} target="_blank" rel="noopener noreferrer" className="btn btn-sm btn-ghost">Ver consumo real en Supabase →</a>
+              )}
+            </div>
+
+            {/* Almacenamiento - permanente */}
+            <div style={{marginBottom:18,padding:14,background:'#FBFCFD',borderRadius:8,border:'1px solid var(--border-soft)'}}>
+              <div className="row between" style={{marginBottom:8}}>
+                <div>
+                  <b>💾 Almacenamiento de la base</b>
+                  <div className="muted" style={{fontSize:11}}>Persistente · no se resetea</div>
+                </div>
+                <div style={{textAlign:'right'}}>
+                  <div style={{fontWeight:800,fontSize:16,color:barCol}}>{pct.toFixed(2)}% usado</div>
+                  <div className="muted" style={{fontSize:11}}>te queda {bdUso.pctLibre.toFixed(2)}% libre</div>
+                </div>
+              </div>
+              <div style={{height:14,background:'#EEF2F7',borderRadius:7,overflow:'hidden',position:'relative'}}>
+                <div style={{height:'100%',width:`${Math.min(100,pct)}%`,background:barCol,transition:'width .3s'}}/>
+              </div>
+              <div className="row between" style={{marginTop:6,fontSize:11}}>
+                <span className="muted">{fmtBytes(bdUso.totalBytes)} de {fmtBytes(bdUso.FREE_LIMIT_BYTES)}</span>
+                <span className="muted">
+                  Filas: {bdUso.rows.salas} salas · {bdUso.rows.programacion.toLocaleString('es-CL')} clases · {bdUso.rows.reservas.toLocaleString('es-CL')} reservas · {bdUso.rows.app_users} usuarios
+                </span>
+              </div>
+              {pct >= 80 && (
+                <div className="chip danger" style={{marginTop:10,padding:'8px 12px',fontSize:12}}>
+                  ⚠ Te quedan menos del 20% de almacenamiento. Considera depurar reservas antiguas o subir al plan Pro de Supabase.
+                </div>
+              )}
+            </div>
+
+            {/* Recursos mensuales - resetean */}
+            <div style={{padding:14,background:'#FBFCFD',borderRadius:8,border:'1px solid var(--border-soft)'}}>
+              <div className="row between" style={{marginBottom:10}}>
+                <div>
+                  <b>🔄 Recursos mensuales</b>
+                  <div className="muted" style={{fontSize:11}}>Se reinician el <b>{fechaReset}</b> (en {bdUso.diasParaReset} días)</div>
+                </div>
+                <span className="chip muted" style={{fontSize:11}}>Consulta tu uso real en Supabase</span>
+              </div>
+              <div className="grid grid-3" style={{gap:10}}>
+                <div style={{padding:'10px 12px',background:'#fff',border:'1px solid var(--border-soft)',borderRadius:6}}>
+                  <div className="muted" style={{fontSize:10.5,fontWeight:700,textTransform:'uppercase',letterSpacing:.4}}>Egress (descarga)</div>
+                  <div style={{fontSize:18,fontWeight:800}}>{bdUso.FREE_EGRESS_GB} GB/mes</div>
+                  <div className="muted" style={{fontSize:11}}>~10k cargas del portal</div>
+                </div>
+                <div style={{padding:'10px 12px',background:'#fff',border:'1px solid var(--border-soft)',borderRadius:6}}>
+                  <div className="muted" style={{fontSize:10.5,fontWeight:700,textTransform:'uppercase',letterSpacing:.4}}>Mensajes realtime</div>
+                  <div style={{fontSize:18,fontWeight:800}}>{bdUso.FREE_REALTIME_MSG_M}M/mes</div>
+                  <div className="muted" style={{fontSize:11}}>~660k cambios sincronizados</div>
+                </div>
+                <div style={{padding:'10px 12px',background:'#fff',border:'1px solid var(--border-soft)',borderRadius:6}}>
+                  <div className="muted" style={{fontSize:10.5,fontWeight:700,textTransform:'uppercase',letterSpacing:.4}}>Conexiones realtime</div>
+                  <div style={{fontSize:18,fontWeight:800}}>{bdUso.FREE_REALTIME_CON}</div>
+                  <div className="muted" style={{fontSize:11}}>simultáneas en vivo</div>
+                </div>
+              </div>
+            </div>
+
+            <div className="login-hint" style={{marginTop:12,fontSize:11.5}}>
+              Para alertas por correo cuando llegues al 80% de cualquier recurso: <b>Supabase Dashboard → Project Settings → Billing → Usage alerts</b>. La estimación de almacenamiento es un cálculo en base al conteo de filas (margen ±15%).
+            </div>
+          </div>
+        );
+      })()}
 
       {metricas && (() => {
         const isReservador = user.role === 'reservador';
@@ -3170,7 +3320,7 @@ function App(){
   return (
     <>
       <Shell user={user} mode={mode} onReconfigure={reconfigure} onLogout={()=>{ setUser(null); }} view={view} setView={setView} title={title} crumbs={crumbs}>
-        {view==='dashboard' && <Dashboard data={data} reservas={reservas} user={user}/>}
+        {view==='dashboard' && <Dashboard data={data} reservas={reservas} user={user} db={db}/>}
         {view==='horario'   && <Horario data={data} reservas={reservas} onGoNueva={goNueva}/>}
         {view==='salas'     && <Salas data={data} user={user} toast={setToast} onCreate={createSala} onUpdate={updateSala} onDelete={deleteSala}/>}
         {view==='prog'      && <Programacion data={data}/>}
