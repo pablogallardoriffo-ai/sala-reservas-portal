@@ -1294,8 +1294,10 @@ function Dashboard({ data, reservas, user, db }){
       slaPct: (m.dentroSla / m.count) * 100,
     })).sort((a,b)=> b.count - a.count);
 
-    // Datos personales del usuario actual (para framing motivacional)
-    const my = byUser[user.username] || null;
+    // Datos personales del usuario actual (para framing motivacional).
+    // Tomamos la fila desde `ranking` (no `byUser`) porque ahí ya está calculado
+    // avgMs y slaPct — byUser solo guarda los acumuladores crudos.
+    const my = ranking.find(r => r.username === user.username) || null;
     const myRankByVolume = my ? ranking.findIndex(r => r.username === user.username) + 1 : 0;
     const rankingByAvg = [...ranking].sort((a,b)=> a.avgMs - b.avgMs);
     const myRankBySpeed = my ? rankingByAvg.findIndex(r => r.username === user.username) + 1 : 0;
