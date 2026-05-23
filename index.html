@@ -495,6 +495,33 @@
     tr.row-pending td{background:#FEFAEA !important;border-left:0 solid var(--warning)}
     tr.row-pending td:first-child{border-left:3px solid var(--warning)}
 
+    /* Countdown SLA */
+    .countdown{
+      display:inline-flex;align-items:center;gap:4px;
+      padding:4px 9px;border-radius:6px;
+      font-family:'Inter','Segoe UI',monospace;font-size:11.5px;font-weight:700;
+      font-variant-numeric:tabular-nums;letter-spacing:.4px;
+      border:1px solid transparent;white-space:nowrap;
+    }
+    .countdown.ok{background:#E8F8F1;color:#10B981;border-color:#B7E8D0}
+    .countdown.warning{background:#FEF5E7;color:#B45309;border-color:#F5D680}
+    .countdown.critical{
+      background:#FDECEC;color:#B91C1C;border-color:#F4B1B1;
+      animation:pulse-sla 1.4s ease-in-out infinite;
+    }
+    .countdown.expired{background:#1F2937;color:#FEE2E2;border-color:#374151}
+    @keyframes pulse-sla{50%{opacity:.55}}
+
+    .time-pill{
+      display:inline-flex;align-items:center;gap:4px;
+      padding:3px 8px;border-radius:6px;background:#EEF2F7;color:var(--text-muted);
+      font-family:'Inter',monospace;font-size:11.5px;font-weight:600;
+      font-variant-numeric:tabular-nums;
+    }
+    .time-pill.fast{background:#E8F8F1;color:#10B981}
+    .time-pill.slow{background:#FEF5E7;color:#B45309}
+    .time-pill.over{background:#FDECEC;color:#B91C1C}
+
     /* Wizard de nueva reserva */
     .step-num{
       display:inline-flex;align-items:center;justify-content:center;
@@ -1163,6 +1190,40 @@ function Dashboard({ data, reservas, user }){
     .slice(0,6)
   ,[reservas, todayIso]);
 
+  // Métricas de gestión por reservador (solo para admin)
+  const metricas = useMemo(()=>{
+    if(user.role !== 'admin') return null;
+    const decididas = reservas.filter(r => r.decidido_por && r.creado_en && r.decidido_en && r.es !== 'pendiente');
+    const byUser = {};
+    let totalMs = 0, dentroSla = 0;
+    let decididas7d = 0; const cutoff7d = Date.now() - 7*86400*1000;
+    for(const r of decididas){
+      const cAt = new Date(r.creado_en).getTime();
+      const dAt = new Date(r.decidido_en).getTime();
+      if(isNaN(cAt) || isNaN(dAt)) continue;
+      const elapsed = dAt - cAt;
+      if(elapsed < 0) continue;
+      totalMs += elapsed;
+      if(elapsed <= SLA_MS) dentroSla++;
+      if(dAt >= cutoff7d) decididas7d++;
+      const u = r.decidido_por;
+      if(!byUser[u]) byUser[u] = { count:0, totalMs:0, dentroSla:0, ultima:0, aprobadas:0, rechazadas:0 };
+      byUser[u].count++;
+      byUser[u].totalMs += elapsed;
+      if(elapsed <= SLA_MS) byUser[u].dentroSla++;
+      if(dAt > byUser[u].ultima) byUser[u].ultima = dAt;
+      if(r.es==='aprobada') byUser[u].aprobadas++;
+      if(r.es==='rechazada') byUser[u].rechazadas++;
+    }
+    const avgMs = decididas.length ? totalMs / decididas.length : 0;
+    const slaPct = decididas.length ? (dentroSla / decididas.length) * 100 : 0;
+    const ranking = Object.entries(byUser).map(([username, m]) => ({
+      username, ...m, avgMs: m.totalMs / m.count,
+      slaPct: (m.dentroSla / m.count) * 100,
+    })).sort((a,b)=> b.count - a.count);
+    return { decididas: decididas.length, decididas7d, avgMs, slaPct, ranking };
+  },[reservas, user]);
+
   return (
     <div className="stack">
       <div className="grid grid-4">
@@ -1191,6 +1252,82 @@ function Dashboard({ data, reservas, user }){
           <div className="icon">{I.bell}</div>
         </div>
       </div>
+
+      {metricas && (
+        <div className="card">
+          <div className="card-header">
+            <div>
+              <h3>⏱ Control de gestión · Reservadores</h3>
+              <div className="sub">SLA objetivo: <b>1 hora</b> entre solicitud y decisión. Métricas calculadas sobre {metricas.decididas} reservas históricas decididas ({metricas.decididas7d} en los últimos 7 días).</div>
+            </div>
+          </div>
+
+          <div className="grid grid-3" style={{marginBottom:18}}>
+            <div className="kpi kpi-blue">
+              <span className="label">Tiempo promedio respuesta</span>
+              <span className="value" style={{fontSize:24}}>{fmtDuration(metricas.avgMs)}</span>
+              <span className="delta">Todas las reservas decididas</span>
+              <div className="icon">⏱</div>
+            </div>
+            <div className={`kpi ${metricas.slaPct>=80?'kpi-green':metricas.slaPct>=50?'kpi-amber':'kpi-red'}`}>
+              <span className="label">% dentro de SLA (≤1 h)</span>
+              <span className="value" style={{fontSize:24}}>{metricas.slaPct.toFixed(1)}%</span>
+              <span className="delta">Cumplimiento del objetivo</span>
+              <div className="icon">🎯</div>
+            </div>
+            <div className="kpi kpi-amber">
+              <span className="label">Decididas últimos 7 días</span>
+              <span className="value" style={{fontSize:24}}>{metricas.decididas7d}</span>
+              <span className="delta">Productividad reciente</span>
+              <div className="icon">📊</div>
+            </div>
+          </div>
+
+          {metricas.ranking.length===0 ? (
+            <div className="empty"><span className="emoji">📭</span>Aún no hay reservas decididas para medir.</div>
+          ) : (
+            <div className="tbl-scroll" style={{maxHeight:'none',border:'1px solid var(--border-soft)',borderRadius:8}}>
+              <table className="tbl">
+                <thead><tr>
+                  <th>Reservador</th>
+                  <th style={{textAlign:'right'}}>Decididas</th>
+                  <th style={{textAlign:'right'}}>Aprobadas</th>
+                  <th style={{textAlign:'right'}}>Rechazadas</th>
+                  <th style={{textAlign:'right'}}>Tiempo promedio</th>
+                  <th>SLA cumplido</th>
+                  <th>Última actividad</th>
+                </tr></thead>
+                <tbody>
+                  {metricas.ranking.map(u => {
+                    const slaCls = u.slaPct>=80 ? 'success' : u.slaPct>=50 ? 'warn' : 'danger';
+                    const avgCls = u.avgMs <= SLA_MS/2 ? 'fast' : u.avgMs <= SLA_MS ? 'slow' : 'over';
+                    return (
+                      <tr key={u.username}>
+                        <td><b>{u.username}</b></td>
+                        <td style={{textAlign:'right'}}><b>{u.count}</b></td>
+                        <td style={{textAlign:'right',color:'var(--success)'}}>{u.aprobadas}</td>
+                        <td style={{textAlign:'right',color:'var(--danger)'}}>{u.rechazadas}</td>
+                        <td style={{textAlign:'right'}}>
+                          <span className={`time-pill ${avgCls}`}>{fmtDuration(u.avgMs)}</span>
+                        </td>
+                        <td>
+                          <div className="row" style={{gap:8}}>
+                            <div style={{flex:1,minWidth:80,height:6,background:'#EEF2F7',borderRadius:4,overflow:'hidden'}}>
+                              <div style={{height:'100%',width:`${u.slaPct}%`,background:u.slaPct>=80?'var(--success)':u.slaPct>=50?'var(--warning)':'var(--danger)'}}/>
+                            </div>
+                            <span className={`chip ${slaCls}`} style={{fontSize:11}}>{u.slaPct.toFixed(0)}%</span>
+                          </div>
+                        </td>
+                        <td className="muted" style={{fontSize:12}}>{new Date(u.ultima).toLocaleString('es-CL',{day:'2-digit',month:'short',hour:'2-digit',minute:'2-digit'})}</td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
+      )}
 
       <div className="grid grid-2">
         <div className="card">
@@ -1661,6 +1798,45 @@ function Programacion({ data }){
   );
 }
 
+/* ========= SLA · CRONÓMETRO Y HELPERS ========= */
+const SLA_MS = 60 * 60 * 1000; // 1 hora
+
+const fmtDuration = (ms) => {
+  if(ms < 0) return '0m';
+  const min = Math.floor(ms / 60000);
+  if(min < 1) return `${Math.floor(ms/1000)}s`;
+  if(min < 60) return `${min}m`;
+  const h = Math.floor(min/60), m = min % 60;
+  return m > 0 ? `${h}h ${m}m` : `${h}h`;
+};
+
+function Countdown({ creadoEn, sla = SLA_MS, compact = false }){
+  const [now, setNow] = useState(Date.now());
+  useEffect(()=>{
+    const t = setInterval(()=> setNow(Date.now()), 1000);
+    return ()=> clearInterval(t);
+  },[]);
+  if(!creadoEn) return <span className="muted" style={{fontSize:11}}>—</span>;
+  const start = new Date(creadoEn).getTime();
+  if(isNaN(start)) return <span className="muted" style={{fontSize:11}}>—</span>;
+  const deadline = start + sla;
+  const remaining = deadline - now;
+  const expired = remaining <= 0;
+  const absMs = Math.abs(remaining);
+  const mins = Math.floor(absMs / 60000);
+  const secs = Math.floor((absMs / 1000) % 60);
+  const display = `${String(mins).padStart(2,'0')}:${String(secs).padStart(2,'0')}`;
+  const cls = expired ? 'expired' : (mins < 10 ? 'critical' : (mins < 30 ? 'warning' : 'ok'));
+  const label = expired
+    ? `Vencida hace ${fmtDuration(absMs)}`
+    : `Tiempo restante para decidir (SLA 1 h)`;
+  return (
+    <span className={`countdown ${cls}`} title={label}>
+      {expired ? '⏰ Vencida' : `⏳ ${display}`}
+    </span>
+  );
+}
+
 /* ========= RESERVAS ========= */
 function Reservas({ reservas, data, user, toast, onGoNueva, onUpdateEstado }){
   const [tab, setTab] = useState('lista');
@@ -1763,16 +1939,30 @@ function Reservas({ reservas, data, user, toast, onGoNueva, onUpdateEstado }){
           <div className="tbl-scroll">
             <table className="tbl">
               <thead><tr>
-                <th>Fecha</th><th>Horario</th><th>Sala</th><th>Motivo</th><th>Solicitante</th><th>Estado</th><th style={{textAlign:'right'}}>Acciones</th>
+                <th>Fecha</th><th>Horario</th><th>Sala</th><th>Motivo</th><th>Solicitante</th>
+                <th title="SLA: tiempo para decidir / tiempo que tardó la decisión">⏱ SLA</th>
+                <th>Estado</th><th style={{textAlign:'right'}}>Acciones</th>
               </tr></thead>
               <tbody>
-                {filtered.map(r => (
+                {filtered.map(r => {
+                  const decidedMs = (r.decidido_en && r.creado_en) ? (new Date(r.decidido_en) - new Date(r.creado_en)) : null;
+                  const timeCls = decidedMs==null ? '' : (decidedMs <= SLA_MS/2 ? 'fast' : (decidedMs <= SLA_MS ? 'slow' : 'over'));
+                  return (
                   <tr key={r.id} className={r.es==='pendiente' ? 'row-pending' : ''}>
                     <td className="nowrap">{fmtFecha(r.fi)}{r.ff && r.ff!==r.fi ? ' → '+fmtFecha(r.ff) : ''}</td>
                     <td className="nowrap">{r.hi}–{r.hf}<div className="muted" style={{fontSize:11}}>Mód. {r.mi}–{r.mf}</div></td>
                     <td><b style={{color:'var(--primary)'}}>{r.r}</b></td>
                     <td style={{maxWidth:340}}>{r.mo}</td>
                     <td><div style={{fontSize:13}}>{r.do||'—'}</div><div className="muted" style={{fontSize:11}}>{r.co||r.ru}</div></td>
+                    <td className="nowrap">
+                      {r.es==='pendiente' && <Countdown creadoEn={r.creado_en}/>}
+                      {r.es!=='pendiente' && decidedMs!=null && (
+                        <span className={`time-pill ${timeCls}`} title={`Tardó ${fmtDuration(decidedMs)} en ${r.es==='aprobada'?'aprobarse':'rechazarse'}`}>
+                          ⏱ {fmtDuration(decidedMs)}
+                        </span>
+                      )}
+                      {r.es!=='pendiente' && decidedMs==null && <span className="muted" style={{fontSize:11}}>—</span>}
+                    </td>
                     <td>
                       {r.es==='aprobada' && <span className="chip success">Aprobada</span>}
                       {r.es==='pendiente' && <span className="chip warn">Pendiente</span>}
@@ -1795,8 +1985,9 @@ function Reservas({ reservas, data, user, toast, onGoNueva, onUpdateEstado }){
                       )}
                     </td>
                   </tr>
-                ))}
-                {filtered.length===0 && counts.pendiente!==0 && <tr><td colSpan="7"><div className="empty"><span className="emoji">🗂</span>Sin reservas en este filtro.</div></td></tr>}
+                  );
+                })}
+                {filtered.length===0 && counts.pendiente!==0 && <tr><td colSpan="8"><div className="empty"><span className="emoji">🗂</span>Sin reservas en este filtro.</div></td></tr>}
               </tbody>
             </table>
           </div>
