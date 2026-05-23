@@ -472,6 +472,29 @@
     }
     .upload-zone:hover{background:#EEF4FB;border-color:var(--primary-2)}
 
+    /* Chips de filtro por estado */
+    .state-chips{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:4px}
+    .state-chip{
+      display:inline-flex;align-items:center;gap:8px;padding:8px 14px;border-radius:999px;
+      background:#fff;border:1.5px solid var(--border);font-weight:600;font-size:12.5px;
+      color:var(--text-muted);cursor:pointer;transition:all .12s;
+    }
+    .state-chip b{
+      padding:2px 8px;border-radius:999px;background:#EEF2F7;color:var(--text-muted);
+      font-size:11px;min-width:22px;text-align:center;
+    }
+    .state-chip:hover{border-color:#C4D2EA}
+    .state-chip.sel{background:var(--text);color:#fff;border-color:var(--text)}
+    .state-chip.sel b{background:rgba(255,255,255,.18);color:#fff}
+    .state-chip.warn.sel{background:var(--warning);border-color:var(--warning);color:#fff}
+    .state-chip.success.sel{background:var(--success);border-color:var(--success);color:#fff}
+    .state-chip.danger.sel{background:var(--danger);border-color:var(--danger);color:#fff}
+    .state-chip.neutral.sel{background:var(--primary);border-color:var(--primary)}
+
+    /* Fila de reserva pendiente: bordes y fondo distintivos */
+    tr.row-pending td{background:#FEFAEA !important;border-left:0 solid var(--warning)}
+    tr.row-pending td:first-child{border-left:3px solid var(--warning)}
+
     /* Wizard de nueva reserva */
     .step-num{
       display:inline-flex;align-items:center;justify-content:center;
@@ -1492,8 +1515,56 @@ function Programacion({ data }){
     return m;
   },[filtered, showWeek]);
 
+  // Conteo de clases por día de la semana (verifica el mapeo SABANA → dw)
+  const diaCount = useMemo(()=>{
+    const c = [0,0,0,0,0,0,0];
+    data.programacion.forEach(p => {
+      for(let i=0;i<7;i++) if(p.dw && p.dw[i]==='1') c[i]++;
+    });
+    return c;
+  },[data.programacion]);
+  const maxDiaCount = Math.max(1, ...diaCount);
+  const [verifOpen, setVerifOpen] = useState(false);
+
   return (
     <div className="stack">
+      <div className="card" style={{padding:'14px 18px'}}>
+        <div className="row between" style={{cursor:'pointer'}} onClick={()=>setVerifOpen(v=>!v)}>
+          <div>
+            <h3 style={{fontSize:14}}>📘 Cómo se leen las clases desde la SABANA <span style={{color:'var(--text-soft)',fontWeight:500,fontSize:12}}>· Click para {verifOpen?'ocultar':'ver'} detalle</span></h3>
+          </div>
+          <div className="row" style={{gap:6}}>
+            {DIA_CORTO.map((d,i) => (
+              <div key={i} style={{textAlign:'center'}}>
+                <div style={{fontSize:10,color:'var(--text-muted)',fontWeight:700}}>{d}</div>
+                <div style={{fontSize:13,fontWeight:700,color:i>=5?'var(--text-soft)':'var(--primary)'}}>{diaCount[i]}</div>
+              </div>
+            ))}
+          </div>
+        </div>
+        {verifOpen && (
+          <div style={{marginTop:14,paddingTop:14,borderTop:'1px solid var(--border-soft)',fontSize:13,lineHeight:1.55,color:'var(--text-muted)'}}>
+            <p>Cada fila de la SABANA tiene 7 columnas (<b>Lun. · Martes · Miér. · Jueves · Viernes · Sábado · Domingo</b>) marcadas con <b>X</b> en los días que se imparte la clase.
+            Al importar, se convierte a 7 bits <code>dw</code> donde <code>dw[0]=Lun</code> y <code>dw[6]=Dom</code>.</p>
+            <p style={{marginTop:8}}>Al elegir una fecha en la pestaña <b>Horario semanal</b>, se calcula su día de semana y se buscan todas las clases con ese bit en 1, dentro del rango de fecha del semestre y con el horario activo en el módulo consultado.</p>
+            <p style={{marginTop:8}}>Las barras arriba muestran cuántas clases hay registradas por día. <b>Total clases en SABANA: {data.programacion.length.toLocaleString('es-CL')}</b>.</p>
+            <div style={{marginTop:10,padding:10,background:'#FBFCFD',borderRadius:8,border:'1px solid var(--border-soft)'}}>
+              <div className="row" style={{gap:14,flexWrap:'wrap'}}>
+                {DIA_NOMBRES.map((nm,i) => (
+                  <div key={i} style={{flex:1,minWidth:90}}>
+                    <div style={{fontSize:11,color:'var(--text-muted)',fontWeight:700,marginBottom:3}}>{nm}</div>
+                    <div style={{height:6,background:'#EEF2F7',borderRadius:4,overflow:'hidden'}}>
+                      <div style={{height:'100%',width:`${(diaCount[i]/maxDiaCount)*100}%`,background:i>=5?'var(--text-soft)':'var(--primary-2)'}}/>
+                    </div>
+                    <div style={{fontSize:11,marginTop:3}}>{diaCount[i].toLocaleString('es-CL')} clases</div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          </div>
+        )}
+      </div>
+
       <div className="filters">
         <div className="field">
           <label>Sala</label>
@@ -1594,17 +1665,35 @@ function Programacion({ data }){
 function Reservas({ reservas, data, user, toast, onGoNueva, onUpdateEstado }){
   const [tab, setTab] = useState('lista');
   const [q, setQ] = useState('');
-  const [estado, setEstado] = useState('');
   const canApprove = user.role==='admin' || user.role==='reservador';
+  // Aprobadores arrancan en pendientes (las accionables); usuario ve todas las suyas
+  const [estado, setEstado] = useState(canApprove ? 'pendiente' : '');
+
+  // Subconjunto base: si es usuario, solo sus propias reservas
+  const ownArr = useMemo(()=>{
+    if(user.role==='usuario') return reservas.filter(r => r.co===user.email || r.creado_por===user.username);
+    return reservas;
+  },[reservas, user]);
+
+  // Contadores por estado para los chips
+  const counts = useMemo(()=>({
+    pendiente: ownArr.filter(r=>r.es==='pendiente').length,
+    aprobada:  ownArr.filter(r=>r.es==='aprobada').length,
+    rechazada: ownArr.filter(r=>r.es==='rechazada').length,
+    total:     ownArr.length,
+  }),[ownArr]);
 
   const filtered = useMemo(()=>{
-    let arr = reservas;
-    if(user.role==='usuario') arr = arr.filter(r => r.co===user.email || r.creado_por===user.username);
-    return arr.filter(r =>
+    return ownArr.filter(r =>
       (!q || (r.r||'').toLowerCase().includes(q.toLowerCase()) || (r.mo||'').toLowerCase().includes(q.toLowerCase()) || (r.do||'').toLowerCase().includes(q.toLowerCase())) &&
       (!estado || r.es===estado)
-    ).sort((a,b)=> (b.fi||'').localeCompare(a.fi||''));
-  },[reservas, q, estado, user]);
+    ).sort((a,b)=>{
+      // pendientes primero, luego por fecha desc
+      if(a.es==='pendiente' && b.es!=='pendiente') return -1;
+      if(b.es==='pendiente' && a.es!=='pendiente') return 1;
+      return (b.fi||'').localeCompare(a.fi||'');
+    });
+  },[ownArr, q, estado]);
 
   const setEstadoReserva = async (id, nuevo) => {
     try {
@@ -1613,6 +1702,25 @@ function Reservas({ reservas, data, user, toast, onGoNueva, onUpdateEstado }){
     } catch(e){}
   };
 
+  const fmtRel = (iso) => {
+    if(!iso) return '';
+    const d = new Date(iso);
+    const diff = (Date.now() - d.getTime())/1000;
+    if(diff < 60) return 'hace un instante';
+    if(diff < 3600) return `hace ${Math.floor(diff/60)} min`;
+    if(diff < 86400) return `hace ${Math.floor(diff/3600)} h`;
+    if(diff < 86400*7) return `hace ${Math.floor(diff/86400)} d`;
+    return d.toLocaleDateString('es-CL', {day:'2-digit',month:'short',year:'numeric'});
+  };
+
+  const stateChip = (v, count, label, cls) => (
+    <button
+      onClick={()=>setEstado(v)}
+      className={`state-chip ${estado===v?'sel':''} ${cls}`}>
+      <span>{label}</span><b>{count}</b>
+    </button>
+  );
+
   return (
     <div className="stack">
       <div className="row" style={{justifyContent:'space-between'}}>
@@ -1620,41 +1728,61 @@ function Reservas({ reservas, data, user, toast, onGoNueva, onUpdateEstado }){
           <button className={tab==='lista'?'on':''} onClick={()=>setTab('lista')}>Listado de reservas</button>
           <button className={tab==='libres'?'on':''} onClick={()=>setTab('libres')}>{I.search}&nbsp;Buscar espacios libres</button>
         </div>
-        <div className="chip info">{tab==='lista' ? `${filtered.length} reservas` : 'Disponibilidad'}</div>
+        {tab==='lista' && (
+          <div className="chip info">{filtered.length} de {counts.total} {user.role==='usuario'?'(tuyas)':'totales'}</div>
+        )}
       </div>
 
       {tab==='lista' && <>
-        <div className="filters">
-          <div className="field"><label>Buscar</label><input value={q} onChange={e=>setQ(e.target.value)} placeholder="Sala, motivo o docente…"/></div>
-          <div className="field"><label>Estado</label>
-            <select value={estado} onChange={e=>setEstado(e.target.value)}>
-              <option value="">Todos</option>
-              <option value="pendiente">Pendiente</option>
-              <option value="aprobada">Aprobada</option>
-              <option value="rechazada">Rechazada</option>
-            </select>
+        {/* Filtros chip-style por estado con contadores */}
+        <div className="state-chips">
+          {stateChip('pendiente', counts.pendiente, '⏳ Pendientes', 'warn')}
+          {stateChip('aprobada',  counts.aprobada,  '✓ Aprobadas',  'success')}
+          {stateChip('rechazada', counts.rechazada, '✗ Rechazadas', 'danger')}
+          {stateChip('',          counts.total,     '📋 Todas',      'neutral')}
+          <div style={{flex:1}}/>
+          <div className="field" style={{margin:0,minWidth:240,maxWidth:320}}>
+            <input value={q} onChange={e=>setQ(e.target.value)} placeholder="Buscar sala, motivo o docente…" style={{padding:'8px 12px'}}/>
           </div>
         </div>
+
+        {/* Aviso para aprobadores cuando ya no hay pendientes */}
+        {canApprove && estado==='pendiente' && counts.pendiente===0 && (
+          <div className="card" style={{borderColor:'#C7E0CC',background:'#F6FCF8',padding:'16px 20px'}}>
+            <div className="row" style={{gap:12}}>
+              <span style={{fontSize:22}}>✓</span>
+              <div>
+                <b style={{color:'var(--success)'}}>No hay solicitudes pendientes</b>
+                <div className="muted" style={{fontSize:12}}>Todo al día. Cambia el filtro para ver el historial de reservas decididas.</div>
+              </div>
+            </div>
+          </div>
+        )}
 
         <div className="card" style={{padding:0}}>
           <div className="tbl-scroll">
             <table className="tbl">
               <thead><tr>
-                <th>Fecha</th><th>Horario</th><th>Sala</th><th>Motivo</th><th>Solicitante</th><th>Estado</th><th></th>
+                <th>Fecha</th><th>Horario</th><th>Sala</th><th>Motivo</th><th>Solicitante</th><th>Estado</th><th style={{textAlign:'right'}}>Acciones</th>
               </tr></thead>
               <tbody>
                 {filtered.map(r => (
-                  <tr key={r.id}>
+                  <tr key={r.id} className={r.es==='pendiente' ? 'row-pending' : ''}>
                     <td className="nowrap">{fmtFecha(r.fi)}{r.ff && r.ff!==r.fi ? ' → '+fmtFecha(r.ff) : ''}</td>
                     <td className="nowrap">{r.hi}–{r.hf}<div className="muted" style={{fontSize:11}}>Mód. {r.mi}–{r.mf}</div></td>
                     <td><b style={{color:'var(--primary)'}}>{r.r}</b></td>
                     <td style={{maxWidth:340}}>{r.mo}</td>
                     <td><div style={{fontSize:13}}>{r.do||'—'}</div><div className="muted" style={{fontSize:11}}>{r.co||r.ru}</div></td>
-                    <td>{
-                      r.es==='aprobada' ? <span className="chip success">Aprobada</span> :
-                      r.es==='pendiente' ? <span className="chip warn">Pendiente</span> :
-                      <span className="chip danger">Rechazada</span>
-                    }</td>
+                    <td>
+                      {r.es==='aprobada' && <span className="chip success">Aprobada</span>}
+                      {r.es==='pendiente' && <span className="chip warn">Pendiente</span>}
+                      {r.es==='rechazada' && <span className="chip danger">Rechazada</span>}
+                      {r.es!=='pendiente' && r.decidido_por && (
+                        <div className="muted" style={{fontSize:10.5,marginTop:4,lineHeight:1.3}}>
+                          por <b>{r.decidido_por}</b>{r.decidido_en && <> · {fmtRel(r.decidido_en)}</>}
+                        </div>
+                      )}
+                    </td>
                     <td className="nowrap" style={{textAlign:'right'}}>
                       {canApprove && r.es==='pendiente' && <>
                         <button className="btn btn-sm btn-success" onClick={()=>setEstadoReserva(r.id,'aprobada')}>{I.check}Aprobar</button>{' '}
@@ -1668,7 +1796,7 @@ function Reservas({ reservas, data, user, toast, onGoNueva, onUpdateEstado }){
                     </td>
                   </tr>
                 ))}
-                {filtered.length===0 && <tr><td colSpan="7"><div className="empty"><span className="emoji">🗂</span>Sin reservas para los filtros aplicados.</div></td></tr>}
+                {filtered.length===0 && counts.pendiente!==0 && <tr><td colSpan="7"><div className="empty"><span className="emoji">🗂</span>Sin reservas en este filtro.</div></td></tr>}
               </tbody>
             </table>
           </div>
