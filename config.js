@@ -15,6 +15,6 @@
 // "service_role" — esa solo se usa en servidores.
 // =============================================================
 window.SUPABASE_CONFIG = {
-  url: '',  // ej: 'https://abcdefghijklmnop.supabase.co'
-  key: '',  // anon public key (string largo que empieza con 'eyJ...')
+  url: 'https://abcdefghijklmnop.supabase.co',  // ej: 'https://abcdefghijklmnop.supabase.co'
+  key: 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImJsb2JqdW1iZ3hxbWdzb3JqY2h1Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3Nzk1MTMwMTEsImV4cCI6MjA5NTA4OTAxMX0.U9WOgLbrOPt4ZOwJB-GFJpFCIEhqSf-yJVgSEVU2Mag',  // anon public key (string largo que empieza con 'eyJ...')
 };
