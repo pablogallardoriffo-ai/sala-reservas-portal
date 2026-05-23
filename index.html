@@ -13,6 +13,7 @@
   <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
   <script src="https://cdn.sheetjs.com/xlsx-0.20.3/package/dist/xlsx.full.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+  <script src="./config.js"></script>
   <style>
     /* === Design tokens === */
     :root{
@@ -573,12 +574,25 @@ const loadStore = () => {
   try { return JSON.parse(localStorage.getItem(STORE_KEY)) || {}; } catch(e){ return {}; }
 };
 const saveStore = (s) => localStorage.setItem(STORE_KEY, JSON.stringify(s));
+// Config global del repositorio (config.js) — tiene prioridad sobre localStorage
+const getGlobalConfig = () => {
+  const g = window.SUPABASE_CONFIG;
+  if(g && g.url && g.key && g.url.startsWith('https://')) return g;
+  return null;
+};
 const loadCloudConfig = () => {
+  const g = getGlobalConfig();
+  if(g) return g;
   try { return JSON.parse(localStorage.getItem(CFG_KEY)) || null; } catch(e){ return null; }
 };
 const saveCloudConfig = (c) => localStorage.setItem(CFG_KEY, JSON.stringify(c));
 const clearCloudConfig = () => { localStorage.removeItem(CFG_KEY); localStorage.removeItem(MODE_KEY); };
-const getMode = () => localStorage.getItem(MODE_KEY);
+const isGlobalConfig = () => !!getGlobalConfig();
+const getMode = () => {
+  // Si hay config global, siempre arranca en cloud automáticamente
+  if(isGlobalConfig()) return 'cloud';
+  return localStorage.getItem(MODE_KEY);
+};
 const setMode = (m) => localStorage.setItem(MODE_KEY, m);
 
 const fechaToDow = (iso) => {
@@ -1055,9 +1069,15 @@ function Shell({ user, mode, onReconfigure, onLogout, view, setView, children, t
         </nav>
         <div className="sb-spacer"/>
         <div style={{padding:'0 14px 8px'}}>
-          <button className="sb-item" style={{width:'100%',justifyContent:'center',fontSize:11,color:'var(--sidebar-text-muted)'}} onClick={onReconfigure} title="Cambiar configuración de base de datos">
-            {mode==='cloud' ? '☁ BD compartida — Reconfigurar' : '💾 Modo local — Conectar BD'}
-          </button>
+          {isGlobalConfig() ? (
+            <div style={{padding:'8px 12px',fontSize:11,color:'var(--sidebar-text-muted)',textAlign:'center',background:'rgba(16,185,129,.08)',borderRadius:8,border:'1px solid rgba(16,185,129,.2)'}}>
+              ☁ BD compartida<br/><small style={{opacity:.7}}>configurada en config.js</small>
+            </div>
+          ) : (
+            <button className="sb-item" style={{width:'100%',justifyContent:'center',fontSize:11,color:'var(--sidebar-text-muted)'}} onClick={onReconfigure} title="Cambiar configuración de base de datos">
+              {mode==='cloud' ? '☁ BD compartida (local) — Reconfigurar' : '💾 Modo local — Conectar BD'}
+            </button>
+          )}
         </div>
         <div className="sb-user">
           <div className="avatar">{(user.nombre||user.username||'?').slice(0,1).toUpperCase()}</div>
@@ -2576,7 +2596,12 @@ function App(){
   }, [user, users, reservas, data, mode]);
 
   /* =========== OPERACIONES (wrappers async que llaman a db + actualizan state) =========== */
-  const reconfigure = () => { clearCloudConfig(); setUser(null); setModeState(null); setData(null); setSupabase(null); setDbState(null); };
+  const reconfigure = () => {
+    setUser(null);
+    // Si la BD está centralizada (config.js del repo), no se puede cambiar por navegador
+    if(isGlobalConfig()) return;
+    clearCloudConfig(); setModeState(null); setData(null); setSupabase(null); setDbState(null);
+  };
 
   const createReserva = async (r) => {
     try {
