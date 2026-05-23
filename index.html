@@ -1190,9 +1190,9 @@ function Dashboard({ data, reservas, user }){
     .slice(0,6)
   ,[reservas, todayIso]);
 
-  // Métricas de gestión por reservador (solo para admin)
+  // Métricas de gestión: visibles para admin (visión equipo) y reservador (visión personal + equipo)
   const metricas = useMemo(()=>{
-    if(user.role !== 'admin') return null;
+    if(user.role !== 'admin' && user.role !== 'reservador') return null;
     const decididas = reservas.filter(r => r.decidido_por && r.creado_en && r.decidido_en && r.es !== 'pendiente');
     const byUser = {};
     let totalMs = 0, dentroSla = 0;
@@ -1207,13 +1207,15 @@ function Dashboard({ data, reservas, user }){
       if(elapsed <= SLA_MS) dentroSla++;
       if(dAt >= cutoff7d) decididas7d++;
       const u = r.decidido_por;
-      if(!byUser[u]) byUser[u] = { count:0, totalMs:0, dentroSla:0, ultima:0, aprobadas:0, rechazadas:0 };
+      if(!byUser[u]) byUser[u] = { count:0, totalMs:0, dentroSla:0, ultima:0, aprobadas:0, rechazadas:0, count7d:0, fastest:Infinity };
       byUser[u].count++;
       byUser[u].totalMs += elapsed;
       if(elapsed <= SLA_MS) byUser[u].dentroSla++;
       if(dAt > byUser[u].ultima) byUser[u].ultima = dAt;
       if(r.es==='aprobada') byUser[u].aprobadas++;
       if(r.es==='rechazada') byUser[u].rechazadas++;
+      if(dAt >= cutoff7d) byUser[u].count7d++;
+      if(elapsed < byUser[u].fastest) byUser[u].fastest = elapsed;
     }
     const avgMs = decididas.length ? totalMs / decididas.length : 0;
     const slaPct = decididas.length ? (dentroSla / decididas.length) * 100 : 0;
@@ -1221,7 +1223,27 @@ function Dashboard({ data, reservas, user }){
       username, ...m, avgMs: m.totalMs / m.count,
       slaPct: (m.dentroSla / m.count) * 100,
     })).sort((a,b)=> b.count - a.count);
-    return { decididas: decididas.length, decididas7d, avgMs, slaPct, ranking };
+
+    // Datos personales del usuario actual (para framing motivacional)
+    const my = byUser[user.username] || null;
+    const myRankByVolume = my ? ranking.findIndex(r => r.username === user.username) + 1 : 0;
+    const rankingByAvg = [...ranking].sort((a,b)=> a.avgMs - b.avgMs);
+    const myRankBySpeed = my ? rankingByAvg.findIndex(r => r.username === user.username) + 1 : 0;
+    const rankingBySla = [...ranking].sort((a,b)=> b.slaPct - a.slaPct);
+    const myRankBySla = my ? rankingBySla.findIndex(r => r.username === user.username) + 1 : 0;
+
+    // Líderes del equipo
+    const lider = {
+      volumen:  ranking[0] || null,
+      rapidez:  rankingByAvg[0] || null,
+      sla:      rankingBySla[0] || null,
+    };
+
+    return {
+      decididas: decididas.length, decididas7d, avgMs, slaPct, ranking,
+      my, myRankByVolume, myRankBySpeed, myRankBySla,
+      totalReservadores: ranking.length, lider,
+    };
   },[reservas, user]);
 
   return (
@@ -1253,35 +1275,112 @@ function Dashboard({ data, reservas, user }){
         </div>
       </div>
 
-      {metricas && (
-        <div className="card">
+      {metricas && (() => {
+        const isReservador = user.role === 'reservador';
+        const my = metricas.my;
+        const rankBadge = (rank, total) => {
+          if(!rank) return null;
+          const medal = rank===1 ? '🥇' : rank===2 ? '🥈' : rank===3 ? '🥉' : `#${rank}`;
+          return <span style={{fontWeight:800}}>{medal}<span className="muted" style={{fontWeight:500,fontSize:11,marginLeft:4}}>de {total}</span></span>;
+        };
+
+        return (<div className="card">
           <div className="card-header">
             <div>
-              <h3>⏱ Control de gestión · Reservadores</h3>
-              <div className="sub">SLA objetivo: <b>1 hora</b> entre solicitud y decisión. Métricas calculadas sobre {metricas.decididas} reservas históricas decididas ({metricas.decididas7d} en los últimos 7 días).</div>
+              <h3>{isReservador ? '⭐ Tu desempeño · Equipo de reservadores' : '⏱ Control de gestión · Reservadores'}</h3>
+              <div className="sub">
+                {isReservador
+                  ? <>Tu desempeño respecto al equipo. SLA objetivo: <b>1 hora</b> por solicitud. ¡Cada respuesta rápida mejora la experiencia de la sede!</>
+                  : <>SLA objetivo: <b>1 hora</b> entre solicitud y decisión. Métricas sobre {metricas.decididas} decididas ({metricas.decididas7d} últimos 7 días).</>}
+              </div>
             </div>
           </div>
 
-          <div className="grid grid-3" style={{marginBottom:18}}>
-            <div className="kpi kpi-blue">
-              <span className="label">Tiempo promedio respuesta</span>
-              <span className="value" style={{fontSize:24}}>{fmtDuration(metricas.avgMs)}</span>
-              <span className="delta">Todas las reservas decididas</span>
-              <div className="icon">⏱</div>
+          {/* PERSONAL KPIs (solo reservador) */}
+          {isReservador && (
+            my ? (
+              <div className="grid grid-4" style={{marginBottom:18}}>
+                <div className="kpi kpi-blue">
+                  <span className="label">Tu tiempo promedio</span>
+                  <span className="value" style={{fontSize:22}}>{fmtDuration(my.avgMs)}</span>
+                  <span className="delta">Promedio del equipo: {fmtDuration(metricas.avgMs)}</span>
+                  <div className="icon">⏱</div>
+                </div>
+                <div className={`kpi ${my.slaPct>=80?'kpi-green':my.slaPct>=50?'kpi-amber':'kpi-red'}`}>
+                  <span className="label">Tu cumplimiento SLA</span>
+                  <span className="value" style={{fontSize:22}}>{my.slaPct.toFixed(0)}%</span>
+                  <span className="delta">Promedio del equipo: {metricas.slaPct.toFixed(0)}%</span>
+                  <div className="icon">🎯</div>
+                </div>
+                <div className="kpi kpi-amber">
+                  <span className="label">Decididas (total · 7d)</span>
+                  <span className="value" style={{fontSize:22}}>{my.count}<span style={{fontSize:14,color:'var(--text-muted)',fontWeight:600}}> · {my.count7d}</span></span>
+                  <span className="delta">Mejor rachas: {fmtDuration(my.fastest)} respuesta más rápida</span>
+                  <div className="icon">📊</div>
+                </div>
+                <div className="kpi kpi-blue">
+                  <span className="label">Tu posición</span>
+                  <span className="value" style={{fontSize:22}}>{rankBadge(metricas.myRankByVolume, metricas.totalReservadores)}</span>
+                  <span className="delta">por volumen · #{metricas.myRankBySpeed} en rapidez · #{metricas.myRankBySla} en SLA</span>
+                  <div className="icon">🏅</div>
+                </div>
+              </div>
+            ) : (
+              <div className="card" style={{background:'#F8FAFD',borderColor:'var(--border-soft)',padding:'16px 20px',marginBottom:18}}>
+                <div className="row" style={{gap:12}}>
+                  <span style={{fontSize:24}}>✨</span>
+                  <div>
+                    <b>¡Aún no has decidido tu primera solicitud!</b>
+                    <div className="muted" style={{fontSize:12}}>Apenas apruebes o rechaces tu primera reserva, aquí verás tu desempeño comparado con el equipo.</div>
+                  </div>
+                </div>
+              </div>
+            )
+          )}
+
+          {/* TEAM KPIs (admin) o LÍDERES (reservador) */}
+          {!isReservador && (
+            <div className="grid grid-3" style={{marginBottom:18}}>
+              <div className="kpi kpi-blue">
+                <span className="label">Tiempo promedio respuesta</span>
+                <span className="value" style={{fontSize:24}}>{fmtDuration(metricas.avgMs)}</span>
+                <span className="delta">Todas las reservas decididas</span>
+                <div className="icon">⏱</div>
+              </div>
+              <div className={`kpi ${metricas.slaPct>=80?'kpi-green':metricas.slaPct>=50?'kpi-amber':'kpi-red'}`}>
+                <span className="label">% dentro de SLA (≤1 h)</span>
+                <span className="value" style={{fontSize:24}}>{metricas.slaPct.toFixed(1)}%</span>
+                <span className="delta">Cumplimiento del objetivo</span>
+                <div className="icon">🎯</div>
+              </div>
+              <div className="kpi kpi-amber">
+                <span className="label">Decididas últimos 7 días</span>
+                <span className="value" style={{fontSize:24}}>{metricas.decididas7d}</span>
+                <span className="delta">Productividad reciente</span>
+                <div className="icon">📊</div>
+              </div>
             </div>
-            <div className={`kpi ${metricas.slaPct>=80?'kpi-green':metricas.slaPct>=50?'kpi-amber':'kpi-red'}`}>
-              <span className="label">% dentro de SLA (≤1 h)</span>
-              <span className="value" style={{fontSize:24}}>{metricas.slaPct.toFixed(1)}%</span>
-              <span className="delta">Cumplimiento del objetivo</span>
-              <div className="icon">🎯</div>
+          )}
+
+          {isReservador && metricas.lider.volumen && (
+            <div className="grid grid-3" style={{marginBottom:18}}>
+              <div className="card" style={{padding:'12px 16px',background:'#FFFBEA',borderColor:'#F5D680'}}>
+                <div className="muted" style={{fontSize:10.5,fontWeight:700,textTransform:'uppercase',letterSpacing:.4,marginBottom:4}}>🥇 Más decisiones</div>
+                <div style={{fontSize:14,fontWeight:700}}>{metricas.lider.volumen.username}</div>
+                <div className="muted" style={{fontSize:12}}>{metricas.lider.volumen.count} reservas decididas</div>
+              </div>
+              <div className="card" style={{padding:'12px 16px',background:'#EFFCF5',borderColor:'#9CC8A8'}}>
+                <div className="muted" style={{fontSize:10.5,fontWeight:700,textTransform:'uppercase',letterSpacing:.4,marginBottom:4}}>⚡ Más rápido respondiendo</div>
+                <div style={{fontSize:14,fontWeight:700}}>{metricas.lider.rapidez.username}</div>
+                <div className="muted" style={{fontSize:12}}>Promedio {fmtDuration(metricas.lider.rapidez.avgMs)}</div>
+              </div>
+              <div className="card" style={{padding:'12px 16px',background:'#EAF2FE',borderColor:'#C4D2EA'}}>
+                <div className="muted" style={{fontSize:10.5,fontWeight:700,textTransform:'uppercase',letterSpacing:.4,marginBottom:4}}>🎯 Mejor cumplimiento SLA</div>
+                <div style={{fontSize:14,fontWeight:700}}>{metricas.lider.sla.username}</div>
+                <div className="muted" style={{fontSize:12}}>{metricas.lider.sla.slaPct.toFixed(0)}% en ≤1h</div>
+              </div>
             </div>
-            <div className="kpi kpi-amber">
-              <span className="label">Decididas últimos 7 días</span>
-              <span className="value" style={{fontSize:24}}>{metricas.decididas7d}</span>
-              <span className="delta">Productividad reciente</span>
-              <div className="icon">📊</div>
-            </div>
-          </div>
+          )}
 
           {metricas.ranking.length===0 ? (
             <div className="empty"><span className="emoji">📭</span>Aún no hay reservas decididas para medir.</div>
@@ -1289,6 +1388,7 @@ function Dashboard({ data, reservas, user }){
             <div className="tbl-scroll" style={{maxHeight:'none',border:'1px solid var(--border-soft)',borderRadius:8}}>
               <table className="tbl">
                 <thead><tr>
+                  <th style={{width:40,textAlign:'center'}}>#</th>
                   <th>Reservador</th>
                   <th style={{textAlign:'right'}}>Decididas</th>
                   <th style={{textAlign:'right'}}>Aprobadas</th>
@@ -1298,12 +1398,17 @@ function Dashboard({ data, reservas, user }){
                   <th>Última actividad</th>
                 </tr></thead>
                 <tbody>
-                  {metricas.ranking.map(u => {
+                  {metricas.ranking.map((u, idx) => {
                     const slaCls = u.slaPct>=80 ? 'success' : u.slaPct>=50 ? 'warn' : 'danger';
                     const avgCls = u.avgMs <= SLA_MS/2 ? 'fast' : u.avgMs <= SLA_MS ? 'slow' : 'over';
+                    const isMe = u.username === user.username;
                     return (
-                      <tr key={u.username}>
-                        <td><b>{u.username}</b></td>
+                      <tr key={u.username} style={isMe ? {background:'#EAF2FE',outline:'2px solid var(--primary-2)',outlineOffset:-2} : undefined}>
+                        <td style={{textAlign:'center',fontWeight:800,fontSize:13}}>{idx===0?'🥇':idx===1?'🥈':idx===2?'🥉':`${idx+1}`}</td>
+                        <td>
+                          <b>{u.username}</b>
+                          {isMe && <span className="chip info" style={{marginLeft:8,fontSize:10}}>TÚ</span>}
+                        </td>
                         <td style={{textAlign:'right'}}><b>{u.count}</b></td>
                         <td style={{textAlign:'right',color:'var(--success)'}}>{u.aprobadas}</td>
                         <td style={{textAlign:'right',color:'var(--danger)'}}>{u.rechazadas}</td>
@@ -1326,8 +1431,8 @@ function Dashboard({ data, reservas, user }){
               </table>
             </div>
           )}
-        </div>
-      )}
+        </div>);
+      })()}
 
       <div className="grid grid-2">
         <div className="card">
