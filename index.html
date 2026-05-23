@@ -1,215 +1,1371 @@
 <!DOCTYPE html>
 <html lang="es">
 <head>
-  <meta charset="UTF-8">
-  <title>Portal de Salas DUOC UC</title>
-  <script src="https://unpkg.com/react@18/umd/react.development.js"></script>
-  <script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Portal de Salas · DUOC UC</title>
+  <link rel="icon" type="image/svg+xml" href="./assets/logo-mark.svg" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
+  <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+  <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
   <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
-
   <style>
-    body {
-      font-family: Arial;
-      margin: 0;
-      background: #f5f5f5;
+    /* === Design tokens === */
+    :root{
+      --bg:#F4F6FA;
+      --surface:#FFFFFF;
+      --sidebar:#0E1A33;
+      --sidebar-2:#172649;
+      --sidebar-hover:#1F2F58;
+      --sidebar-active:#FFCE00;
+      --sidebar-text:#C7D0E0;
+      --sidebar-text-muted:#7E8AA6;
+      --primary:#002A5C;
+      --primary-2:#003C82;
+      --accent:#FFCE00;
+      --red:#E30613;
+      --text:#0F1729;
+      --text-muted:#5D6B82;
+      --text-soft:#8A95AA;
+      --border:#E5E9F2;
+      --border-soft:#EFF2F7;
+      --success:#10B981;
+      --success-bg:#E8F8F1;
+      --warning:#F59E0B;
+      --warning-bg:#FEF5E7;
+      --danger:#EF4444;
+      --danger-bg:#FDECEC;
+      --info:#3B82F6;
+      --info-bg:#EAF2FE;
+      --shadow-sm:0 1px 2px rgba(15,23,41,.05);
+      --shadow:0 1px 3px rgba(15,23,41,.06), 0 4px 12px rgba(15,23,41,.06);
+      --shadow-lg:0 10px 30px rgba(15,23,41,.12);
+      --radius:10px;
+      --radius-sm:6px;
+      --radius-lg:16px;
+    }
+    *{box-sizing:border-box;margin:0;padding:0}
+    html,body,#root{height:100%}
+    body{
+      font-family:'Inter','Segoe UI',system-ui,-apple-system,sans-serif;
+      background:var(--bg);
+      color:var(--text);
+      font-size:14px;
+      line-height:1.5;
+      -webkit-font-smoothing:antialiased;
+    }
+    button{font-family:inherit;cursor:pointer;border:none;background:none}
+    input,select,textarea{font-family:inherit;font-size:14px}
+    a{color:inherit;text-decoration:none}
+
+    /* === Login === */
+    .login-wrap{
+      min-height:100vh;
+      display:grid;
+      grid-template-columns:1fr 1.1fr;
+      background:var(--bg);
+    }
+    .login-side{
+      background:linear-gradient(135deg,#001F47 0%,#0E1A33 55%,#1B2D5C 100%);
+      color:#fff;
+      padding:60px 56px;
+      display:flex;
+      flex-direction:column;
+      justify-content:space-between;
+      position:relative;
+      overflow:hidden;
+    }
+    .login-side::before{
+      content:"";
+      position:absolute;
+      width:520px;height:520px;
+      right:-180px;top:-120px;
+      background:radial-gradient(circle, rgba(255,206,0,.18), transparent 60%);
+      border-radius:50%;
+    }
+    .login-side::after{
+      content:"";
+      position:absolute;
+      width:380px;height:380px;
+      left:-120px;bottom:-120px;
+      background:radial-gradient(circle, rgba(227,6,19,.18), transparent 60%);
+      border-radius:50%;
+    }
+    .login-side .brand{position:relative;display:flex;align-items:center;gap:14px}
+    .login-side .brand img{width:64px;height:auto}
+    .login-side .brand span{font-weight:800;font-size:20px;letter-spacing:.5px}
+    .login-hero{position:relative}
+    .login-hero h1{font-size:38px;font-weight:800;line-height:1.15;margin-bottom:16px}
+    .login-hero p{color:#B8C2D8;font-size:15px;max-width:440px}
+    .login-meta{position:relative;color:#7E8AA6;font-size:12px}
+    .login-form-wrap{
+      display:flex;align-items:center;justify-content:center;padding:40px;
+    }
+    .login-card{
+      width:100%;max-width:420px;
+      background:var(--surface);
+      border-radius:var(--radius-lg);
+      padding:40px;
+      box-shadow:var(--shadow);
+    }
+    .login-card h2{font-size:24px;margin-bottom:6px}
+    .login-card .sub{color:var(--text-muted);margin-bottom:28px;font-size:13px}
+
+    .field{margin-bottom:16px}
+    .field label{display:block;font-size:12px;font-weight:600;color:var(--text-muted);margin-bottom:6px;text-transform:uppercase;letter-spacing:.4px}
+    .field input,.field select,.field textarea{
+      width:100%;padding:11px 14px;border:1px solid var(--border);
+      border-radius:var(--radius-sm);background:#fff;color:var(--text);
+      transition:border-color .15s, box-shadow .15s;
+    }
+    .field input:focus,.field select:focus,.field textarea:focus{
+      outline:none;border-color:var(--primary-2);
+      box-shadow:0 0 0 3px rgba(0,60,130,.12);
+    }
+    .field textarea{min-height:80px;resize:vertical}
+
+    .btn{
+      display:inline-flex;align-items:center;justify-content:center;gap:8px;
+      padding:10px 18px;border-radius:var(--radius-sm);font-weight:600;font-size:14px;
+      transition:transform .05s ease, background .15s, color .15s, box-shadow .15s;
+      white-space:nowrap;
+    }
+    .btn:active{transform:translateY(1px)}
+    .btn-primary{background:var(--primary);color:#fff}
+    .btn-primary:hover{background:var(--primary-2)}
+    .btn-accent{background:var(--accent);color:#1A1A1A}
+    .btn-accent:hover{background:#FFD835}
+    .btn-ghost{background:transparent;color:var(--text);border:1px solid var(--border)}
+    .btn-ghost:hover{background:var(--border-soft)}
+    .btn-danger{background:var(--danger);color:#fff}
+    .btn-danger:hover{background:#DC2C2C}
+    .btn-success{background:var(--success);color:#fff}
+    .btn-success:hover{background:#0FA46E}
+    .btn-icon{padding:8px;width:34px;height:34px;border-radius:var(--radius-sm);color:var(--text-muted)}
+    .btn-icon:hover{background:var(--border-soft);color:var(--text)}
+    .btn-sm{padding:6px 12px;font-size:12.5px}
+    .btn-block{width:100%}
+
+    .role-chips{display:flex;flex-wrap:wrap;gap:8px;margin-bottom:16px}
+    .role-chip{
+      padding:7px 12px;border-radius:999px;font-size:12px;font-weight:600;
+      background:#F2F4F8;color:var(--text-muted);cursor:pointer;border:1px solid transparent;
+    }
+    .role-chip.active{background:#E8EEF8;color:var(--primary);border-color:#C4D2EA}
+
+    .login-hint{margin-top:18px;padding:12px 14px;background:#FAFBFC;border:1px dashed var(--border);border-radius:var(--radius-sm);font-size:12px;color:var(--text-muted)}
+    .login-hint b{color:var(--text)}
+
+    /* === App layout === */
+    .app{display:grid;grid-template-columns:248px 1fr;height:100vh;overflow:hidden}
+    .sidebar{
+      background:var(--sidebar);color:var(--sidebar-text);
+      display:flex;flex-direction:column;overflow-y:auto;
+    }
+    .sb-brand{
+      display:flex;align-items:center;gap:12px;padding:22px 20px;
+      border-bottom:1px solid rgba(255,255,255,.06);
+    }
+    .sb-brand img{height:38px;width:auto;border-radius:6px}
+    .sb-brand .title{font-weight:700;font-size:14.5px;line-height:1.2;color:#fff}
+    .sb-brand .title small{display:block;font-weight:500;font-size:11px;color:var(--sidebar-text-muted);letter-spacing:.4px}
+    .sb-section{padding:20px 14px 6px;font-size:10.5px;color:var(--sidebar-text-muted);font-weight:700;letter-spacing:1.2px;text-transform:uppercase}
+    .sb-nav{padding:0 10px;display:flex;flex-direction:column;gap:2px}
+    .sb-item{
+      display:flex;align-items:center;gap:12px;
+      padding:10px 12px;border-radius:8px;color:var(--sidebar-text);
+      font-weight:500;font-size:13.5px;cursor:pointer;transition:background .12s;
+    }
+    .sb-item:hover{background:var(--sidebar-hover);color:#fff}
+    .sb-item.active{background:var(--sidebar-2);color:#fff;font-weight:600}
+    .sb-item.active .sb-bullet{background:var(--accent)}
+    .sb-bullet{
+      width:6px;height:6px;border-radius:50%;background:transparent;
+      box-shadow:inset 0 0 0 1px rgba(255,255,255,.18);
+    }
+    .sb-icon{width:18px;height:18px;flex-shrink:0;opacity:.9}
+    .sb-spacer{flex:1}
+    .sb-user{
+      margin:14px 14px 18px;padding:12px;border-radius:var(--radius-sm);
+      background:var(--sidebar-2);display:flex;align-items:center;gap:10px;
+    }
+    .avatar{
+      width:36px;height:36px;border-radius:50%;
+      background:linear-gradient(135deg,var(--accent),#FFB400);
+      color:#1A1A1A;font-weight:700;display:flex;align-items:center;justify-content:center;
+      font-size:14px;
+    }
+    .sb-user .meta{flex:1;min-width:0}
+    .sb-user .meta b{display:block;color:#fff;font-size:13px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+    .sb-user .meta small{color:var(--sidebar-text-muted);font-size:11px;text-transform:capitalize}
+    .sb-user .logout{color:var(--sidebar-text-muted);width:30px;height:30px;display:grid;place-items:center;border-radius:6px}
+    .sb-user .logout:hover{background:rgba(255,255,255,.08);color:#fff}
+
+    /* === Main === */
+    .main{display:flex;flex-direction:column;overflow:hidden;min-width:0}
+    .topbar{
+      height:64px;background:var(--surface);border-bottom:1px solid var(--border);
+      display:flex;align-items:center;padding:0 28px;gap:16px;
+    }
+    .topbar h1{font-size:18px;font-weight:700}
+    .topbar .crumbs{font-size:12px;color:var(--text-muted)}
+    .topbar .right{margin-left:auto;display:flex;align-items:center;gap:10px}
+    .search{
+      position:relative;display:flex;align-items:center;
+      background:#F2F4F8;border-radius:8px;padding:8px 12px;width:280px;
+    }
+    .search input{background:transparent;border:none;outline:none;width:100%;padding-left:8px}
+    .pill{
+      padding:4px 10px;border-radius:999px;font-size:11px;font-weight:700;
+      background:var(--info-bg);color:var(--info);text-transform:uppercase;letter-spacing:.4px;
+    }
+    .pill.success{background:var(--success-bg);color:var(--success)}
+    .pill.warning{background:var(--warning-bg);color:var(--warning)}
+    .pill.danger{background:var(--danger-bg);color:var(--danger)}
+    .pill.muted{background:#EEF1F6;color:var(--text-muted)}
+
+    .content{
+      flex:1;overflow-y:auto;padding:24px 28px 40px;
     }
 
-    header {
-      background: #002855;
-      color: white;
-      padding: 20px;
-    }
+    /* === Cards / grid === */
+    .grid{display:grid;gap:18px}
+    .grid-4{grid-template-columns:repeat(4,minmax(0,1fr))}
+    .grid-3{grid-template-columns:repeat(3,minmax(0,1fr))}
+    .grid-2{grid-template-columns:repeat(2,minmax(0,1fr))}
+    @media (max-width:1100px){.grid-4{grid-template-columns:repeat(2,1fr)}.grid-3{grid-template-columns:1fr}}
 
-    .container {
-      padding: 20px;
-      max-width: 1200px;
-      margin: auto;
+    .card{
+      background:var(--surface);border:1px solid var(--border-soft);
+      border-radius:var(--radius);box-shadow:var(--shadow-sm);
+      padding:20px;
     }
+    .card-header{
+      display:flex;align-items:center;justify-content:space-between;margin-bottom:16px;
+    }
+    .card-header h3{font-size:15px;font-weight:700}
+    .card-header .sub{font-size:12px;color:var(--text-muted)}
 
-    .roles {
-      display: grid;
-      grid-template-columns: repeat(4, 1fr);
-      gap: 10px;
+    /* KPI */
+    .kpi{
+      background:var(--surface);border:1px solid var(--border-soft);
+      border-radius:var(--radius);padding:18px 20px;
+      display:flex;flex-direction:column;gap:6px;
+      position:relative;overflow:hidden;
     }
+    .kpi .icon{
+      position:absolute;right:14px;top:14px;width:40px;height:40px;
+      border-radius:10px;display:grid;place-items:center;font-size:18px;
+    }
+    .kpi .label{color:var(--text-muted);font-size:12px;font-weight:600;text-transform:uppercase;letter-spacing:.3px}
+    .kpi .value{font-size:28px;font-weight:800;line-height:1.1}
+    .kpi .delta{font-size:11.5px;color:var(--text-muted)}
+    .kpi.kpi-blue .icon{background:#E8EEF8;color:var(--primary-2)}
+    .kpi.kpi-green .icon{background:var(--success-bg);color:var(--success)}
+    .kpi.kpi-amber .icon{background:var(--warning-bg);color:var(--warning)}
+    .kpi.kpi-red .icon{background:var(--danger-bg);color:var(--danger)}
 
-    .card {
-      background: white;
-      padding: 15px;
-      border: 1px solid #ddd;
-      cursor: pointer;
+    /* Table */
+    table.tbl{width:100%;border-collapse:collapse}
+    .tbl th{
+      text-align:left;padding:10px 12px;font-size:11px;color:var(--text-muted);
+      text-transform:uppercase;letter-spacing:.4px;border-bottom:1px solid var(--border-soft);
+      background:#FBFCFD;font-weight:700;
     }
+    .tbl td{padding:11px 12px;border-bottom:1px solid var(--border-soft);font-size:13px;vertical-align:middle}
+    .tbl tr:last-child td{border-bottom:none}
+    .tbl tr:hover td{background:#FAFBFD}
+    .tbl-scroll{overflow:auto;max-height:540px;border:1px solid var(--border-soft);border-radius:var(--radius-sm)}
+    .tbl-scroll table{border-collapse:separate;border-spacing:0}
+    .tbl-scroll th{position:sticky;top:0;z-index:2}
 
-    .active {
-      background: #ffe082;
+    /* Filters bar */
+    .filters{
+      display:flex;flex-wrap:wrap;gap:10px;align-items:center;
+      background:var(--surface);border:1px solid var(--border-soft);
+      border-radius:var(--radius);padding:14px;margin-bottom:18px;
     }
+    .filters .field{margin:0;flex:1;min-width:160px}
+    .filters .field label{font-size:10.5px;margin-bottom:4px}
+    .filters .field input,.filters .field select{padding:8px 11px;font-size:13px}
 
-    input, select {
-      margin: 5px;
-      padding: 5px;
+    /* Modal */
+    .modal-back{
+      position:fixed;inset:0;background:rgba(15,23,41,.45);backdrop-filter:blur(2px);
+      z-index:50;display:grid;place-items:center;padding:24px;
     }
+    .modal{
+      background:var(--surface);border-radius:var(--radius-lg);
+      width:100%;max-width:560px;box-shadow:var(--shadow-lg);
+      max-height:90vh;display:flex;flex-direction:column;
+    }
+    .modal-h{padding:20px 24px;border-bottom:1px solid var(--border-soft);display:flex;align-items:center;justify-content:space-between}
+    .modal-h h3{font-size:17px;font-weight:700}
+    .modal-b{padding:22px 24px;overflow-y:auto}
+    .modal-f{padding:14px 24px;border-top:1px solid var(--border-soft);display:flex;gap:10px;justify-content:flex-end}
 
-    button {
-      padding: 5px 10px;
-      margin: 5px;
-      cursor: pointer;
+    /* Misc */
+    .stack{display:flex;flex-direction:column;gap:14px}
+    .row{display:flex;align-items:center;gap:10px}
+    .row.between{justify-content:space-between}
+    .col-2{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+    .chip{
+      display:inline-flex;align-items:center;gap:6px;padding:3px 10px;border-radius:999px;
+      background:#F2F4F8;font-size:11.5px;font-weight:600;color:var(--text-muted)
     }
+    .chip.success{background:var(--success-bg);color:var(--success)}
+    .chip.warn{background:var(--warning-bg);color:var(--warning)}
+    .chip.danger{background:var(--danger-bg);color:var(--danger)}
+    .chip.info{background:var(--info-bg);color:var(--info)}
+    .muted{color:var(--text-muted)}
+    .empty{
+      padding:40px;text-align:center;color:var(--text-muted);
+      border:2px dashed var(--border);border-radius:var(--radius);
+    }
+    .empty .emoji{font-size:32px;margin-bottom:8px;display:block}
+    .loader{padding:40px;text-align:center;color:var(--text-muted)}
+    .spinner{
+      width:32px;height:32px;border:3px solid #E8EEF8;border-top-color:var(--primary-2);
+      border-radius:50%;animation:spin 1s linear infinite;margin:0 auto 12px;
+    }
+    @keyframes spin{to{transform:rotate(360deg)}}
 
-    .panel {
-      margin-top: 20px;
-      display: grid;
-      grid-template-columns: repeat(2, 1fr);
-      gap: 20px;
-    }
+    .scroll-x{overflow-x:auto}
+    .nowrap{white-space:nowrap}
 
-    .box {
-      background: white;
-      padding: 15px;
-      border: 1px solid #ccc;
-    }
+    .legend{display:flex;gap:14px;font-size:12px;color:var(--text-muted)}
+    .legend i{width:10px;height:10px;border-radius:2px;display:inline-block;margin-right:6px;vertical-align:middle}
+    .legend .occ{background:var(--primary-2)}
+    .legend .res{background:var(--accent)}
+    .legend .lib{background:#E5E9F2}
 
-    .item {
-      display: flex;
-      justify-content: space-between;
-      border-bottom: 1px solid #eee;
-      padding: 5px 0;
+    /* Sala grid */
+    .sala-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:14px}
+    .sala-card{
+      background:var(--surface);border:1px solid var(--border-soft);border-radius:var(--radius);
+      padding:16px;display:flex;flex-direction:column;gap:8px;cursor:pointer;
+      transition:border-color .15s, box-shadow .15s, transform .15s;
     }
+    .sala-card:hover{border-color:#C4D2EA;box-shadow:var(--shadow);transform:translateY(-1px)}
+    .sala-card .code{font-weight:800;color:var(--primary);font-size:15px}
+    .sala-card .name{font-size:12.5px;color:var(--text-muted);min-height:32px;line-height:1.35}
+    .sala-card .stats{display:flex;justify-content:space-between;font-size:11.5px;color:var(--text-soft);border-top:1px solid var(--border-soft);padding-top:8px}
+
+    /* Calendar / week grid */
+    .week-grid{
+      display:grid;grid-template-columns:90px repeat(6,1fr);
+      border:1px solid var(--border-soft);border-radius:var(--radius);overflow:hidden;background:#fff
+    }
+    .week-grid .hdr{
+      padding:10px;background:#F8FAFD;font-weight:700;font-size:12px;
+      border-bottom:1px solid var(--border-soft);border-right:1px solid var(--border-soft);text-align:center;
+    }
+    .week-grid .row-h{padding:8px;font-size:11px;color:var(--text-muted);border-right:1px solid var(--border-soft);border-bottom:1px solid var(--border-soft);text-align:center;background:#FBFCFD;font-weight:600}
+    .week-grid .cell{
+      min-height:50px;padding:5px;border-right:1px solid var(--border-soft);border-bottom:1px solid var(--border-soft);
+      display:flex;flex-direction:column;gap:3px;
+    }
+    .week-grid .cell .blk{
+      padding:5px 7px;border-radius:5px;font-size:11px;line-height:1.25;color:#fff;cursor:default;
+    }
+    .blk.acad{background:#3B5998}
+    .blk.res{background:#E0A800;color:#1A1A1A}
+
+    .toast{
+      position:fixed;bottom:24px;right:24px;z-index:80;background:#0E1A33;color:#fff;
+      padding:12px 18px;border-radius:var(--radius);box-shadow:var(--shadow-lg);font-size:13px;
+      animation:fadeIn .25s ease;
+    }
+    @keyframes fadeIn{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:translateY(0)}}
+
+    /* Scrollbars */
+    *::-webkit-scrollbar{width:10px;height:10px}
+    *::-webkit-scrollbar-thumb{background:#D5DCE7;border-radius:8px}
+    *::-webkit-scrollbar-thumb:hover{background:#BAC4D4}
   </style>
 </head>
-
 <body>
+  <div id="root"></div>
 
-<header>
-  <h1>Portal de Gestión de Salas - DUOC UC</h1>
-</header>
+  <script type="text/babel" data-presets="env,react">
+const { useState, useEffect, useMemo, useCallback } = React;
 
-<div id="root"></div>
+/* ========= ICONS (inline SVG) ========= */
+const Icon = ({ d, size=18, stroke=1.7 }) => (
+  <svg className="sb-icon" width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={stroke} strokeLinecap="round" strokeLinejoin="round">{d}</svg>
+);
+const I = {
+  dashboard: <Icon d={<><rect x="3" y="3" width="7" height="9"/><rect x="14" y="3" width="7" height="5"/><rect x="14" y="12" width="7" height="9"/><rect x="3" y="16" width="7" height="5"/></>} />,
+  salas:    <Icon d={<><path d="M3 21V8l9-5 9 5v13"/><path d="M9 21V12h6v9"/></>} />,
+  prog:     <Icon d={<><rect x="3" y="4" width="18" height="18" rx="2"/><path d="M16 2v4M8 2v4M3 10h18"/></>} />,
+  reservas: <Icon d={<><path d="M9 11l3 3 8-8"/><path d="M20 12v7a2 2 0 01-2 2H6a2 2 0 01-2-2V6a2 2 0 012-2h11"/></>} />,
+  nueva:    <Icon d={<><circle cx="12" cy="12" r="9"/><path d="M12 8v8M8 12h8"/></>} />,
+  users:    <Icon d={<><path d="M17 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 00-3-3.87M16 3.13a4 4 0 010 7.75"/></>} />,
+  reports:  <Icon d={<><line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/></>} />,
+  logout:   <Icon size={16} d={<><path d="M9 21H5a2 2 0 01-2-2V5a2 2 0 012-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></>} />,
+  search:   <Icon size={16} d={<><circle cx="11" cy="11" r="7"/><line x1="20" y1="20" x2="16.65" y2="16.65"/></>} />,
+  plus:     <Icon size={16} d={<><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></>} />,
+  trash:    <Icon size={16} d={<><polyline points="3 6 5 6 21 6"/><path d="M19 6l-2 14a2 2 0 01-2 2H9a2 2 0 01-2-2L5 6"/><path d="M10 11v6M14 11v6"/></>} />,
+  check:    <Icon size={16} d={<polyline points="20 6 9 17 4 12"/>} />,
+  x:        <Icon size={16} d={<><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></>} />,
+  cal:      <Icon size={16} d={<><rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></>} />,
+  bell:     <Icon size={18} d={<><path d="M18 8a6 6 0 10-12 0c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 01-3.46 0"/></>} />,
+};
 
-<script type="text/babel">
+/* ========= CONST ========= */
+const ROLES = {
+  admin:        { label:'Administrador',  badge:'ADMIN' },
+  subdireccion: { label:'Subdirección',   badge:'SUBDIR' },
+  reservador:   { label:'Reservador',     badge:'RSV' },
+  usuario:      { label:'Usuario',        badge:'USR' },
+};
+const DEFAULT_USERS = [
+  { id:1, username:'admin',      nombre:'Administrador General', email:'admin@duoc.cl',       password:'010203', role:'admin',        activo:true },
+  { id:2, username:'subdir',     nombre:'Subdirección Académica', email:'subdir@duoc.cl',     password:'010203', role:'subdireccion', activo:true },
+  { id:3, username:'reservador', nombre:'Coordinación Docente',  email:'reservas@duoc.cl',    password:'010203', role:'reservador',   activo:true },
+  { id:4, username:'usuario',    nombre:'Usuario Consulta',      email:'consulta@duoc.cl',    password:'010203', role:'usuario',      activo:true },
+];
+const DIA_NOMBRES = ['Lunes','Martes','Miércoles','Jueves','Viernes','Sábado','Domingo'];
+const DIA_CORTO   = ['Lun','Mar','Mié','Jue','Vie','Sáb','Dom'];
+const ESCUELAS_FULL = {
+  'Adm':'Administración y Negocios','Com':'Comunicación','Dis':'Diseño',
+  'Inf':'Informática','Pro':'Programas Transversales','Sal':'Salud y Bienestar','Ext':'Extracurricular'
+};
 
-function App() {
-  const [role, setRole] = React.useState("admin");
-  const [password, setPassword] = React.useState("010203");
-  const [logged, setLogged] = React.useState({ admin: true });
+/* ========= UTILS ========= */
+const STORE_KEY = 'duoc_portal_v1';
+const loadStore = () => {
+  try { return JSON.parse(localStorage.getItem(STORE_KEY)) || {}; } catch(e){ return {}; }
+};
+const saveStore = (s) => localStorage.setItem(STORE_KEY, JSON.stringify(s));
 
-  const [rooms, setRooms] = React.useState([]);
-  const [users, setUsers] = React.useState([]);
+const fechaToDow = (iso) => {
+  // iso YYYY-MM-DD → 0 Lun .. 6 Dom
+  const d = new Date(iso+'T00:00:00');
+  const dw = d.getDay(); // 0 Sun .. 6 Sat
+  return dw===0 ? 6 : dw-1;
+};
 
-  const [newRoom, setNewRoom] = React.useState({ name:"", capacity:"", type:"" });
-  const [newUser, setNewUser] = React.useState({ name:"", password:"", role:"usuario" });
+const fmtFecha = (iso) => {
+  if(!iso) return '—';
+  const d = new Date(iso+'T00:00:00');
+  return d.toLocaleDateString('es-CL',{day:'2-digit',month:'short',year:'numeric'});
+};
 
-  const login = () => {
-    if(password.length >= 4){
-      setLogged({...logged, [role]: true});
-    }
+const useToast = () => {
+  const [msg, setMsg] = useState(null);
+  useEffect(()=>{ if(msg){ const t=setTimeout(()=>setMsg(null),2500); return ()=>clearTimeout(t);} },[msg]);
+  return [msg, setMsg];
+};
+
+/* ========= LOGIN ========= */
+function Login({ onLogin, users }){
+  const [role, setRole] = useState('admin');
+  const [username, setUsername] = useState('admin');
+  const [password, setPassword] = useState('');
+  const [err, setErr] = useState('');
+
+  const submit = (e) => {
+    e?.preventDefault?.();
+    const u = users.find(u => u.username===username.trim() && u.password===password && u.activo);
+    if(!u){ setErr('Credenciales inválidas o usuario inactivo.'); return; }
+    if(u.role!==role){ setErr(`El usuario "${u.username}" no tiene rol ${ROLES[role].label}.`); return; }
+    onLogin(u);
   };
 
-  const addRoom = () => {
-    if(!newRoom.name) return;
-    setRooms([...rooms, {...newRoom, id: Date.now()}]);
-    setNewRoom({ name:"", capacity:"", type:"" });
-  };
-
-  const deleteRoom = (id) => {
-    setRooms(rooms.filter(r => r.id !== id));
-  };
-
-  const addUser = () => {
-    if(!newUser.name || !newUser.password) return;
-    setUsers([...users, {...newUser, id: Date.now()}]);
-    setNewUser({ name:"", password:"", role:"usuario" });
-  };
-
-  const deleteUser = (id) => {
-    setUsers(users.filter(u => u.id !== id));
+  const quickFill = (r) => {
+    const def = DEFAULT_USERS.find(d => d.role===r);
+    if(def){ setRole(r); setUsername(def.username); setPassword(def.password); setErr(''); }
   };
 
   return (
-    <div className="container">
-
-      <div className="roles">
-        {["admin","reservador","usuario","subdireccion"].map(r => (
-          <div key={r}
-            onClick={() => setRole(r)}
-            className={`card ${role===r ? "active":""}`}>
-            <b>{r}</b>
-          </div>
-        ))}
+    <div className="login-wrap">
+      <div className="login-side">
+        <div className="brand">
+          <img src="./assets/logo.svg" alt="DUOC UC"/>
+          <span>Portal de Salas</span>
+        </div>
+        <div className="login-hero">
+          <h1>Gestión académica<br/>de salas y reservas</h1>
+          <p>Plataforma centralizada para administrar la asignación, programación y reservas de espacios académicos en la Sede Viña del Mar.</p>
+        </div>
+        <div className="login-meta">Duoc UC · Subdirección Académica · 2026</div>
       </div>
+      <div className="login-form-wrap">
+        <form className="login-card" onSubmit={submit}>
+          <h2>Iniciar sesión</h2>
+          <div className="sub">Selecciona tu perfil para continuar</div>
 
-      {!logged[role] && (
-        <div>
-          <h3>Ingreso</h3>
-          <input type="password" value={password} onChange={e=>setPassword(e.target.value)} />
-          <button onClick={login}>Entrar</button>
-        </div>
-      )}
-
-      {logged[role] && role === "admin" && (
-        <div className="panel">
-
-          <div className="box">
-            <h3>Gestionar Salas</h3>
-
-            <input placeholder="Nombre"
-              value={newRoom.name}
-              onChange={e=>setNewRoom({...newRoom,name:e.target.value})}/>
-
-            <input placeholder="Capacidad"
-              value={newRoom.capacity}
-              onChange={e=>setNewRoom({...newRoom,capacity:e.target.value})}/>
-
-            <input placeholder="Tipo"
-              value={newRoom.type}
-              onChange={e=>setNewRoom({...newRoom,type:e.target.value})}/>
-
-            <button onClick={addRoom}>Crear</button>
-
-            {rooms.map(r => (
-              <div key={r.id} className="item">
-                {r.name}
-                <button onClick={()=>deleteRoom(r.id)}>X</button>
+          <div className="role-chips">
+            {Object.entries(ROLES).map(([k,v]) => (
+              <div key={k} className={`role-chip ${role===k?'active':''}`} onClick={()=>{ setRole(k); quickFill(k); }}>
+                {v.label}
               </div>
             ))}
           </div>
 
-          <div className="box">
-            <h3>Gestionar Usuarios</h3>
-
-            <input placeholder="Nombre"
-              value={newUser.name}
-              onChange={e=>setNewUser({...newUser,name:e.target.value})}/>
-
-            <input placeholder="Clave"
-              value={newUser.password}
-              onChange={e=>setNewUser({...newUser,password:e.target.value})}/>
-
-            <select value={newUser.role}
-              onChange={e=>setNewUser({...newUser,role:e.target.value})}>
-              <option value="usuario">Usuario</option>
-              <option value="reservador">Reservador</option>
-              <option value="subdireccion">Subdirección</option>
-            </select>
-
-            <button onClick={addUser}>Crear</button>
-
-            {users.map(u => (
-              <div key={u.id} className="item">
-                {u.name} ({u.role})
-                <button onClick={()=>deleteUser(u.id)}>X</button>
-              </div>
-            ))}
+          <div className="field">
+            <label>Usuario</label>
+            <input value={username} onChange={e=>setUsername(e.target.value)} placeholder="usuario" autoComplete="username"/>
+          </div>
+          <div className="field">
+            <label>Contraseña</label>
+            <input type="password" value={password} onChange={e=>setPassword(e.target.value)} placeholder="••••••" autoComplete="current-password"/>
           </div>
 
-        </div>
-      )}
+          {err && <div className="chip danger" style={{marginBottom:12}}>{err}</div>}
 
+          <button className="btn btn-primary btn-block" type="submit">Entrar</button>
+
+          <div className="login-hint">
+            <b>Demo:</b> usuario <b>admin / subdir / reservador / usuario</b>, contraseña <b>010203</b>.
+          </div>
+        </form>
+      </div>
     </div>
   );
 }
 
-ReactDOM.createRoot(document.getElementById("root")).render(<App />);
+/* ========= APP SHELL ========= */
+function Shell({ user, onLogout, view, setView, children, title, crumbs }){
+  const menu = useMemo(()=>{
+    const base = [
+      ['dashboard', 'Dashboard',          I.dashboard, ['admin','subdireccion','reservador','usuario']],
+      ['salas',     'Salas',              I.salas,     ['admin','subdireccion','reservador','usuario']],
+      ['prog',      'Programación SABANA',I.prog,      ['admin','subdireccion','reservador','usuario']],
+      ['reservas',  'Reservas',           I.reservas,  ['admin','subdireccion','reservador']],
+      ['nueva',     'Solicitar reserva',  I.nueva,     ['admin','subdireccion','reservador']],
+      ['usuarios',  'Usuarios',           I.users,     ['admin']],
+      ['reportes',  'Reportes',           I.reports,   ['admin','subdireccion']],
+    ];
+    return base.filter(([,,,roles]) => roles.includes(user.role));
+  },[user.role]);
 
-</script>
+  return (
+    <div className="app">
+      <aside className="sidebar">
+        <div className="sb-brand">
+          <img src="./assets/logo.svg" alt="DUOC UC"/>
+          <div className="title">DUOC UC<small>Portal de Salas</small></div>
+        </div>
+        <div className="sb-section">Navegación</div>
+        <nav className="sb-nav">
+          {menu.map(([k,l,ico]) => (
+            <div key={k} className={`sb-item ${view===k?'active':''}`} onClick={()=>setView(k)}>
+              {ico}<span>{l}</span><div className="sb-spacer"/><div className="sb-bullet"/>
+            </div>
+          ))}
+        </nav>
+        <div className="sb-spacer"/>
+        <div className="sb-user">
+          <div className="avatar">{(user.nombre||user.username||'?').slice(0,1).toUpperCase()}</div>
+          <div className="meta"><b>{user.nombre || user.username}</b><small>{ROLES[user.role].label}</small></div>
+          <button className="logout" title="Cerrar sesión" onClick={onLogout}>{I.logout}</button>
+        </div>
+      </aside>
+      <main className="main">
+        <header className="topbar">
+          <div>
+            <div className="crumbs">{crumbs || 'Inicio'}</div>
+            <h1>{title}</h1>
+          </div>
+          <div className="right">
+            <div className="search">{I.search}<input placeholder="Buscar…" /></div>
+            <button className="btn-icon" title="Notificaciones">{I.bell}</button>
+            <span className="pill">{ROLES[user.role].badge}</span>
+          </div>
+        </header>
+        <section className="content">{children}</section>
+      </main>
+    </div>
+  );
+}
 
+/* ========= DASHBOARD ========= */
+function Dashboard({ data, reservas, user }){
+  const today = new Date(); const todayIso = today.toISOString().slice(0,10);
+  const dow = today.getDay()===0 ? 6 : today.getDay()-1;
+
+  const stats = useMemo(()=>{
+    const totalSalas = data.salas.length;
+    const clasesHoy  = data.programacion.filter(p => p.dw[dow]==='1').length;
+    const reservasHoy = reservas.filter(r => r.fi===todayIso).length;
+    const pendientes  = reservas.filter(r => r.es==='pendiente').length;
+    return { totalSalas, clasesHoy, reservasHoy, pendientes };
+  },[data, reservas, dow, todayIso]);
+
+  const ocupacionPorTipo = useMemo(()=>{
+    const m = {};
+    data.salas.forEach(s => { m[s.tipo] = (m[s.tipo]||0)+1; });
+    return Object.entries(m).sort((a,b)=>b[1]-a[1]);
+  },[data]);
+
+  const ocupacionPorEscuela = useMemo(()=>{
+    const m = {};
+    data.programacion.forEach(p => {
+      const k = ESCUELAS_FULL[p.es] || (p.es || 'Otros');
+      m[k] = (m[k]||0)+1;
+    });
+    return Object.entries(m).sort((a,b)=>b[1]-a[1]).slice(0,7);
+  },[data]);
+
+  const maxEsc = Math.max(1, ...ocupacionPorEscuela.map(x=>x[1]));
+  const proximasReservas = useMemo(()=> reservas
+    .filter(r => r.fi >= todayIso)
+    .sort((a,b)=> a.fi.localeCompare(b.fi))
+    .slice(0,6)
+  ,[reservas, todayIso]);
+
+  return (
+    <div className="stack">
+      <div className="grid grid-4">
+        <div className="kpi kpi-blue">
+          <span className="label">Salas activas</span>
+          <span className="value">{stats.totalSalas}</span>
+          <span className="delta">Sede Viña del Mar</span>
+          <div className="icon">{I.salas}</div>
+        </div>
+        <div className="kpi kpi-green">
+          <span className="label">Clases hoy ({DIA_NOMBRES[dow]})</span>
+          <span className="value">{stats.clasesHoy}</span>
+          <span className="delta">Desde SABANA académica</span>
+          <div className="icon">{I.prog}</div>
+        </div>
+        <div className="kpi kpi-amber">
+          <span className="label">Reservas para hoy</span>
+          <span className="value">{stats.reservasHoy}</span>
+          <span className="delta">Aprobadas y pendientes</span>
+          <div className="icon">{I.cal}</div>
+        </div>
+        <div className="kpi kpi-red">
+          <span className="label">Solicitudes pendientes</span>
+          <span className="value">{stats.pendientes}</span>
+          <span className="delta">Requieren autorización</span>
+          <div className="icon">{I.bell}</div>
+        </div>
+      </div>
+
+      <div className="grid grid-2">
+        <div className="card">
+          <div className="card-header">
+            <div><h3>Ocupación por escuela</h3><div className="sub">Sesiones programadas en la SABANA</div></div>
+          </div>
+          <div className="stack" style={{gap:10}}>
+            {ocupacionPorEscuela.map(([k,v]) => (
+              <div key={k}>
+                <div className="row between" style={{marginBottom:4}}>
+                  <span style={{fontWeight:600,fontSize:13}}>{k}</span>
+                  <span className="muted" style={{fontSize:12}}>{v}</span>
+                </div>
+                <div style={{height:8,background:'#EEF2F7',borderRadius:6,overflow:'hidden'}}>
+                  <div style={{height:'100%',width:`${(v/maxEsc)*100}%`,background:'linear-gradient(90deg,var(--primary),var(--primary-2))'}}/>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+
+        <div className="card">
+          <div className="card-header">
+            <div><h3>Salas por tipo</h3><div className="sub">Distribución del catálogo</div></div>
+          </div>
+          <div className="row" style={{flexWrap:'wrap',gap:8}}>
+            {ocupacionPorTipo.map(([k,v]) => (
+              <div key={k} className="chip info" style={{fontSize:12}}>{k} · <b style={{marginLeft:4}}>{v}</b></div>
+            ))}
+          </div>
+          <div style={{marginTop:18}}>
+            <div className="card-header"><div><h3 style={{fontSize:14}}>Próximas reservas</h3></div></div>
+            <div className="stack" style={{gap:8}}>
+              {proximasReservas.length===0 && <div className="muted" style={{fontSize:13}}>Sin reservas próximas.</div>}
+              {proximasReservas.map(r => (
+                <div key={r.id} className="row between" style={{padding:'8px 10px',background:'#FBFCFD',border:'1px solid var(--border-soft)',borderRadius:8}}>
+                  <div style={{minWidth:0}}>
+                    <div style={{fontWeight:600,fontSize:13}}>{r.r} · {r.mo}</div>
+                    <div className="muted" style={{fontSize:11}}>{r.do || 'Sin docente'}</div>
+                  </div>
+                  <div style={{textAlign:'right'}}>
+                    <div style={{fontSize:12,fontWeight:700}}>{fmtFecha(r.fi)}</div>
+                    <div className="muted" style={{fontSize:11}}>{r.hi}–{r.hf}</div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* ========= SALAS ========= */
+function Salas({ data, setData, user, toast }){
+  const [q, setQ] = useState('');
+  const [tipo, setTipo] = useState('');
+  const [modal, setModal] = useState(null);
+  const [form, setForm] = useState({codigo:'',nombre:'',capacidad:'',tipo:'Sala',responsable:''});
+  const canEdit = user.role==='admin';
+
+  const tipos = useMemo(()=> [...new Set(data.salas.map(s=>s.tipo))].sort(), [data]);
+  const filtered = useMemo(()=> data.salas.filter(s =>
+    (!q || s.codigo.toLowerCase().includes(q.toLowerCase()) || (s.nombre||'').toLowerCase().includes(q.toLowerCase())) &&
+    (!tipo || s.tipo===tipo)
+  ), [data, q, tipo]);
+
+  const add = () => {
+    if(!form.codigo || !form.nombre){ toast('Completa código y nombre.'); return; }
+    if(data.salas.some(s => s.codigo===form.codigo)){ toast('Ya existe una sala con ese código.'); return; }
+    const nueva = {...form, capacidad:Number(form.capacidad)||0};
+    setData({
+      ...data,
+      salas:[...data.salas, nueva],
+      _customSalas:[...(data._customSalas||[]), nueva],
+    });
+    setForm({codigo:'',nombre:'',capacidad:'',tipo:'Sala',responsable:''});
+    setModal(null); toast('Sala creada correctamente.');
+  };
+  const del = (codigo) => {
+    if(!window.confirm(`¿Eliminar la sala ${codigo}? No se puede deshacer.`)) return;
+    const eraCustom = (data._customSalas||[]).some(s=>s.codigo===codigo);
+    setData({
+      ...data,
+      salas: data.salas.filter(s => s.codigo!==codigo),
+      _customSalas: (data._customSalas||[]).filter(s=>s.codigo!==codigo),
+      _deletedSalas: eraCustom ? (data._deletedSalas||[]) : [...(data._deletedSalas||[]), codigo],
+    });
+    toast('Sala eliminada.');
+  };
+
+  return (
+    <div className="stack">
+      <div className="filters">
+        <div className="field">
+          <label>Buscar</label>
+          <input value={q} onChange={e=>setQ(e.target.value)} placeholder="Código o nombre…"/>
+        </div>
+        <div className="field">
+          <label>Tipo</label>
+          <select value={tipo} onChange={e=>setTipo(e.target.value)}>
+            <option value="">Todos</option>
+            {tipos.map(t=> <option key={t}>{t}</option>)}
+          </select>
+        </div>
+        <div style={{marginLeft:'auto'}}>
+          {canEdit && <button className="btn btn-primary" onClick={()=>setModal('add')}>{I.plus}Nueva sala</button>}
+        </div>
+      </div>
+
+      <div className="card" style={{padding:0}}>
+        <div className="tbl-scroll">
+          <table className="tbl">
+            <thead><tr>
+              <th>Código</th><th>Denominación</th><th>Tipo</th><th>Cap.</th><th>Responsable</th><th></th>
+            </tr></thead>
+            <tbody>
+              {filtered.map(s => (
+                <tr key={s.codigo}>
+                  <td><b style={{color:'var(--primary)'}}>{s.codigo}</b></td>
+                  <td style={{maxWidth:340}}>{s.nombre}</td>
+                  <td><span className="chip">{s.tipo}</span></td>
+                  <td>{s.capacidad}</td>
+                  <td className="muted">{s.responsable}</td>
+                  <td style={{textAlign:'right'}}>
+                    {canEdit && <button className="btn-icon" onClick={()=>del(s.codigo)} title="Eliminar">{I.trash}</button>}
+                  </td>
+                </tr>
+              ))}
+              {filtered.length===0 && <tr><td colSpan="6"><div className="empty"><span className="emoji">📭</span>Sin resultados con esos filtros.</div></td></tr>}
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      {modal==='add' && (
+        <Modal title="Crear nueva sala" onClose={()=>setModal(null)} onSave={add}>
+          <div className="col-2">
+            <div className="field"><label>Código</label><input value={form.codigo} onChange={e=>setForm({...form,codigo:e.target.value.toUpperCase()})} placeholder="VI-SXXX"/></div>
+            <div className="field"><label>Capacidad</label><input type="number" value={form.capacidad} onChange={e=>setForm({...form,capacidad:e.target.value})}/></div>
+          </div>
+          <div className="field"><label>Denominación</label><input value={form.nombre} onChange={e=>setForm({...form,nombre:e.target.value})}/></div>
+          <div className="col-2">
+            <div className="field"><label>Tipo</label>
+              <select value={form.tipo} onChange={e=>setForm({...form,tipo:e.target.value})}>
+                {['Sala','Laboratorio','Taller','Auditorio','Gimnasio','Estudio','Reunion','Cancha','Piscina'].map(t=><option key={t}>{t}</option>)}
+              </select>
+            </div>
+            <div className="field"><label>Responsable</label><input value={form.responsable} onChange={e=>setForm({...form,responsable:e.target.value})}/></div>
+          </div>
+        </Modal>
+      )}
+    </div>
+  );
+}
+
+/* ========= PROGRAMACIÓN SABANA ========= */
+function Programacion({ data }){
+  const [sala, setSala] = useState('');
+  const [escuela, setEscuela] = useState('');
+  const [jornada, setJornada] = useState('');
+  const [dia, setDia] = useState('');
+
+  const filtered = useMemo(()=>{
+    return data.programacion.filter(p =>
+      (!sala || p.s===sala) &&
+      (!escuela || p.es===escuela) &&
+      (!jornada || p.j===jornada) &&
+      (dia==='' || p.dw[Number(dia)]==='1')
+    );
+  },[data, sala, escuela, jornada, dia]);
+
+  const escuelas = useMemo(()=> [...new Set(data.programacion.map(p=>p.es).filter(Boolean))].sort(), [data]);
+  const jornadas = useMemo(()=> [...new Set(data.programacion.map(p=>p.j).filter(Boolean))].sort(), [data]);
+
+  // Si hay sala seleccionada, mostrar grilla semanal
+  const showWeek = !!sala;
+  const modulosUsados = useMemo(()=>{
+    if(!showWeek) return [];
+    const set = new Set();
+    filtered.forEach(p=> set.add(p.hi+'|'+p.hf));
+    return [...set].sort();
+  },[filtered, showWeek]);
+
+  const cellMap = useMemo(()=>{
+    if(!showWeek) return {};
+    const m = {};
+    filtered.forEach(p=>{
+      const slot = p.hi+'|'+p.hf;
+      for(let d=0;d<7;d++){
+        if(p.dw[d]==='1'){
+          const k = `${slot}__${d}`;
+          (m[k] ||= []).push(p);
+        }
+      }
+    });
+    return m;
+  },[filtered, showWeek]);
+
+  return (
+    <div className="stack">
+      <div className="filters">
+        <div className="field">
+          <label>Sala</label>
+          <select value={sala} onChange={e=>setSala(e.target.value)}>
+            <option value="">Todas</option>
+            {data.salas.map(s=> <option key={s.codigo} value={s.codigo}>{s.codigo}</option>)}
+          </select>
+        </div>
+        <div className="field">
+          <label>Escuela</label>
+          <select value={escuela} onChange={e=>setEscuela(e.target.value)}>
+            <option value="">Todas</option>
+            {escuelas.map(e=> <option key={e} value={e}>{ESCUELAS_FULL[e]||e}</option>)}
+          </select>
+        </div>
+        <div className="field">
+          <label>Jornada</label>
+          <select value={jornada} onChange={e=>setJornada(e.target.value)}>
+            <option value="">Todas</option>
+            {jornadas.map(j=> <option key={j} value={j}>{j==='D'?'Diurno':j==='V'?'Vespertino':j}</option>)}
+          </select>
+        </div>
+        <div className="field">
+          <label>Día</label>
+          <select value={dia} onChange={e=>setDia(e.target.value)}>
+            <option value="">Todos</option>
+            {DIA_NOMBRES.map((d,i)=> <option key={i} value={i}>{d}</option>)}
+          </select>
+        </div>
+        <div style={{alignSelf:'flex-end'}} className="chip info">{filtered.length} sesiones</div>
+      </div>
+
+      {showWeek ? (
+        <div className="card">
+          <div className="card-header">
+            <div><h3>Programación semanal · {sala}</h3><div className="sub">{data.salas.find(s=>s.codigo===sala)?.nombre}</div></div>
+            <div className="legend"><span><i className="occ"/>Clase regular</span></div>
+          </div>
+          {modulosUsados.length===0 ? (
+            <div className="empty"><span className="emoji">📅</span>Sin programación para esta sala con los filtros aplicados.</div>
+          ) : (
+            <div className="week-grid">
+              <div className="hdr">Horario</div>
+              {DIA_CORTO.slice(0,6).map(d => <div key={d} className="hdr">{d}</div>)}
+              {modulosUsados.map(slot => {
+                const [hi,hf] = slot.split('|');
+                return (
+                  <React.Fragment key={slot}>
+                    <div className="row-h">{hi}<br/>{hf}</div>
+                    {[0,1,2,3,4,5].map(d => {
+                      const items = cellMap[`${slot}__${d}`] || [];
+                      return (
+                        <div key={d} className="cell">
+                          {items.map((p,i)=>(
+                            <div key={i} className="blk acad" title={`${p.a} · ${p.d}`}>
+                              <b>{p.sc}</b><br/>{(p.a||'').slice(0,30)}
+                            </div>
+                          ))}
+                        </div>
+                      );
+                    })}
+                  </React.Fragment>
+                );
+              })}
+            </div>
+          )}
+        </div>
+      ) : (
+        <div className="card" style={{padding:0}}>
+          <div className="tbl-scroll">
+            <table className="tbl">
+              <thead><tr>
+                <th>Sala</th><th>Asignatura</th><th>Sección</th><th>Docente</th><th>Días</th><th>Horario</th><th>Inscritos</th>
+              </tr></thead>
+              <tbody>
+                {filtered.slice(0,400).map((p,i) => (
+                  <tr key={i}>
+                    <td><b style={{color:'var(--primary)'}}>{p.s}</b></td>
+                    <td style={{maxWidth:260}}>{p.a}</td>
+                    <td className="muted">{p.sc}</td>
+                    <td>{p.d}</td>
+                    <td>{[...p.dw].map((b,j)=>b==='1'?DIA_CORTO[j]:null).filter(Boolean).join(' · ')}</td>
+                    <td>{p.hi}–{p.hf}</td>
+                    <td>{p.i}/{(p.i||0)+(p.p||0)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          {filtered.length>400 && <div className="muted" style={{padding:10,textAlign:'center',fontSize:12}}>Mostrando primeras 400 de {filtered.length}. Filtra para refinar.</div>}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* ========= RESERVAS ========= */
+function Reservas({ reservas, setReservas, user, toast }){
+  const [q, setQ] = useState('');
+  const [estado, setEstado] = useState('');
+  const canApprove = user.role==='admin' || user.role==='subdireccion';
+
+  const filtered = useMemo(()=>{
+    let arr = reservas;
+    if(user.role==='reservador') arr = arr.filter(r => r.co===user.email || r.creado_por===user.username);
+    return arr.filter(r =>
+      (!q || (r.r||'').toLowerCase().includes(q.toLowerCase()) || (r.mo||'').toLowerCase().includes(q.toLowerCase()) || (r.do||'').toLowerCase().includes(q.toLowerCase())) &&
+      (!estado || r.es===estado)
+    ).sort((a,b)=> (b.fi||'').localeCompare(a.fi||''));
+  },[reservas, q, estado, user]);
+
+  const setEstadoReserva = (id, nuevo) => {
+    setReservas(reservas.map(r => r.id===id ? {...r, es:nuevo, decidido_por:user.username, decidido_en:new Date().toISOString()} : r));
+    toast(`Reserva ${nuevo==='aprobada'?'aprobada':'rechazada'}.`);
+  };
+
+  return (
+    <div className="stack">
+      <div className="filters">
+        <div className="field"><label>Buscar</label><input value={q} onChange={e=>setQ(e.target.value)} placeholder="Sala, motivo o docente…"/></div>
+        <div className="field"><label>Estado</label>
+          <select value={estado} onChange={e=>setEstado(e.target.value)}>
+            <option value="">Todos</option>
+            <option value="pendiente">Pendiente</option>
+            <option value="aprobada">Aprobada</option>
+            <option value="rechazada">Rechazada</option>
+          </select>
+        </div>
+        <div style={{alignSelf:'flex-end'}} className="chip info">{filtered.length} reservas</div>
+      </div>
+
+      <div className="card" style={{padding:0}}>
+        <div className="tbl-scroll">
+          <table className="tbl">
+            <thead><tr>
+              <th>Fecha</th><th>Horario</th><th>Sala</th><th>Motivo</th><th>Solicitante</th><th>Estado</th><th></th>
+            </tr></thead>
+            <tbody>
+              {filtered.map(r => (
+                <tr key={r.id}>
+                  <td className="nowrap">{fmtFecha(r.fi)}{r.ff && r.ff!==r.fi ? ' → '+fmtFecha(r.ff) : ''}</td>
+                  <td className="nowrap">{r.hi}–{r.hf}<div className="muted" style={{fontSize:11}}>Mód. {r.mi}–{r.mf}</div></td>
+                  <td><b style={{color:'var(--primary)'}}>{r.r}</b></td>
+                  <td style={{maxWidth:340}}>{r.mo}</td>
+                  <td><div style={{fontSize:13}}>{r.do||'—'}</div><div className="muted" style={{fontSize:11}}>{r.co||r.ru}</div></td>
+                  <td>{
+                    r.es==='aprobada' ? <span className="chip success">Aprobada</span> :
+                    r.es==='pendiente' ? <span className="chip warn">Pendiente</span> :
+                    <span className="chip danger">Rechazada</span>
+                  }</td>
+                  <td className="nowrap" style={{textAlign:'right'}}>
+                    {canApprove && r.es==='pendiente' && <>
+                      <button className="btn btn-sm btn-success" onClick={()=>setEstadoReserva(r.id,'aprobada')}>{I.check}Aprobar</button>{' '}
+                      <button className="btn btn-sm btn-danger" onClick={()=>setEstadoReserva(r.id,'rechazada')}>{I.x}Rechazar</button>
+                    </>}
+                  </td>
+                </tr>
+              ))}
+              {filtered.length===0 && <tr><td colSpan="7"><div className="empty"><span className="emoji">🗂</span>Sin reservas para los filtros aplicados.</div></td></tr>}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* ========= NUEVA RESERVA ========= */
+function NuevaReserva({ data, reservas, setReservas, user, toast, goReservas }){
+  const [f, setF] = useState({
+    fi:new Date().toISOString().slice(0,10), ff:'',
+    sala:'', mi:1, mf:1, motivo:'', todoSemestre:'NO', observacion:'',
+    docente:user.nombre, correo:user.email, rut:''
+  });
+  const [conflictos, setConflictos] = useState([]);
+
+  useEffect(()=>{
+    if(!f.sala || !f.fi){ setConflictos([]); return; }
+    const dow = fechaToDow(f.fi);
+    const choques = [];
+    // contra programación académica
+    data.programacion.filter(p => p.s===f.sala && p.dw[dow]==='1').forEach(p=>{
+      // chequeo simple por overlap de módulos: traducimos hora a minutos
+      const aIni = (data.modulos.find(m=>m.num===Number(f.mi))||{}).inicio;
+      const aFin = (data.modulos.find(m=>m.num===Number(f.mf))||{}).fin;
+      const toMin = (h)=>{ if(!h) return 0; const [H,M]=h.split(':').map(Number); return H*60+M; };
+      if(aIni && aFin && p.hi && p.hf){
+        const oI=toMin(aIni), oF=toMin(aFin), pI=toMin(p.hi), pF=toMin(p.hf);
+        if(oI < pF && pI < oF) choques.push({tipo:'académica', detalle:`${p.a} · ${p.d || ''} · ${p.hi}–${p.hf}`});
+      }
+    });
+    // contra reservas existentes mismo día
+    reservas.filter(r => r.r===f.sala && r.fi===f.fi && r.es!=='rechazada').forEach(r=>{
+      const oI=Number(f.mi), oF=Number(f.mf), pI=Number(r.mi||0), pF=Number(r.mf||0);
+      if(oI <= pF && pI <= oF) choques.push({tipo:'reserva', detalle:`${r.motivo||r.mo} · Mód.${r.mi}–${r.mf}`});
+    });
+    setConflictos(choques);
+  },[f.sala, f.fi, f.mi, f.mf, data, reservas]);
+
+  const submit = () => {
+    if(!f.sala) return toast('Selecciona una sala.');
+    if(!f.motivo) return toast('Indica un motivo.');
+    if(conflictos.length>0 && !window.confirm(`Hay ${conflictos.length} conflicto(s) detectados. ¿Enviar de todas formas?`)) return;
+    const nuevo = {
+      id: Date.now(),
+      fi: f.fi, ff: f.ff || f.fi,
+      hi: (data.modulos.find(m=>m.num===Number(f.mi))||{}).inicio || '',
+      hf: (data.modulos.find(m=>m.num===Number(f.mf))||{}).fin || '',
+      mi: Number(f.mi), mf: Number(f.mf),
+      r: f.sala, ts: f.todoSemestre,
+      mo: f.motivo, do: f.docente, ru: f.rut, co: f.correo,
+      observacion: f.observacion,
+      es: user.role==='admin' || user.role==='subdireccion' ? 'aprobada' : 'pendiente',
+      creado_por: user.username, creado_en: new Date().toISOString(),
+    };
+    setReservas([nuevo, ...reservas]);
+    toast(nuevo.es==='aprobada' ? 'Reserva creada y aprobada.' : 'Solicitud enviada. Pendiente de autorización.');
+    goReservas?.();
+  };
+
+  return (
+    <div className="grid grid-2">
+      <div className="card">
+        <div className="card-header"><div><h3>Datos de la reserva</h3><div className="sub">Los módulos provienen de la planilla oficial</div></div></div>
+        <div className="col-2">
+          <div className="field"><label>Fecha inicio</label><input type="date" value={f.fi} onChange={e=>setF({...f,fi:e.target.value})}/></div>
+          <div className="field"><label>Fecha fin (opcional)</label><input type="date" value={f.ff} onChange={e=>setF({...f,ff:e.target.value})}/></div>
+        </div>
+        <div className="field"><label>Sala / Recinto</label>
+          <select value={f.sala} onChange={e=>setF({...f,sala:e.target.value})}>
+            <option value="">Selecciona…</option>
+            {data.salas.map(s=> <option key={s.codigo} value={s.codigo}>{s.codigo} — {s.nombre} (cap. {s.capacidad})</option>)}
+          </select>
+        </div>
+        <div className="col-2">
+          <div className="field"><label>Módulo inicio</label>
+            <select value={f.mi} onChange={e=>setF({...f,mi:e.target.value})}>
+              {data.modulos.map(m=> <option key={m.num} value={m.num}>Mód. {m.num} ({m.inicio})</option>)}
+            </select>
+          </div>
+          <div className="field"><label>Módulo fin</label>
+            <select value={f.mf} onChange={e=>setF({...f,mf:e.target.value})}>
+              {data.modulos.map(m=> <option key={m.num} value={m.num}>Mód. {m.num} ({m.fin})</option>)}
+            </select>
+          </div>
+        </div>
+        <div className="field"><label>¿Todo el semestre?</label>
+          <select value={f.todoSemestre} onChange={e=>setF({...f,todoSemestre:e.target.value})}>
+            <option>NO</option><option>SI</option>
+          </select>
+        </div>
+        <div className="field"><label>Motivo</label><input value={f.motivo} onChange={e=>setF({...f,motivo:e.target.value})} placeholder="Recuperación de clase, reunión, evento…"/></div>
+        <div className="field"><label>Observación</label><textarea value={f.observacion} onChange={e=>setF({...f,observacion:e.target.value})}/></div>
+        <div className="col-2">
+          <div className="field"><label>Docente / Colaborador</label><input value={f.docente} onChange={e=>setF({...f,docente:e.target.value})}/></div>
+          <div className="field"><label>RUT/ID</label><input value={f.rut} onChange={e=>setF({...f,rut:e.target.value})}/></div>
+        </div>
+        <div className="field"><label>Correo</label><input value={f.correo} onChange={e=>setF({...f,correo:e.target.value})}/></div>
+
+        <div className="row" style={{justifyContent:'flex-end',marginTop:8,gap:10}}>
+          <button className="btn btn-primary" onClick={submit}>{I.check}Enviar solicitud</button>
+        </div>
+      </div>
+
+      <div className="stack">
+        <div className="card">
+          <div className="card-header"><div><h3>Validación de conflictos</h3><div className="sub">Cruzamos contra la SABANA y reservas activas</div></div></div>
+          {!f.sala && <div className="empty"><span className="emoji">🛡</span>Selecciona una sala para verificar disponibilidad.</div>}
+          {f.sala && conflictos.length===0 && (
+            <div className="chip success" style={{fontSize:13,padding:'10px 16px'}}>
+              {I.check}&nbsp;Disponible — sin conflictos detectados para esa fecha y módulos.
+            </div>
+          )}
+          {f.sala && conflictos.length>0 && (
+            <div className="stack" style={{gap:8}}>
+              <div className="chip danger" style={{fontSize:13,padding:'10px 16px'}}>{conflictos.length} conflicto(s) detectado(s)</div>
+              {conflictos.map((c,i)=>(
+                <div key={i} className="row between" style={{padding:'10px 12px',background:'#FDECEC',border:'1px solid #F8C2C2',borderRadius:8}}>
+                  <div><b style={{textTransform:'capitalize'}}>{c.tipo}</b><div className="muted" style={{fontSize:12}}>{c.detalle}</div></div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+        <div className="card">
+          <div className="card-header"><div><h3>Información de la sala</h3></div></div>
+          {f.sala ? (() => {
+            const s = data.salas.find(x=>x.codigo===f.sala);
+            return s ? (
+              <div className="stack" style={{gap:6,fontSize:13}}>
+                <div><span className="muted">Código:</span> <b>{s.codigo}</b></div>
+                <div><span className="muted">Denominación:</span> {s.nombre}</div>
+                <div><span className="muted">Tipo:</span> <span className="chip">{s.tipo}</span></div>
+                <div><span className="muted">Capacidad:</span> {s.capacidad}</div>
+                <div><span className="muted">Responsable:</span> {s.responsable}</div>
+              </div>
+            ) : null;
+          })() : <div className="muted" style={{fontSize:13}}>—</div>}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* ========= USUARIOS ========= */
+function Usuarios({ users, setUsers, toast }){
+  const [modal, setModal] = useState(false);
+  const [form, setForm] = useState({username:'',nombre:'',email:'',password:'',role:'usuario',activo:true});
+
+  const add = () => {
+    if(!form.username||!form.password||!form.nombre) return toast('Completa los campos requeridos.');
+    if(users.some(u=>u.username===form.username)) return toast('Ese usuario ya existe.');
+    setUsers([...users, {...form, id:Date.now()}]);
+    setForm({username:'',nombre:'',email:'',password:'',role:'usuario',activo:true});
+    setModal(false); toast('Usuario creado.');
+  };
+  const del = (id) => {
+    if(!window.confirm('¿Eliminar usuario?')) return;
+    setUsers(users.filter(u=>u.id!==id)); toast('Usuario eliminado.');
+  };
+  const toggle = (id) => setUsers(users.map(u=>u.id===id?{...u,activo:!u.activo}:u));
+
+  return (
+    <div className="stack">
+      <div className="filters">
+        <div className="muted" style={{fontSize:13}}>{users.length} usuarios en el sistema</div>
+        <div style={{marginLeft:'auto'}}>
+          <button className="btn btn-primary" onClick={()=>setModal(true)}>{I.plus}Nuevo usuario</button>
+        </div>
+      </div>
+      <div className="card" style={{padding:0}}>
+        <table className="tbl">
+          <thead><tr><th>Usuario</th><th>Nombre</th><th>Correo</th><th>Rol</th><th>Estado</th><th></th></tr></thead>
+          <tbody>
+            {users.map(u=>(
+              <tr key={u.id}>
+                <td><b>{u.username}</b></td>
+                <td>{u.nombre}</td>
+                <td className="muted">{u.email}</td>
+                <td><span className="chip info">{ROLES[u.role].label}</span></td>
+                <td>{u.activo ? <span className="chip success">Activo</span> : <span className="chip danger">Inactivo</span>}</td>
+                <td style={{textAlign:'right'}}>
+                  <button className="btn btn-sm btn-ghost" onClick={()=>toggle(u.id)}>{u.activo?'Desactivar':'Activar'}</button>{' '}
+                  <button className="btn-icon" onClick={()=>del(u.id)}>{I.trash}</button>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+
+      {modal && (
+        <Modal title="Crear usuario" onClose={()=>setModal(false)} onSave={add}>
+          <div className="col-2">
+            <div className="field"><label>Usuario</label><input value={form.username} onChange={e=>setForm({...form,username:e.target.value})}/></div>
+            <div className="field"><label>Contraseña</label><input type="password" value={form.password} onChange={e=>setForm({...form,password:e.target.value})}/></div>
+          </div>
+          <div className="field"><label>Nombre completo</label><input value={form.nombre} onChange={e=>setForm({...form,nombre:e.target.value})}/></div>
+          <div className="col-2">
+            <div className="field"><label>Correo</label><input value={form.email} onChange={e=>setForm({...form,email:e.target.value})}/></div>
+            <div className="field"><label>Rol</label>
+              <select value={form.role} onChange={e=>setForm({...form,role:e.target.value})}>
+                {Object.entries(ROLES).map(([k,v])=> <option key={k} value={k}>{v.label}</option>)}
+              </select>
+            </div>
+          </div>
+        </Modal>
+      )}
+    </div>
+  );
+}
+
+/* ========= REPORTES ========= */
+function Reportes({ data, reservas }){
+  const topSalas = useMemo(()=>{
+    const m = {};
+    data.programacion.forEach(p => { m[p.s] = (m[p.s]||0)+1; });
+    reservas.forEach(r => { m[r.r] = (m[r.r]||0)+0.5; });
+    return Object.entries(m).sort((a,b)=>b[1]-a[1]).slice(0,15);
+  },[data, reservas]);
+
+  const reservasPorEstado = useMemo(()=>{
+    const m = {aprobada:0,pendiente:0,rechazada:0};
+    reservas.forEach(r => { m[r.es]=(m[r.es]||0)+1; });
+    return m;
+  },[reservas]);
+
+  const max = Math.max(1, ...topSalas.map(x=>x[1]));
+
+  return (
+    <div className="grid grid-2">
+      <div className="card">
+        <div className="card-header"><div><h3>Salas más utilizadas</h3><div className="sub">SABANA + reservas</div></div></div>
+        <div className="stack" style={{gap:8}}>
+          {topSalas.map(([k,v])=>(
+            <div key={k}>
+              <div className="row between" style={{marginBottom:4}}>
+                <span style={{fontWeight:600,fontSize:13}}>{k}</span>
+                <span className="muted" style={{fontSize:12}}>{Math.round(v)}</span>
+              </div>
+              <div style={{height:8,background:'#EEF2F7',borderRadius:6,overflow:'hidden'}}>
+                <div style={{height:'100%',width:`${(v/max)*100}%`,background:'linear-gradient(90deg,var(--primary-2),#5A8FE0)'}}/>
+              </div>
+            </div>
+          ))}
+        </div>
+      </div>
+      <div className="card">
+        <div className="card-header"><div><h3>Estado de reservas</h3></div></div>
+        <div className="grid grid-3">
+          <div className="kpi kpi-green"><span className="label">Aprobadas</span><span className="value">{reservasPorEstado.aprobada}</span></div>
+          <div className="kpi kpi-amber"><span className="label">Pendientes</span><span className="value">{reservasPorEstado.pendiente}</span></div>
+          <div className="kpi kpi-red"><span className="label">Rechazadas</span><span className="value">{reservasPorEstado.rechazada}</span></div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* ========= MODAL ========= */
+function Modal({ title, children, onClose, onSave, saveLabel='Guardar' }){
+  return (
+    <div className="modal-back" onClick={onClose}>
+      <div className="modal" onClick={e=>e.stopPropagation()}>
+        <div className="modal-h"><h3>{title}</h3><button className="btn-icon" onClick={onClose}>{I.x}</button></div>
+        <div className="modal-b">{children}</div>
+        <div className="modal-f">
+          <button className="btn btn-ghost" onClick={onClose}>Cancelar</button>
+          <button className="btn btn-primary" onClick={onSave}>{saveLabel}</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* ========= ROOT APP ========= */
+function App(){
+  const stored = loadStore();
+  const [user, setUser] = useState(stored.user || null);
+  const [view, setView] = useState('dashboard');
+  const [data, setData] = useState(null);
+  const [reservas, setReservas] = useState([]);
+  const [users, setUsers] = useState(stored.users || DEFAULT_USERS);
+  const [loading, setLoading] = useState(true);
+  const [toast, setToast] = useToast();
+
+  // Persist
+  useEffect(()=> {
+    if(!data) return;
+    saveStore({
+      user, users,
+      customReservas: reservas.filter(r=>r.creado_por),
+      reservaEstados: reservas.filter(r=>r.decidido_por).map(r=>({id:r.id,es:r.es,decidido_por:r.decidido_por,decidido_en:r.decidido_en})),
+      customSalas: data._customSalas || [],
+      deletedSalas: data._deletedSalas || [],
+    });
+  }, [user, users, reservas, data]);
+
+  // Cargar data inicial
+  useEffect(()=>{
+    (async ()=>{
+      try{
+        const [s,p,r,m] = await Promise.all([
+          fetch('./data/salas.json').then(r=>r.json()),
+          fetch('./data/programacion.json').then(r=>r.json()),
+          fetch('./data/reservas.json').then(r=>r.json()),
+          fetch('./data/modulos.json').then(r=>r.json()),
+        ]);
+        const st = loadStore();
+        const customSalas = st.customSalas || [];
+        const deletedSalas = new Set(st.deletedSalas || []);
+        const salasMerged = [...s.filter(x => !deletedSalas.has(x.codigo)), ...customSalas];
+        setData({ salas:salasMerged, programacion:p, modulos:m, _customSalas:customSalas, _deletedSalas:[...deletedSalas] });
+
+        // merge reservas: aplicar estados decididos y agregar custom
+        const custom = st.customReservas || [];
+        const estadosMap = new Map((st.reservaEstados||[]).map(e=>[e.id,e]));
+        const rWithStates = r.map(x => estadosMap.has(x.id) ? {...x, ...estadosMap.get(x.id)} : x);
+        setReservas([...custom, ...rWithStates]);
+      } catch(e){
+        console.error(e); setToast('No se pudieron cargar los datos.');
+      } finally { setLoading(false); }
+    })();
+  },[]);
+
+  if(!user) return <Login users={users} onLogin={u => { setUser(u); setView('dashboard'); }} />;
+  if(loading || !data) return (
+    <div className="loader" style={{paddingTop:140}}><div className="spinner"/><div>Cargando datos del portal…</div></div>
+  );
+
+  const titles = {
+    dashboard:['Dashboard','Panel de control'],
+    salas:['Catálogo de salas','Salas y recintos'],
+    prog:['Programación académica','SABANA · 2026·1'],
+    reservas:['Reservas','Gestión de solicitudes'],
+    nueva:['Solicitar reserva','Nueva solicitud'],
+    usuarios:['Usuarios','Administración de cuentas'],
+    reportes:['Reportes','Ocupación y métricas'],
+  };
+  const [title, crumbs] = titles[view] || ['',''];
+
+  return (
+    <>
+      <Shell user={user} onLogout={()=>{ setUser(null); }} view={view} setView={setView} title={title} crumbs={crumbs}>
+        {view==='dashboard' && <Dashboard data={data} reservas={reservas} user={user}/>}
+        {view==='salas'     && <Salas data={data} setData={setData} user={user} toast={setToast}/>}
+        {view==='prog'      && <Programacion data={data}/>}
+        {view==='reservas'  && <Reservas reservas={reservas} setReservas={setReservas} user={user} toast={setToast}/>}
+        {view==='nueva'     && <NuevaReserva data={data} reservas={reservas} setReservas={setReservas} user={user} toast={setToast} goReservas={()=>setView('reservas')}/>}
+        {view==='usuarios'  && <Usuarios users={users} setUsers={setUsers} toast={setToast}/>}
+        {view==='reportes'  && <Reportes data={data} reservas={reservas}/>}
+      </Shell>
+      {toast && <div className="toast">{toast}</div>}
+    </>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById('root')).render(<App/>);
+  </script>
 </body>
 </html>
