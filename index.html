@@ -451,6 +451,38 @@
     }
     .upload-zone:hover{background:#EEF4FB;border-color:var(--primary-2)}
 
+    /* Wizard de nueva reserva */
+    .step-num{
+      display:inline-flex;align-items:center;justify-content:center;
+      width:22px;height:22px;border-radius:50%;background:var(--primary);color:#fff;
+      font-size:11px;font-weight:800;margin-right:8px;vertical-align:middle;
+    }
+    .sala-pick{
+      background:#fff;border:1.5px solid var(--border-soft);border-radius:var(--radius);
+      padding:12px 14px;cursor:pointer;display:flex;flex-direction:column;gap:6px;
+      transition:border-color .12s,box-shadow .12s,transform .12s,background .12s;
+      position:relative;
+    }
+    .sala-pick:hover{border-color:var(--success);box-shadow:0 4px 14px rgba(16,185,129,.15);transform:translateY(-1px)}
+    .sala-pick.sel{
+      border-color:var(--success);background:#F1FBF5;
+      box-shadow:0 0 0 3px rgba(16,185,129,.18);
+    }
+    .sala-pick.sel::after{
+      content:'✓';position:absolute;top:8px;right:10px;
+      width:22px;height:22px;border-radius:50%;background:var(--success);color:#fff;
+      display:grid;place-items:center;font-size:13px;font-weight:800;
+    }
+    .sala-pick.ocupada{
+      cursor:not-allowed;background:#FDF6F6;border-color:#F4D2D2;opacity:.85;
+    }
+    .sala-pick.ocupada:hover{transform:none;box-shadow:none;border-color:#F4D2D2}
+    .sala-pick .top{display:flex;align-items:center;justify-content:space-between}
+    .sala-pick .code{font-weight:800;color:var(--primary);font-size:15px}
+    .sala-pick .name{font-size:11.5px;color:var(--text-muted);line-height:1.3;min-height:30px}
+    .sala-pick .meta{display:flex;gap:6px;flex-wrap:wrap}
+    .sala-pick .meta .chip{font-size:10.5px;padding:2px 8px}
+
     /* Scrollbars */
     *::-webkit-scrollbar{width:10px;height:10px}
     *::-webkit-scrollbar-thumb{background:#D5DCE7;border-radius:8px}
@@ -1391,45 +1423,70 @@ function BuscarLibres({ data, reservas, onGoNueva }){
 /* ========= NUEVA RESERVA ========= */
 function NuevaReserva({ data, reservas, setReservas, user, toast, goReservas, prefill }){
   const [f, setF] = useState({
-    fi: prefill?.fecha || new Date().toISOString().slice(0,10), ff:'',
-    sala: prefill?.sala || '', mi: prefill?.mi || 1, mf: prefill?.mf || 1,
+    fi: prefill?.fecha || isoDate(new Date()),
+    ff: '',
+    sala: prefill?.sala || '',
+    mi: prefill?.mi || 1, mf: prefill?.mf || 2,
     motivo:'', todoSemestre:'NO', observacion:'',
     docente:user.nombre, correo:user.email, rut:''
   });
-  const [conflictos, setConflictos] = useState([]);
+  const [filtros, setFiltros] = useState({ tipo:'', capMin:'', mostrarTodas:false });
 
-  useEffect(()=>{
-    if(!f.sala || !f.fi){ setConflictos([]); return; }
+  const tipos = useMemo(()=> [...new Set(data.salas.map(s=>s.tipo))].sort(), [data]);
+
+  // Cálculo en vivo de salas libres / ocupadas para la fecha + módulos
+  const evaluacion = useMemo(()=>{
+    const libres = []; const ocupadas = [];
+    if(!f.fi){ return { libres, ocupadas }; }
     const dow = fechaToDow(f.fi);
-    const choques = [];
-    // contra programación académica
-    data.programacion.filter(p => p.s===f.sala && p.dw[dow]==='1').forEach(p=>{
-      // chequeo simple por overlap de módulos: traducimos hora a minutos
-      const aIni = (data.modulos.find(m=>m.num===Number(f.mi))||{}).inicio;
-      const aFin = (data.modulos.find(m=>m.num===Number(f.mf))||{}).fin;
-      const toMin = (h)=>{ if(!h) return 0; const [H,M]=h.split(':').map(Number); return H*60+M; };
-      if(aIni && aFin && p.hi && p.hf){
-        const oI=toMin(aIni), oF=toMin(aFin), pI=toMin(p.hi), pF=toMin(p.hf);
-        if(oI < pF && pI < oF) choques.push({tipo:'académica', detalle:`${p.a} · ${p.d || ''} · ${p.hi}–${p.hf}`});
+    const miN = Number(f.mi), mfN = Number(f.mf);
+    const capN = Number(filtros.capMin)||0;
+    for(const s of data.salas){
+      if(filtros.tipo && s.tipo!==filtros.tipo) continue;
+      if(capN && (s.capacidad||0) < capN) continue;
+      const acad = data.programacion.find(p =>
+        p.s===s.codigo && p.dw[dow]==='1' &&
+        rangeOverlapsModules(p.hi, p.hf, miN, mfN, data.modulos)
+      );
+      const res = reservas.find(r =>
+        r.r===s.codigo && r.fi===f.fi && r.es!=='rechazada' &&
+        miN <= Number(r.mf||0) && Number(r.mi||0) <= mfN
+      );
+      if(acad || res){
+        ocupadas.push({
+          sala: s,
+          motivo: acad
+            ? `Clase regular: ${(acad.a||'').slice(0,40)} (${acad.hi}–${acad.hf})`
+            : `Reserva: ${(res.mo||'').slice(0,40)} (Mód.${res.mi}–${res.mf})`,
+          tipo: acad ? 'académica' : 'reserva',
+        });
+      } else {
+        libres.push(s);
       }
-    });
-    // contra reservas existentes mismo día
-    reservas.filter(r => r.r===f.sala && r.fi===f.fi && r.es!=='rechazada').forEach(r=>{
-      const oI=Number(f.mi), oF=Number(f.mf), pI=Number(r.mi||0), pF=Number(r.mf||0);
-      if(oI <= pF && pI <= oF) choques.push({tipo:'reserva', detalle:`${r.motivo||r.mo} · Mód.${r.mi}–${r.mf}`});
-    });
-    setConflictos(choques);
-  },[f.sala, f.fi, f.mi, f.mf, data, reservas]);
+    }
+    return { libres, ocupadas };
+  },[f.fi, f.mi, f.mf, filtros, data, reservas]);
+
+  const dow = f.fi ? fechaToDow(f.fi) : 0;
+  const modIni = moduloInfo(data.modulos, f.mi);
+  const modFin = moduloInfo(data.modulos, f.mf);
+  const salaSel = f.sala ? data.salas.find(s => s.codigo===f.sala) : null;
+  const conflictoSel = useMemo(()=>{
+    if(!f.sala) return null;
+    const occ = evaluacion.ocupadas.find(o => o.sala.codigo===f.sala);
+    return occ ? occ.motivo : null;
+  },[f.sala, evaluacion]);
 
   const submit = () => {
-    if(!f.sala) return toast('Selecciona una sala.');
-    if(!f.motivo) return toast('Indica un motivo.');
-    if(conflictos.length>0 && !window.confirm(`Hay ${conflictos.length} conflicto(s) detectados. ¿Enviar de todas formas?`)) return;
+    if(!f.sala) return toast('Selecciona una sala disponible.');
+    if(!f.motivo) return toast('Indica el motivo de la reserva.');
+    if(Number(f.mi) > Number(f.mf)) return toast('El módulo inicio debe ser ≤ módulo fin.');
+    if(conflictoSel && !window.confirm(`La sala ${f.sala} está ocupada (${conflictoSel}). ¿Forzar la reserva igual?`)) return;
     const nuevo = {
       id: Date.now(),
       fi: f.fi, ff: f.ff || f.fi,
-      hi: (data.modulos.find(m=>m.num===Number(f.mi))||{}).inicio || '',
-      hf: (data.modulos.find(m=>m.num===Number(f.mf))||{}).fin || '',
+      hi: modIni?.inicio || '',
+      hf: modFin?.fin || '',
       mi: Number(f.mi), mf: Number(f.mf),
       r: f.sala, ts: f.todoSemestre,
       mo: f.motivo, do: f.docente, ru: f.rut, co: f.correo,
@@ -1443,85 +1500,155 @@ function NuevaReserva({ data, reservas, setReservas, user, toast, goReservas, pr
   };
 
   return (
-    <div className="grid grid-2">
+    <div className="stack">
+      {/* PASO 1 — Cuándo */}
       <div className="card">
-        <div className="card-header"><div><h3>Datos de la reserva</h3><div className="sub">Los módulos provienen de la planilla oficial</div></div></div>
-        <div className="col-2">
-          <div className="field"><label>Fecha inicio</label><input type="date" value={f.fi} onChange={e=>setF({...f,fi:e.target.value})}/></div>
-          <div className="field"><label>Fecha fin (opcional)</label><input type="date" value={f.ff} onChange={e=>setF({...f,ff:e.target.value})}/></div>
+        <div className="card-header">
+          <div>
+            <h3><span className="step-num">1</span>¿Cuándo necesitas la sala?</h3>
+            <div className="sub">Elige fecha y rango de módulos. El sistema buscará automáticamente los recintos disponibles.</div>
+          </div>
         </div>
-        <div className="field"><label>Sala / Recinto</label>
-          <select value={f.sala} onChange={e=>setF({...f,sala:e.target.value})}>
-            <option value="">Selecciona…</option>
-            {data.salas.map(s=> <option key={s.codigo} value={s.codigo}>{s.codigo} — {s.nombre} (cap. {s.capacidad})</option>)}
-          </select>
-        </div>
-        <div className="col-2">
+        <div className="grid" style={{gridTemplateColumns:'repeat(auto-fit,minmax(160px,1fr))',gap:12}}>
+          <div className="field"><label>Fecha</label><input type="date" value={f.fi} onChange={e=>setF({...f,fi:e.target.value,sala:''})}/></div>
+          <div className="field"><label>Hasta (opcional)</label><input type="date" value={f.ff} onChange={e=>setF({...f,ff:e.target.value})}/></div>
           <div className="field"><label>Módulo inicio</label>
-            <select value={f.mi} onChange={e=>setF({...f,mi:e.target.value})}>
+            <select value={f.mi} onChange={e=>setF({...f,mi:Number(e.target.value),sala:''})}>
               {data.modulos.map(m=> <option key={m.num} value={m.num}>Mód. {m.num} ({m.inicio})</option>)}
             </select>
           </div>
           <div className="field"><label>Módulo fin</label>
-            <select value={f.mf} onChange={e=>setF({...f,mf:e.target.value})}>
+            <select value={f.mf} onChange={e=>setF({...f,mf:Number(e.target.value),sala:''})}>
               {data.modulos.map(m=> <option key={m.num} value={m.num}>Mód. {m.num} ({m.fin})</option>)}
             </select>
           </div>
+          <div className="field"><label>Tipo de recinto</label>
+            <select value={filtros.tipo} onChange={e=>setFiltros({...filtros,tipo:e.target.value})}>
+              <option value="">Cualquiera</option>
+              {tipos.map(t=> <option key={t}>{t}</option>)}
+            </select>
+          </div>
+          <div className="field"><label>Capacidad mínima</label><input type="number" value={filtros.capMin} onChange={e=>setFiltros({...filtros,capMin:e.target.value})} placeholder="Ej: 30"/></div>
         </div>
-        <div className="field"><label>¿Todo el semestre?</label>
-          <select value={f.todoSemestre} onChange={e=>setF({...f,todoSemestre:e.target.value})}>
-            <option>NO</option><option>SI</option>
+        <div className="row" style={{gap:12,fontSize:13,marginTop:14,paddingTop:14,borderTop:'1px solid var(--border-soft)',flexWrap:'wrap'}}>
+          <span className="muted">Disponibilidad para</span>
+          <b>{DIA_NOMBRES[dow]}, {fmtFecha(f.fi)}</b>
+          <span className="muted">·</span>
+          <b>{modIni?.inicio} – {modFin?.fin}</b>
+          <span style={{flex:1}}/>
+          <span className="chip success">{evaluacion.libres.length} libres</span>
+          <span className="chip danger">{evaluacion.ocupadas.length} ocupadas</span>
+        </div>
+      </div>
+
+      {/* PASO 2 — Elegir sala */}
+      <div className="card">
+        <div className="card-header">
+          <div>
+            <h3><span className="step-num">2</span>Elige una sala disponible</h3>
+            <div className="sub">Cards en verde = libres en ese horario. Click para seleccionar.</div>
+          </div>
+          <div className="seg">
+            <button className={!filtros.mostrarTodas?'on':''} onClick={()=>setFiltros({...filtros,mostrarTodas:false})}>Solo libres</button>
+            <button className={filtros.mostrarTodas?'on':''} onClick={()=>setFiltros({...filtros,mostrarTodas:true})}>Mostrar ocupadas</button>
+          </div>
+        </div>
+
+        {evaluacion.libres.length===0 && !filtros.mostrarTodas && (
+          <div className="empty"><span className="emoji">🚫</span>No hay salas libres con esos criterios.<br/>Cambia el horario, día o filtros, o activa "Mostrar ocupadas" para ver por qué.</div>
+        )}
+
+        {(evaluacion.libres.length>0 || filtros.mostrarTodas) && (
+          <div className="grid" style={{gridTemplateColumns:'repeat(auto-fill,minmax(200px,1fr))',gap:10}}>
+            {evaluacion.libres.map(s => (
+              <div key={s.codigo}
+                className={`sala-pick ${f.sala===s.codigo?'sel':''}`}
+                onClick={()=>setF({...f,sala:s.codigo})}>
+                <div className="top">
+                  <div className="code">{s.codigo}</div>
+                  <span className="chip success">Libre</span>
+                </div>
+                <div className="name">{(s.nombre||'').slice(0,60)}</div>
+                <div className="meta">
+                  <span className="chip">{s.tipo}</span>
+                  <span className="chip">Cap. {s.capacidad}</span>
+                </div>
+              </div>
+            ))}
+            {filtros.mostrarTodas && evaluacion.ocupadas.map(({sala:s, motivo, tipo}) => (
+              <div key={s.codigo} className="sala-pick ocupada" title={motivo}>
+                <div className="top">
+                  <div className="code" style={{color:'var(--text-muted)'}}>{s.codigo}</div>
+                  <span className="chip danger">{tipo==='académica'?'Clase':'Reserva'}</span>
+                </div>
+                <div className="name">{(s.nombre||'').slice(0,60)}</div>
+                <div className="meta" style={{fontSize:10.5,color:'var(--text-soft)'}}>{motivo.slice(0,70)}</div>
+              </div>
+            ))}
+          </div>
+        )}
+
+        <div className="field" style={{marginTop:14,maxWidth:520}}>
+          <label>O elige por código (incluso si está ocupada — admin/subdir podrán forzar)</label>
+          <select value={f.sala} onChange={e=>setF({...f,sala:e.target.value})}>
+            <option value="">— Selecciona una sala del listado superior o por código —</option>
+            {data.salas.map(s=> <option key={s.codigo} value={s.codigo}>{s.codigo} — {(s.nombre||'').slice(0,46)} (cap. {s.capacidad})</option>)}
           </select>
         </div>
-        <div className="field"><label>Motivo</label><input value={f.motivo} onChange={e=>setF({...f,motivo:e.target.value})} placeholder="Recuperación de clase, reunión, evento…"/></div>
-        <div className="field"><label>Observación</label><textarea value={f.observacion} onChange={e=>setF({...f,observacion:e.target.value})}/></div>
-        <div className="col-2">
-          <div className="field"><label>Docente / Colaborador</label><input value={f.docente} onChange={e=>setF({...f,docente:e.target.value})}/></div>
-          <div className="field"><label>RUT/ID</label><input value={f.rut} onChange={e=>setF({...f,rut:e.target.value})}/></div>
-        </div>
-        <div className="field"><label>Correo</label><input value={f.correo} onChange={e=>setF({...f,correo:e.target.value})}/></div>
-
-        <div className="row" style={{justifyContent:'flex-end',marginTop:8,gap:10}}>
-          <button className="btn btn-primary" onClick={submit}>{I.check}Enviar solicitud</button>
-        </div>
       </div>
 
-      <div className="stack">
-        <div className="card">
-          <div className="card-header"><div><h3>Validación de conflictos</h3><div className="sub">Cruzamos contra la SABANA y reservas activas</div></div></div>
-          {!f.sala && <div className="empty"><span className="emoji">🛡</span>Selecciona una sala para verificar disponibilidad.</div>}
-          {f.sala && conflictos.length===0 && (
-            <div className="chip success" style={{fontSize:13,padding:'10px 16px'}}>
-              {I.check}&nbsp;Disponible — sin conflictos detectados para esa fecha y módulos.
-            </div>
-          )}
-          {f.sala && conflictos.length>0 && (
-            <div className="stack" style={{gap:8}}>
-              <div className="chip danger" style={{fontSize:13,padding:'10px 16px'}}>{conflictos.length} conflicto(s) detectado(s)</div>
-              {conflictos.map((c,i)=>(
-                <div key={i} className="row between" style={{padding:'10px 12px',background:'#FDECEC',border:'1px solid #F8C2C2',borderRadius:8}}>
-                  <div><b style={{textTransform:'capitalize'}}>{c.tipo}</b><div className="muted" style={{fontSize:12}}>{c.detalle}</div></div>
-                </div>
-              ))}
-            </div>
-          )}
-        </div>
-        <div className="card">
-          <div className="card-header"><div><h3>Información de la sala</h3></div></div>
-          {f.sala ? (() => {
-            const s = data.salas.find(x=>x.codigo===f.sala);
-            return s ? (
-              <div className="stack" style={{gap:6,fontSize:13}}>
-                <div><span className="muted">Código:</span> <b>{s.codigo}</b></div>
-                <div><span className="muted">Denominación:</span> {s.nombre}</div>
-                <div><span className="muted">Tipo:</span> <span className="chip">{s.tipo}</span></div>
-                <div><span className="muted">Capacidad:</span> {s.capacidad}</div>
-                <div><span className="muted">Responsable:</span> {s.responsable}</div>
+      {/* PASO 3 — Detalles (solo si hay sala) */}
+      {salaSel && (
+        <>
+          <div className="card" style={{borderColor: conflictoSel ? '#F4D2D2' : '#C7E0CC', background: conflictoSel?'#FDF7F7':'#F6FCF8'}}>
+            <div className="card-header">
+              <div>
+                <h3 style={{color: conflictoSel?'var(--danger)':'var(--success)'}}>
+                  {conflictoSel?'⚠ ':'✓ '}Sala seleccionada: <b style={{color:'var(--primary)'}}>{salaSel.codigo}</b>
+                </h3>
+                <div className="sub">{salaSel.nombre}</div>
               </div>
-            ) : null;
-          })() : <div className="muted" style={{fontSize:13}}>—</div>}
-        </div>
-      </div>
+              <button className="btn-icon" title="Quitar selección" onClick={()=>setF({...f,sala:''})}>{I.x}</button>
+            </div>
+            <div className="row" style={{gap:18,flexWrap:'wrap',fontSize:13}}>
+              <div><div className="muted" style={{fontSize:11,textTransform:'uppercase',letterSpacing:.4}}>Tipo</div><span className="chip">{salaSel.tipo}</span></div>
+              <div><div className="muted" style={{fontSize:11,textTransform:'uppercase',letterSpacing:.4}}>Capacidad</div><b>{salaSel.capacidad}</b></div>
+              <div><div className="muted" style={{fontSize:11,textTransform:'uppercase',letterSpacing:.4}}>Responsable</div>{salaSel.responsable}</div>
+              <div><div className="muted" style={{fontSize:11,textTransform:'uppercase',letterSpacing:.4}}>Horario</div><b>{modIni?.inicio} – {modFin?.fin}</b></div>
+            </div>
+            {conflictoSel && (
+              <div className="chip danger" style={{marginTop:12,padding:'10px 14px',fontSize:13}}>{conflictoSel}</div>
+            )}
+          </div>
+
+          <div className="card">
+            <div className="card-header">
+              <div>
+                <h3><span className="step-num">3</span>Datos de la solicitud</h3>
+                <div className="sub">Información del responsable y motivo de la reserva</div>
+              </div>
+            </div>
+            <div className="field"><label>Motivo *</label><input value={f.motivo} onChange={e=>setF({...f,motivo:e.target.value})} placeholder="Recuperación de clase, reunión, evento…"/></div>
+            <div className="field"><label>Observación</label><textarea value={f.observacion} onChange={e=>setF({...f,observacion:e.target.value})}/></div>
+            <div className="col-2">
+              <div className="field"><label>Docente / Colaborador</label><input value={f.docente} onChange={e=>setF({...f,docente:e.target.value})}/></div>
+              <div className="field"><label>RUT / ID</label><input value={f.rut} onChange={e=>setF({...f,rut:e.target.value})}/></div>
+            </div>
+            <div className="col-2">
+              <div className="field"><label>Correo</label><input value={f.correo} onChange={e=>setF({...f,correo:e.target.value})}/></div>
+              <div className="field"><label>¿Todo el semestre?</label>
+                <select value={f.todoSemestre} onChange={e=>setF({...f,todoSemestre:e.target.value})}>
+                  <option>NO</option><option>SI</option>
+                </select>
+              </div>
+            </div>
+            <div className="row" style={{justifyContent:'flex-end',marginTop:14,gap:10}}>
+              <button className="btn btn-ghost" onClick={()=>setF({...f,sala:''})}>Cambiar sala</button>
+              <button className="btn btn-primary" onClick={submit}>{I.check}Enviar solicitud</button>
+            </div>
+          </div>
+        </>
+      )}
     </div>
   );
 }
