@@ -380,6 +380,67 @@
     }
     @keyframes fadeIn{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:translateY(0)}}
 
+    /* Horario físico */
+    .hgrid{
+      display:grid;grid-template-columns:120px repeat(7,minmax(120px,1fr));
+      border:1px solid var(--border-soft);border-radius:var(--radius);overflow:hidden;background:#fff;
+      font-size:11.5px;
+    }
+    .hgrid .hh{
+      padding:10px 8px;background:#0E1A33;color:#fff;font-weight:700;font-size:11.5px;
+      text-align:center;border-right:1px solid rgba(255,255,255,.06);border-bottom:1px solid var(--border-soft);
+    }
+    .hgrid .hh.today{background:#172649;border-bottom:3px solid var(--accent)}
+    .hgrid .hh small{display:block;color:var(--sidebar-text-muted);font-weight:500;font-size:10.5px;margin-top:2px}
+    .hgrid .hh.today small{color:#FFCE00}
+    .hgrid .mod{
+      padding:8px 6px;background:#F4F7FB;border-right:1px solid var(--border-soft);
+      border-bottom:1px solid var(--border-soft);text-align:center;font-weight:700;color:var(--text-muted);
+    }
+    .hgrid .mod b{display:block;font-size:13px;color:var(--text);margin-bottom:2px}
+    .hgrid .cl{
+      padding:6px;border-right:1px solid var(--border-soft);border-bottom:1px solid var(--border-soft);
+      min-height:54px;display:flex;flex-direction:column;gap:2px;background:#FBFCFD;cursor:default;
+      transition:background .12s;
+    }
+    .hgrid .cl.libre{background:#FBFEFB}
+    .hgrid .cl.libre:hover{background:#EEFAF1}
+    .hgrid .cl.weekend{background:#FAFAFC}
+    .hgrid .cl .blk{
+      padding:4px 6px;border-radius:4px;font-size:10.5px;line-height:1.25;color:#fff;
+    }
+    .hgrid .cl .blk b{font-size:11px}
+    .blk-ac{background:#3B5998}
+    .blk-rs{background:#D9941A;color:#1A1A1A}
+    .blk-pen{background:#F59E0B;color:#1A1A1A}
+    .blk-libre{
+      display:flex;align-items:center;justify-content:center;height:100%;
+      color:#8FBA9A;font-weight:600;font-size:10.5px;letter-spacing:.5px;
+    }
+
+    .week-nav{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+    .week-nav .btn-icon{background:#EEF2F7}
+    .week-nav .label{font-weight:700;font-size:13.5px;padding:0 8px}
+
+    .seg{
+      display:inline-flex;background:#F2F4F8;border-radius:8px;padding:3px;gap:2px;
+    }
+    .seg button{
+      padding:6px 14px;font-size:12.5px;font-weight:600;color:var(--text-muted);border-radius:6px;
+    }
+    .seg button.on{background:#fff;color:var(--text);box-shadow:0 1px 2px rgba(0,0,0,.06)}
+
+    .free-card{
+      background:var(--surface);border:1px solid var(--border-soft);border-radius:var(--radius);
+      padding:14px 16px;display:flex;flex-direction:column;gap:8px;cursor:pointer;
+      transition:border-color .15s, box-shadow .15s, transform .15s;
+    }
+    .free-card:hover{border-color:#9CC8A8;box-shadow:0 4px 14px rgba(16,185,129,.15);transform:translateY(-1px)}
+    .free-card .top{display:flex;justify-content:space-between;align-items:flex-start}
+    .free-card .code{font-weight:800;color:var(--primary);font-size:16px}
+    .free-card .name{font-size:12px;color:var(--text-muted);line-height:1.3}
+    .free-card .meta{display:flex;gap:8px;flex-wrap:wrap;font-size:11.5px;color:var(--text-soft)}
+
     /* Scrollbars */
     *::-webkit-scrollbar{width:10px;height:10px}
     *::-webkit-scrollbar-thumb{background:#D5DCE7;border-radius:8px}
@@ -412,6 +473,10 @@ const I = {
   x:        <Icon size={16} d={<><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></>} />,
   cal:      <Icon size={16} d={<><rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></>} />,
   bell:     <Icon size={18} d={<><path d="M18 8a6 6 0 10-12 0c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 01-3.46 0"/></>} />,
+  horario:  <Icon d={<><rect x="3" y="3" width="18" height="18" rx="2"/><line x1="3" y1="9" x2="21" y2="9"/><line x1="9" y1="3" x2="9" y2="21"/></>} />,
+  edit:     <Icon size={16} d={<><path d="M11 4H4a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 113 3L12 15l-4 1 1-4 9.5-9.5z"/></>} />,
+  key:      <Icon size={16} d={<><path d="M21 2l-2 2m-7.61 7.61a5.5 5.5 0 11-7.778 7.778 5.5 5.5 0 017.777-7.777zm0 0L15.5 7.5m0 0l3 3L22 7l-3-3m-3.5 3.5L19 4"/></>} />,
+  filter:   <Icon size={16} d={<polygon points="22 3 2 3 10 12.46 10 19 14 21 14 12.46 22 3"/>} />,
 };
 
 /* ========= CONST ========= */
@@ -452,6 +517,27 @@ const fmtFecha = (iso) => {
   if(!iso) return '—';
   const d = new Date(iso+'T00:00:00');
   return d.toLocaleDateString('es-CL',{day:'2-digit',month:'short',year:'numeric'});
+};
+
+const isoDate = (d) => d.toISOString().slice(0,10);
+const addDays = (d, n) => { const x = new Date(d); x.setDate(x.getDate()+n); return x; };
+const getMonday = (iso) => {
+  const d = new Date(iso+'T00:00:00');
+  const dw = d.getDay()===0 ? 6 : d.getDay()-1;
+  return addDays(d, -dw);
+};
+const toMin = (h) => { if(!h) return 0; const [H,M] = h.split(':').map(Number); return H*60+(M||0); };
+const moduloInfo = (modulos, num) => modulos.find(m=>m.num===Number(num));
+const rangeOverlapsModules = (hi, hf, mi, mf, modulos) => {
+  const mIni = moduloInfo(modulos, mi);
+  const mFin = moduloInfo(modulos, mf);
+  if(!mIni || !mFin) return false;
+  return toMin(mIni.inicio) < toMin(hf) && toMin(hi) < toMin(mFin.fin);
+};
+const moduleInTimeRange = (modNum, hi, hf, modulos) => {
+  const m = moduloInfo(modulos, modNum);
+  if(!m) return false;
+  return toMin(m.inicio) < toMin(hf) && toMin(hi) < toMin(m.fin);
 };
 
 const useToast = () => {
@@ -533,6 +619,7 @@ function Shell({ user, onLogout, view, setView, children, title, crumbs }){
   const menu = useMemo(()=>{
     const base = [
       ['dashboard', 'Dashboard',          I.dashboard, ['admin','subdireccion','reservador','usuario']],
+      ['horario',   'Horario semanal',    I.horario,   ['admin','subdireccion','reservador','usuario']],
       ['salas',     'Salas',              I.salas,     ['admin','subdireccion','reservador','usuario']],
       ['prog',      'Programación SABANA',I.prog,      ['admin','subdireccion','reservador','usuario']],
       ['reservas',  'Reservas',           I.reservas,  ['admin','subdireccion','reservador']],
@@ -700,6 +787,122 @@ function Dashboard({ data, reservas, user }){
   );
 }
 
+/* ========= HORARIO (físico Lun-Dom × módulos) ========= */
+function Horario({ data, reservas, onGoNueva }){
+  const today = isoDate(new Date());
+  const [fecha, setFecha] = useState(today);
+  const [sala, setSala] = useState(data.salas[0]?.codigo || '');
+
+  const monday = useMemo(()=> getMonday(fecha), [fecha]);
+  const week = useMemo(()=> [0,1,2,3,4,5,6].map(i => addDays(monday, i)), [monday]);
+
+  const grid = useMemo(()=>{
+    return data.modulos.map(mod => {
+      return week.map((d, dw) => {
+        const dIso = isoDate(d);
+        const acads = data.programacion.filter(p =>
+          p.s === sala && p.dw[dw] === '1' &&
+          moduleInTimeRange(mod.num, p.hi, p.hf, data.modulos)
+        );
+        const ress = reservas.filter(r =>
+          r.r === sala && r.fi === dIso && r.es !== 'rechazada' &&
+          mod.num >= Number(r.mi||0) && mod.num <= Number(r.mf||0)
+        );
+        return { acads, ress };
+      });
+    });
+  },[data, reservas, sala, week]);
+
+  const salaInfo = data.salas.find(s => s.codigo===sala);
+  const todayIso = isoDate(new Date());
+
+  return (
+    <div className="stack">
+      <div className="filters">
+        <div className="field" style={{maxWidth:260}}>
+          <label>Sala / Recinto</label>
+          <select value={sala} onChange={e=>setSala(e.target.value)}>
+            {data.salas.map(s=> <option key={s.codigo} value={s.codigo}>{s.codigo} — {(s.nombre||'').slice(0,40)}</option>)}
+          </select>
+        </div>
+        <div className="field" style={{maxWidth:180}}>
+          <label>Fecha</label>
+          <input type="date" value={fecha} onChange={e=>setFecha(e.target.value)}/>
+        </div>
+        <div className="week-nav">
+          <button className="btn-icon" title="Semana anterior" onClick={()=>setFecha(isoDate(addDays(new Date(fecha+'T00:00:00'), -7)))}>‹</button>
+          <span className="label">
+            {monday.toLocaleDateString('es-CL',{day:'2-digit',month:'short'})} – {addDays(monday,6).toLocaleDateString('es-CL',{day:'2-digit',month:'short',year:'numeric'})}
+          </span>
+          <button className="btn-icon" title="Semana siguiente" onClick={()=>setFecha(isoDate(addDays(new Date(fecha+'T00:00:00'), 7)))}>›</button>
+          <button className="btn btn-sm btn-ghost" onClick={()=>setFecha(todayIso)}>Hoy</button>
+        </div>
+        <div style={{marginLeft:'auto'}} className="legend">
+          <span><i style={{background:'#3B5998'}}/>Clase</span>
+          <span><i style={{background:'#D9941A'}}/>Reserva</span>
+          <span><i style={{background:'#FBFEFB',border:'1px solid #C7E0CC'}}/>Libre</span>
+        </div>
+      </div>
+
+      {salaInfo && (
+        <div className="card" style={{padding:'14px 18px'}}>
+          <div className="row" style={{gap:18,flexWrap:'wrap'}}>
+            <div><div className="muted" style={{fontSize:11,textTransform:'uppercase',letterSpacing:.5}}>Código</div><b style={{color:'var(--primary)',fontSize:16}}>{salaInfo.codigo}</b></div>
+            <div><div className="muted" style={{fontSize:11,textTransform:'uppercase',letterSpacing:.5}}>Denominación</div><div style={{fontSize:13}}>{salaInfo.nombre}</div></div>
+            <div><div className="muted" style={{fontSize:11,textTransform:'uppercase',letterSpacing:.5}}>Tipo</div><span className="chip info">{salaInfo.tipo}</span></div>
+            <div><div className="muted" style={{fontSize:11,textTransform:'uppercase',letterSpacing:.5}}>Capacidad</div><b>{salaInfo.capacidad}</b></div>
+            <div><div className="muted" style={{fontSize:11,textTransform:'uppercase',letterSpacing:.5}}>Responsable</div><div style={{fontSize:13}}>{salaInfo.responsable}</div></div>
+          </div>
+        </div>
+      )}
+
+      <div className="card" style={{padding:0,overflow:'auto'}}>
+        <div className="hgrid" style={{minWidth:980}}>
+          <div className="hh">Módulo</div>
+          {week.map((d, i) => {
+            const isToday = isoDate(d)===todayIso;
+            return (
+              <div key={i} className={`hh ${isToday?'today':''}`}>
+                {DIA_CORTO[i]}<small>{d.toLocaleDateString('es-CL',{day:'2-digit',month:'2-digit'})}</small>
+              </div>
+            );
+          })}
+          {data.modulos.map((mod, mi) => (
+            <React.Fragment key={mod.num}>
+              <div className="mod"><b>Mód. {mod.num}</b>{mod.inicio}<br/>{mod.fin}</div>
+              {grid[mi].map((cell, di) => {
+                const isWeekend = di>=5;
+                if(cell.acads.length===0 && cell.ress.length===0){
+                  return (
+                    <div key={di} className={`cl libre ${isWeekend?'weekend':''}`} title="Espacio disponible">
+                      <div className="blk-libre">LIBRE</div>
+                    </div>
+                  );
+                }
+                return (
+                  <div key={di} className={`cl ${isWeekend?'weekend':''}`}>
+                    {cell.acads.map((p,i)=>(
+                      <div key={'a'+i} className="blk blk-ac" title={`${p.a} · ${p.d||''} · ${p.hi}-${p.hf}`}>
+                        <b>{p.sc}</b><div style={{opacity:.85}}>{(p.a||'').slice(0,26)}</div>
+                      </div>
+                    ))}
+                    {cell.ress.map((r,i)=>(
+                      <div key={'r'+i} className={`blk ${r.es==='pendiente'?'blk-pen':'blk-rs'}`} title={`${r.mo} · ${r.do||''} · Mód.${r.mi}-${r.mf}`}>
+                        <b>{r.es==='pendiente'?'⏳ ':'📌 '}{(r.mo||'').slice(0,24)}</b>
+                        <div style={{opacity:.85}}>{r.do||r.co||''}</div>
+                      </div>
+                    ))}
+                  </div>
+                );
+              })}
+            </React.Fragment>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 /* ========= SALAS ========= */
 function Salas({ data, setData, user, toast }){
   const [q, setQ] = useState('');
@@ -726,14 +929,37 @@ function Salas({ data, setData, user, toast }){
     setForm({codigo:'',nombre:'',capacidad:'',tipo:'Sala',responsable:''});
     setModal(null); toast('Sala creada correctamente.');
   };
+  const startEdit = (sala) => {
+    setForm({codigo:sala.codigo, nombre:sala.nombre||'', capacidad:String(sala.capacidad||''), tipo:sala.tipo||'Sala', responsable:sala.responsable||''});
+    setModal('edit');
+  };
+  const update = () => {
+    if(!form.nombre){ toast('La denominación es obligatoria.'); return; }
+    const actualizado = {...form, capacidad:Number(form.capacidad)||0};
+    const eraCustom = (data._customSalas||[]).some(s=>s.codigo===form.codigo);
+    setData({
+      ...data,
+      salas: data.salas.map(s => s.codigo===form.codigo ? {...s, ...actualizado} : s),
+      _customSalas: eraCustom
+        ? (data._customSalas||[]).map(s=>s.codigo===form.codigo?{...s,...actualizado}:s)
+        : (data._customSalas||[]),
+      _salaOverrides: eraCustom
+        ? (data._salaOverrides||{})
+        : {...(data._salaOverrides||{}), [form.codigo]: {nombre:actualizado.nombre, capacidad:actualizado.capacidad, tipo:actualizado.tipo, responsable:actualizado.responsable}},
+    });
+    setForm({codigo:'',nombre:'',capacidad:'',tipo:'Sala',responsable:''});
+    setModal(null); toast('Sala actualizada.');
+  };
   const del = (codigo) => {
     if(!window.confirm(`¿Eliminar la sala ${codigo}? No se puede deshacer.`)) return;
     const eraCustom = (data._customSalas||[]).some(s=>s.codigo===codigo);
+    const overrides = {...(data._salaOverrides||{})}; delete overrides[codigo];
     setData({
       ...data,
       salas: data.salas.filter(s => s.codigo!==codigo),
       _customSalas: (data._customSalas||[]).filter(s=>s.codigo!==codigo),
       _deletedSalas: eraCustom ? (data._deletedSalas||[]) : [...(data._deletedSalas||[]), codigo],
+      _salaOverrides: overrides,
     });
     toast('Sala eliminada.');
   };
@@ -771,8 +997,11 @@ function Salas({ data, setData, user, toast }){
                   <td><span className="chip">{s.tipo}</span></td>
                   <td>{s.capacidad}</td>
                   <td className="muted">{s.responsable}</td>
-                  <td style={{textAlign:'right'}}>
-                    {canEdit && <button className="btn-icon" onClick={()=>del(s.codigo)} title="Eliminar">{I.trash}</button>}
+                  <td className="nowrap" style={{textAlign:'right'}}>
+                    {canEdit && <>
+                      <button className="btn-icon" onClick={()=>startEdit(s)} title="Editar">{I.edit}</button>
+                      <button className="btn-icon" onClick={()=>del(s.codigo)} title="Eliminar">{I.trash}</button>
+                    </>}
                   </td>
                 </tr>
               ))}
@@ -782,10 +1011,10 @@ function Salas({ data, setData, user, toast }){
         </div>
       </div>
 
-      {modal==='add' && (
-        <Modal title="Crear nueva sala" onClose={()=>setModal(null)} onSave={add}>
+      {(modal==='add' || modal==='edit') && (
+        <Modal title={modal==='add'?'Crear nueva sala':`Editar sala ${form.codigo}`} onClose={()=>setModal(null)} onSave={modal==='add'?add:update}>
           <div className="col-2">
-            <div className="field"><label>Código</label><input value={form.codigo} onChange={e=>setForm({...form,codigo:e.target.value.toUpperCase()})} placeholder="VI-SXXX"/></div>
+            <div className="field"><label>Código</label><input value={form.codigo} onChange={e=>modal==='add' && setForm({...form,codigo:e.target.value.toUpperCase()})} placeholder="VI-SXXX" disabled={modal==='edit'}/></div>
             <div className="field"><label>Capacidad</label><input type="number" value={form.capacidad} onChange={e=>setForm({...form,capacidad:e.target.value})}/></div>
           </div>
           <div className="field"><label>Denominación</label><input value={form.nombre} onChange={e=>setForm({...form,nombre:e.target.value})}/></div>
@@ -945,7 +1174,8 @@ function Programacion({ data }){
 }
 
 /* ========= RESERVAS ========= */
-function Reservas({ reservas, setReservas, user, toast }){
+function Reservas({ reservas, setReservas, data, user, toast, onGoNueva }){
+  const [tab, setTab] = useState('lista');
   const [q, setQ] = useState('');
   const [estado, setEstado] = useState('');
   const canApprove = user.role==='admin' || user.role==='subdireccion';
@@ -966,60 +1196,192 @@ function Reservas({ reservas, setReservas, user, toast }){
 
   return (
     <div className="stack">
-      <div className="filters">
-        <div className="field"><label>Buscar</label><input value={q} onChange={e=>setQ(e.target.value)} placeholder="Sala, motivo o docente…"/></div>
-        <div className="field"><label>Estado</label>
-          <select value={estado} onChange={e=>setEstado(e.target.value)}>
-            <option value="">Todos</option>
-            <option value="pendiente">Pendiente</option>
-            <option value="aprobada">Aprobada</option>
-            <option value="rechazada">Rechazada</option>
-          </select>
+      <div className="row" style={{justifyContent:'space-between'}}>
+        <div className="seg">
+          <button className={tab==='lista'?'on':''} onClick={()=>setTab('lista')}>Listado de reservas</button>
+          <button className={tab==='libres'?'on':''} onClick={()=>setTab('libres')}>{I.search}&nbsp;Buscar espacios libres</button>
         </div>
-        <div style={{alignSelf:'flex-end'}} className="chip info">{filtered.length} reservas</div>
+        <div className="chip info">{tab==='lista' ? `${filtered.length} reservas` : 'Disponibilidad'}</div>
       </div>
 
-      <div className="card" style={{padding:0}}>
-        <div className="tbl-scroll">
-          <table className="tbl">
-            <thead><tr>
-              <th>Fecha</th><th>Horario</th><th>Sala</th><th>Motivo</th><th>Solicitante</th><th>Estado</th><th></th>
-            </tr></thead>
-            <tbody>
-              {filtered.map(r => (
-                <tr key={r.id}>
-                  <td className="nowrap">{fmtFecha(r.fi)}{r.ff && r.ff!==r.fi ? ' → '+fmtFecha(r.ff) : ''}</td>
-                  <td className="nowrap">{r.hi}–{r.hf}<div className="muted" style={{fontSize:11}}>Mód. {r.mi}–{r.mf}</div></td>
-                  <td><b style={{color:'var(--primary)'}}>{r.r}</b></td>
-                  <td style={{maxWidth:340}}>{r.mo}</td>
-                  <td><div style={{fontSize:13}}>{r.do||'—'}</div><div className="muted" style={{fontSize:11}}>{r.co||r.ru}</div></td>
-                  <td>{
-                    r.es==='aprobada' ? <span className="chip success">Aprobada</span> :
-                    r.es==='pendiente' ? <span className="chip warn">Pendiente</span> :
-                    <span className="chip danger">Rechazada</span>
-                  }</td>
-                  <td className="nowrap" style={{textAlign:'right'}}>
-                    {canApprove && r.es==='pendiente' && <>
-                      <button className="btn btn-sm btn-success" onClick={()=>setEstadoReserva(r.id,'aprobada')}>{I.check}Aprobar</button>{' '}
-                      <button className="btn btn-sm btn-danger" onClick={()=>setEstadoReserva(r.id,'rechazada')}>{I.x}Rechazar</button>
-                    </>}
-                  </td>
-                </tr>
-              ))}
-              {filtered.length===0 && <tr><td colSpan="7"><div className="empty"><span className="emoji">🗂</span>Sin reservas para los filtros aplicados.</div></td></tr>}
-            </tbody>
-          </table>
+      {tab==='lista' && <>
+        <div className="filters">
+          <div className="field"><label>Buscar</label><input value={q} onChange={e=>setQ(e.target.value)} placeholder="Sala, motivo o docente…"/></div>
+          <div className="field"><label>Estado</label>
+            <select value={estado} onChange={e=>setEstado(e.target.value)}>
+              <option value="">Todos</option>
+              <option value="pendiente">Pendiente</option>
+              <option value="aprobada">Aprobada</option>
+              <option value="rechazada">Rechazada</option>
+            </select>
+          </div>
         </div>
-      </div>
+
+        <div className="card" style={{padding:0}}>
+          <div className="tbl-scroll">
+            <table className="tbl">
+              <thead><tr>
+                <th>Fecha</th><th>Horario</th><th>Sala</th><th>Motivo</th><th>Solicitante</th><th>Estado</th><th></th>
+              </tr></thead>
+              <tbody>
+                {filtered.map(r => (
+                  <tr key={r.id}>
+                    <td className="nowrap">{fmtFecha(r.fi)}{r.ff && r.ff!==r.fi ? ' → '+fmtFecha(r.ff) : ''}</td>
+                    <td className="nowrap">{r.hi}–{r.hf}<div className="muted" style={{fontSize:11}}>Mód. {r.mi}–{r.mf}</div></td>
+                    <td><b style={{color:'var(--primary)'}}>{r.r}</b></td>
+                    <td style={{maxWidth:340}}>{r.mo}</td>
+                    <td><div style={{fontSize:13}}>{r.do||'—'}</div><div className="muted" style={{fontSize:11}}>{r.co||r.ru}</div></td>
+                    <td>{
+                      r.es==='aprobada' ? <span className="chip success">Aprobada</span> :
+                      r.es==='pendiente' ? <span className="chip warn">Pendiente</span> :
+                      <span className="chip danger">Rechazada</span>
+                    }</td>
+                    <td className="nowrap" style={{textAlign:'right'}}>
+                      {canApprove && r.es==='pendiente' && <>
+                        <button className="btn btn-sm btn-success" onClick={()=>setEstadoReserva(r.id,'aprobada')}>{I.check}Aprobar</button>{' '}
+                        <button className="btn btn-sm btn-danger" onClick={()=>setEstadoReserva(r.id,'rechazada')}>{I.x}Rechazar</button>
+                      </>}
+                    </td>
+                  </tr>
+                ))}
+                {filtered.length===0 && <tr><td colSpan="7"><div className="empty"><span className="emoji">🗂</span>Sin reservas para los filtros aplicados.</div></td></tr>}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </>}
+
+      {tab==='libres' && <BuscarLibres data={data} reservas={reservas} onGoNueva={onGoNueva}/>}
     </div>
   );
 }
 
+/* ========= BUSCAR ESPACIOS LIBRES ========= */
+function BuscarLibres({ data, reservas, onGoNueva }){
+  const [fecha, setFecha] = useState(isoDate(new Date()));
+  const [mi, setMi] = useState(1);
+  const [mf, setMf] = useState(2);
+  const [tipo, setTipo] = useState('');
+  const [capMin, setCapMin] = useState('');
+  const [busqueda, setBusqueda] = useState(false);
+
+  const tipos = useMemo(()=> [...new Set(data.salas.map(s=>s.tipo))].sort(), [data]);
+  const dow = fechaToDow(fecha);
+  const modIni = moduloInfo(data.modulos, mi);
+  const modFin = moduloInfo(data.modulos, mf);
+
+  const libres = useMemo(()=>{
+    if(!busqueda) return null;
+    const miN = Number(mi), mfN = Number(mf);
+    const capN = Number(capMin)||0;
+    return data.salas
+      .filter(s => !tipo || s.tipo===tipo)
+      .filter(s => !capN || (s.capacidad||0) >= capN)
+      .map(s => {
+        const acadConflict = data.programacion.some(p =>
+          p.s===s.codigo && p.dw[dow]==='1' &&
+          rangeOverlapsModules(p.hi, p.hf, miN, mfN, data.modulos)
+        );
+        if(acadConflict) return null;
+        const resConflict = reservas.some(r =>
+          r.r===s.codigo && r.fi===fecha && r.es!=='rechazada' &&
+          miN <= Number(r.mf||0) && Number(r.mi||0) <= mfN
+        );
+        return resConflict ? null : s;
+      })
+      .filter(Boolean);
+  },[busqueda, fecha, mi, mf, tipo, capMin, data, reservas, dow]);
+
+  const buscar = () => {
+    if(Number(mi) > Number(mf)){ alert('El módulo inicio debe ser ≤ módulo fin.'); return; }
+    setBusqueda(true);
+  };
+
+  return (
+    <>
+      <div className="filters">
+        <div className="field" style={{maxWidth:170}}>
+          <label>Fecha</label>
+          <input type="date" value={fecha} onChange={e=>{setFecha(e.target.value);setBusqueda(false)}}/>
+        </div>
+        <div className="field" style={{maxWidth:160}}>
+          <label>Mód. inicio</label>
+          <select value={mi} onChange={e=>{setMi(e.target.value);setBusqueda(false)}}>
+            {data.modulos.map(m=> <option key={m.num} value={m.num}>Mód. {m.num} ({m.inicio})</option>)}
+          </select>
+        </div>
+        <div className="field" style={{maxWidth:160}}>
+          <label>Mód. fin</label>
+          <select value={mf} onChange={e=>{setMf(e.target.value);setBusqueda(false)}}>
+            {data.modulos.map(m=> <option key={m.num} value={m.num}>Mód. {m.num} ({m.fin})</option>)}
+          </select>
+        </div>
+        <div className="field" style={{maxWidth:160}}>
+          <label>Tipo</label>
+          <select value={tipo} onChange={e=>{setTipo(e.target.value);setBusqueda(false)}}>
+            <option value="">Cualquiera</option>
+            {tipos.map(t=> <option key={t}>{t}</option>)}
+          </select>
+        </div>
+        <div className="field" style={{maxWidth:140}}>
+          <label>Capacidad mín.</label>
+          <input type="number" value={capMin} onChange={e=>{setCapMin(e.target.value);setBusqueda(false)}} placeholder="0"/>
+        </div>
+        <div style={{alignSelf:'flex-end'}}>
+          <button className="btn btn-primary" onClick={buscar}>{I.search}Buscar</button>
+        </div>
+      </div>
+
+      <div className="card" style={{padding:'10px 16px'}}>
+        <div className="row" style={{gap:14,flexWrap:'wrap',fontSize:13}}>
+          <span className="muted">Consulta:</span>
+          <b>{DIA_NOMBRES[dow]}</b>
+          <b>{fmtFecha(fecha)}</b>
+          <span className="muted">·</span>
+          <span>{modIni?`Mód.${modIni.num} (${modIni.inicio})`:''} → {modFin?`Mód.${modFin.num} (${modFin.fin})`:''}</span>
+          {tipo && <><span className="muted">·</span><span className="chip">{tipo}</span></>}
+          {capMin && <><span className="muted">·</span><span className="chip">≥ {capMin} personas</span></>}
+        </div>
+      </div>
+
+      {busqueda && libres && (
+        libres.length===0 ? (
+          <div className="empty"><span className="emoji">🚫</span>No hay salas disponibles para esos criterios.<br/>Prueba con otro horario, día o tipo.</div>
+        ) : (
+          <>
+            <div className="row between"><div className="chip success" style={{fontSize:13,padding:'7px 14px'}}>{libres.length} sala(s) disponibles</div></div>
+            <div className="grid" style={{gridTemplateColumns:'repeat(auto-fill,minmax(240px,1fr))',gap:12}}>
+              {libres.map(s => (
+                <div key={s.codigo} className="free-card" onClick={()=> onGoNueva?.({sala:s.codigo,fecha,mi:Number(mi),mf:Number(mf)})}>
+                  <div className="top">
+                    <div>
+                      <div className="code">{s.codigo}</div>
+                      <div className="name">{s.nombre}</div>
+                    </div>
+                    <span className="chip success">Libre</span>
+                  </div>
+                  <div className="meta">
+                    <span className="chip">{s.tipo}</span>
+                    <span className="chip">Cap. {s.capacidad}</span>
+                  </div>
+                  <div className="muted" style={{fontSize:11.5}}>Resp.: {s.responsable}</div>
+                </div>
+              ))}
+            </div>
+          </>
+        )
+      )}
+      {!busqueda && <div className="empty"><span className="emoji">🔎</span>Define los criterios y presiona <b>Buscar</b> para listar las salas libres.</div>}
+    </>
+  );
+}
+
 /* ========= NUEVA RESERVA ========= */
-function NuevaReserva({ data, reservas, setReservas, user, toast, goReservas }){
+function NuevaReserva({ data, reservas, setReservas, user, toast, goReservas, prefill }){
   const [f, setF] = useState({
-    fi:new Date().toISOString().slice(0,10), ff:'',
-    sala:'', mi:1, mf:1, motivo:'', todoSemestre:'NO', observacion:'',
+    fi: prefill?.fecha || new Date().toISOString().slice(0,10), ff:'',
+    sala: prefill?.sala || '', mi: prefill?.mi || 1, mf: prefill?.mf || 1,
+    motivo:'', todoSemestre:'NO', observacion:'',
     docente:user.nombre, correo:user.email, rut:''
   });
   const [conflictos, setConflictos] = useState([]);
@@ -1154,33 +1516,48 @@ function NuevaReserva({ data, reservas, setReservas, user, toast, goReservas }){
 
 /* ========= USUARIOS ========= */
 function Usuarios({ users, setUsers, toast }){
-  const [modal, setModal] = useState(false);
-  const [form, setForm] = useState({username:'',nombre:'',email:'',password:'',role:'usuario',activo:true});
+  const [modal, setModal] = useState(null); // 'add' | 'edit' | 'pwd' | null
+  const [form, setForm] = useState({id:null,username:'',nombre:'',email:'',password:'',role:'usuario',activo:true});
+  const [pwdForm, setPwdForm] = useState({id:null, username:'', password:'', confirm:''});
 
   const add = () => {
     if(!form.username||!form.password||!form.nombre) return toast('Completa los campos requeridos.');
     if(users.some(u=>u.username===form.username)) return toast('Ese usuario ya existe.');
     setUsers([...users, {...form, id:Date.now()}]);
-    setForm({username:'',nombre:'',email:'',password:'',role:'usuario',activo:true});
-    setModal(false); toast('Usuario creado.');
+    resetForm(); setModal(null); toast('Usuario creado.');
+  };
+  const update = () => {
+    if(!form.nombre) return toast('El nombre es obligatorio.');
+    setUsers(users.map(u => u.id===form.id ? {...u, nombre:form.nombre, email:form.email, role:form.role, activo:form.activo} : u));
+    resetForm(); setModal(null); toast('Usuario actualizado.');
+  };
+  const resetPassword = () => {
+    if(!pwdForm.password || pwdForm.password.length<4) return toast('La contraseña debe tener al menos 4 caracteres.');
+    if(pwdForm.password!==pwdForm.confirm) return toast('Las contraseñas no coinciden.');
+    setUsers(users.map(u => u.id===pwdForm.id ? {...u, password:pwdForm.password} : u));
+    setPwdForm({id:null,username:'',password:'',confirm:''}); setModal(null);
+    toast('Contraseña actualizada.');
   };
   const del = (id) => {
     if(!window.confirm('¿Eliminar usuario?')) return;
     setUsers(users.filter(u=>u.id!==id)); toast('Usuario eliminado.');
   };
   const toggle = (id) => setUsers(users.map(u=>u.id===id?{...u,activo:!u.activo}:u));
+  const resetForm = () => setForm({id:null,username:'',nombre:'',email:'',password:'',role:'usuario',activo:true});
+  const startEdit = (u) => { setForm({...u, password:''}); setModal('edit'); };
+  const startPwd = (u) => { setPwdForm({id:u.id, username:u.username, password:'', confirm:''}); setModal('pwd'); };
 
   return (
     <div className="stack">
       <div className="filters">
-        <div className="muted" style={{fontSize:13}}>{users.length} usuarios en el sistema</div>
+        <div className="muted" style={{fontSize:13}}>{users.length} usuarios en el sistema · El administrador puede asignar y resetear contraseñas</div>
         <div style={{marginLeft:'auto'}}>
-          <button className="btn btn-primary" onClick={()=>setModal(true)}>{I.plus}Nuevo usuario</button>
+          <button className="btn btn-primary" onClick={()=>{resetForm();setModal('add')}}>{I.plus}Nuevo usuario</button>
         </div>
       </div>
       <div className="card" style={{padding:0}}>
         <table className="tbl">
-          <thead><tr><th>Usuario</th><th>Nombre</th><th>Correo</th><th>Rol</th><th>Estado</th><th></th></tr></thead>
+          <thead><tr><th>Usuario</th><th>Nombre</th><th>Correo</th><th>Rol</th><th>Estado</th><th style={{textAlign:'right'}}>Acciones</th></tr></thead>
           <tbody>
             {users.map(u=>(
               <tr key={u.id}>
@@ -1189,9 +1566,11 @@ function Usuarios({ users, setUsers, toast }){
                 <td className="muted">{u.email}</td>
                 <td><span className="chip info">{ROLES[u.role].label}</span></td>
                 <td>{u.activo ? <span className="chip success">Activo</span> : <span className="chip danger">Inactivo</span>}</td>
-                <td style={{textAlign:'right'}}>
+                <td className="nowrap" style={{textAlign:'right'}}>
                   <button className="btn btn-sm btn-ghost" onClick={()=>toggle(u.id)}>{u.activo?'Desactivar':'Activar'}</button>{' '}
-                  <button className="btn-icon" onClick={()=>del(u.id)}>{I.trash}</button>
+                  <button className="btn-icon" onClick={()=>startEdit(u)} title="Editar">{I.edit}</button>
+                  <button className="btn-icon" onClick={()=>startPwd(u)} title="Asignar contraseña">{I.key}</button>
+                  <button className="btn-icon" onClick={()=>del(u.id)} title="Eliminar">{I.trash}</button>
                 </td>
               </tr>
             ))}
@@ -1199,11 +1578,16 @@ function Usuarios({ users, setUsers, toast }){
         </table>
       </div>
 
-      {modal && (
-        <Modal title="Crear usuario" onClose={()=>setModal(false)} onSave={add}>
+      {(modal==='add' || modal==='edit') && (
+        <Modal title={modal==='add'?'Crear usuario':`Editar usuario ${form.username}`} onClose={()=>{setModal(null);resetForm()}} onSave={modal==='add'?add:update}>
           <div className="col-2">
-            <div className="field"><label>Usuario</label><input value={form.username} onChange={e=>setForm({...form,username:e.target.value})}/></div>
-            <div className="field"><label>Contraseña</label><input type="password" value={form.password} onChange={e=>setForm({...form,password:e.target.value})}/></div>
+            <div className="field"><label>Usuario</label><input value={form.username} onChange={e=>modal==='add' && setForm({...form,username:e.target.value})} disabled={modal==='edit'}/></div>
+            {modal==='add' && <div className="field"><label>Contraseña</label><input type="password" value={form.password} onChange={e=>setForm({...form,password:e.target.value})} placeholder="Mínimo 4 caracteres"/></div>}
+            {modal==='edit' && <div className="field"><label>Estado</label>
+              <select value={form.activo?'1':'0'} onChange={e=>setForm({...form,activo:e.target.value==='1'})}>
+                <option value="1">Activo</option><option value="0">Inactivo</option>
+              </select>
+            </div>}
           </div>
           <div className="field"><label>Nombre completo</label><input value={form.nombre} onChange={e=>setForm({...form,nombre:e.target.value})}/></div>
           <div className="col-2">
@@ -1214,6 +1598,14 @@ function Usuarios({ users, setUsers, toast }){
               </select>
             </div>
           </div>
+        </Modal>
+      )}
+
+      {modal==='pwd' && (
+        <Modal title={`Asignar contraseña a ${pwdForm.username}`} onClose={()=>setModal(null)} onSave={resetPassword} saveLabel="Guardar contraseña">
+          <div className="field"><label>Nueva contraseña</label><input type="password" value={pwdForm.password} onChange={e=>setPwdForm({...pwdForm,password:e.target.value})} placeholder="Mínimo 4 caracteres" autoFocus/></div>
+          <div className="field"><label>Confirmar contraseña</label><input type="password" value={pwdForm.confirm} onChange={e=>setPwdForm({...pwdForm,confirm:e.target.value})}/></div>
+          <div className="login-hint">El usuario podrá iniciar sesión inmediatamente con esta contraseña.</div>
         </Modal>
       )}
     </div>
@@ -1293,6 +1685,7 @@ function App(){
   const [users, setUsers] = useState(stored.users || DEFAULT_USERS);
   const [loading, setLoading] = useState(true);
   const [toast, setToast] = useToast();
+  const [prefillNueva, setPrefillNueva] = useState(null);
 
   // Persist
   useEffect(()=> {
@@ -1303,6 +1696,7 @@ function App(){
       reservaEstados: reservas.filter(r=>r.decidido_por).map(r=>({id:r.id,es:r.es,decidido_por:r.decidido_por,decidido_en:r.decidido_en})),
       customSalas: data._customSalas || [],
       deletedSalas: data._deletedSalas || [],
+      salaOverrides: data._salaOverrides || {},
     });
   }, [user, users, reservas, data]);
 
@@ -1319,8 +1713,16 @@ function App(){
         const st = loadStore();
         const customSalas = st.customSalas || [];
         const deletedSalas = new Set(st.deletedSalas || []);
-        const salasMerged = [...s.filter(x => !deletedSalas.has(x.codigo)), ...customSalas];
-        setData({ salas:salasMerged, programacion:p, modulos:m, _customSalas:customSalas, _deletedSalas:[...deletedSalas] });
+        const overrides = st.salaOverrides || {};
+        const salasMerged = [
+          ...s.filter(x => !deletedSalas.has(x.codigo))
+             .map(x => overrides[x.codigo] ? {...x, ...overrides[x.codigo]} : x),
+          ...customSalas
+        ];
+        setData({
+          salas:salasMerged, programacion:p, modulos:m,
+          _customSalas:customSalas, _deletedSalas:[...deletedSalas], _salaOverrides:overrides,
+        });
 
         // merge reservas: aplicar estados decididos y agregar custom
         const custom = st.customReservas || [];
@@ -1338,11 +1740,14 @@ function App(){
     <div className="loader" style={{paddingTop:140}}><div className="spinner"/><div>Cargando datos del portal…</div></div>
   );
 
+  const goNueva = (pre) => { setPrefillNueva(pre||null); setView('nueva'); };
+
   const titles = {
     dashboard:['Dashboard','Panel de control'],
+    horario:['Horario semanal','Disponibilidad física Lun-Dom × Módulos'],
     salas:['Catálogo de salas','Salas y recintos'],
     prog:['Programación académica','SABANA · 2026·1'],
-    reservas:['Reservas','Gestión de solicitudes'],
+    reservas:['Reservas','Gestión y búsqueda de disponibilidad'],
     nueva:['Solicitar reserva','Nueva solicitud'],
     usuarios:['Usuarios','Administración de cuentas'],
     reportes:['Reportes','Ocupación y métricas'],
@@ -1353,10 +1758,11 @@ function App(){
     <>
       <Shell user={user} onLogout={()=>{ setUser(null); }} view={view} setView={setView} title={title} crumbs={crumbs}>
         {view==='dashboard' && <Dashboard data={data} reservas={reservas} user={user}/>}
+        {view==='horario'   && <Horario data={data} reservas={reservas} onGoNueva={goNueva}/>}
         {view==='salas'     && <Salas data={data} setData={setData} user={user} toast={setToast}/>}
         {view==='prog'      && <Programacion data={data}/>}
-        {view==='reservas'  && <Reservas reservas={reservas} setReservas={setReservas} user={user} toast={setToast}/>}
-        {view==='nueva'     && <NuevaReserva data={data} reservas={reservas} setReservas={setReservas} user={user} toast={setToast} goReservas={()=>setView('reservas')}/>}
+        {view==='reservas'  && <Reservas reservas={reservas} setReservas={setReservas} data={data} user={user} toast={setToast} onGoNueva={goNueva}/>}
+        {view==='nueva'     && <NuevaReserva data={data} reservas={reservas} setReservas={setReservas} user={user} toast={setToast} goReservas={()=>setView('reservas')} prefill={prefillNueva}/>}
         {view==='usuarios'  && <Usuarios users={users} setUsers={setUsers} toast={setToast}/>}
         {view==='reportes'  && <Reportes data={data} reservas={reservas}/>}
       </Shell>
