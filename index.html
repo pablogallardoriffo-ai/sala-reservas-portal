@@ -496,6 +496,10 @@
       cursor:not-allowed;background:#FDF6F6;border-color:#F4D2D2;opacity:.85;
     }
     .sala-pick.ocupada:hover{transform:none;box-shadow:none;border-color:#F4D2D2}
+    .sala-pick.ocupada.pendiente{
+      background:#FEFAEA;border-color:#F5D680;
+    }
+    .sala-pick.ocupada.pendiente:hover{border-color:#F5D680}
     .sala-pick .top{display:flex;align-items:center;justify-content:space-between}
     .sala-pick .code{font-weight:800;color:var(--primary);font-size:15px}
     .sala-pick .name{font-size:11.5px;color:var(--text-muted);line-height:1.3;min-height:30px}
@@ -1326,6 +1330,11 @@ function Reservas({ reservas, setReservas, data, user, toast, onGoNueva }){
                         <button className="btn btn-sm btn-success" onClick={()=>setEstadoReserva(r.id,'aprobada')}>{I.check}Aprobar</button>{' '}
                         <button className="btn btn-sm btn-danger" onClick={()=>setEstadoReserva(r.id,'rechazada')}>{I.x}Rechazar</button>
                       </>}
+                      {!canApprove && r.es==='pendiente' && (r.creado_por===user.username || r.co===user.email) && (
+                        <button className="btn btn-sm btn-ghost" onClick={()=>{
+                          if(window.confirm('¿Cancelar tu solicitud? El recurso quedará libre nuevamente.')) setEstadoReserva(r.id,'rechazada');
+                        }}>{I.x}Cancelar</button>
+                      )}
                     </td>
                   </tr>
                 ))}
@@ -1494,19 +1503,23 @@ function NuevaReserva({ data, reservas, setReservas, user, toast, goReservas, pr
         miN <= Number(r.mf||0) && Number(r.mi||0) <= mfN
       );
       if(acad || res){
+        const esPendiente = !!res && res.es==='pendiente';
         ocupadas.push({
           sala: s,
           motivo: acad
             ? `Clase regular: ${(acad.a||'').slice(0,40)} (${acad.hi}–${acad.hf})`
-            : `Reserva: ${(res.mo||'').slice(0,40)} (Mód.${res.mi}–${res.mf})`,
-          tipo: acad ? 'académica' : 'reserva',
+            : `Reserva ${esPendiente?'PENDIENTE de autorización':'aprobada'}: ${(res.mo||'').slice(0,40)} (Mód.${res.mi}–${res.mf})`,
+          tipo: acad ? 'académica' : (esPendiente ? 'pendiente' : 'reserva'),
+          esPendiente,
+          esPropia: !!res && (res.creado_por===user.username || res.co===user.email),
+          reservaId: res?.id,
         });
       } else {
         libres.push(s);
       }
     }
     return { libres, ocupadas };
-  },[f.fi, f.mi, f.mf, filtros, data, reservas]);
+  },[f.fi, f.mi, f.mf, filtros, data, reservas, user]);
 
   const dow = f.fi ? fechaToDow(f.fi) : 0;
   const modIni = moduloInfo(data.modulos, f.mi);
@@ -1514,15 +1527,27 @@ function NuevaReserva({ data, reservas, setReservas, user, toast, goReservas, pr
   const salaSel = f.sala ? data.salas.find(s => s.codigo===f.sala) : null;
   const conflictoSel = useMemo(()=>{
     if(!f.sala) return null;
-    const occ = evaluacion.ocupadas.find(o => o.sala.codigo===f.sala);
-    return occ ? occ.motivo : null;
+    return evaluacion.ocupadas.find(o => o.sala.codigo===f.sala) || null;
   },[f.sala, evaluacion]);
 
   const submit = () => {
     if(!f.sala) return toast('Selecciona una sala disponible.');
     if(!f.motivo) return toast('Indica el motivo de la reserva.');
     if(Number(f.mi) > Number(f.mf)) return toast('El módulo inicio debe ser ≤ módulo fin.');
-    if(conflictoSel && !window.confirm(`La sala ${f.sala} está ocupada (${conflictoSel}). ¿Forzar la reserva igual?`)) return;
+    if(conflictoSel){
+      // Hard-block para usuario; pendientes bloquean a TODOS los roles para evitar topes
+      if(conflictoSel.esPendiente){
+        if(conflictoSel.esPropia){
+          return toast('Ya tienes una solicitud PENDIENTE para esa sala/horario. Cancélala primero desde Reservas.');
+        }
+        return toast(`No se puede reservar: existe una solicitud PENDIENTE de autorización para esa sala/horario. Resuélvela primero (aprobar o rechazar) antes de crear otra.`);
+      }
+      if(user.role==='usuario'){
+        return toast(`No se puede reservar: la sala ya tiene un compromiso (${conflictoSel.motivo}).`);
+      }
+      // admin/reservador: solo conflictos con clase regular o reserva aprobada pueden forzarse
+      if(!window.confirm(`⚠ Conflicto detectado: ${conflictoSel.motivo}\n\n¿Deseas forzar la reserva de todas formas? (acción excepcional)`)) return;
+    }
     const nuevo = {
       id: Date.now(),
       fi: f.fi, ff: f.ff || f.fi,
@@ -1616,14 +1641,16 @@ function NuevaReserva({ data, reservas, setReservas, user, toast, goReservas, pr
                 </div>
               </div>
             ))}
-            {filtros.mostrarTodas && evaluacion.ocupadas.map(({sala:s, motivo, tipo}) => (
-              <div key={s.codigo} className="sala-pick ocupada" title={motivo}>
+            {filtros.mostrarTodas && evaluacion.ocupadas.map(({sala:s, motivo, tipo, esPendiente, esPropia}) => (
+              <div key={s.codigo} className={`sala-pick ocupada ${esPendiente?'pendiente':''}`} title={motivo}>
                 <div className="top">
                   <div className="code" style={{color:'var(--text-muted)'}}>{s.codigo}</div>
-                  <span className="chip danger">{tipo==='académica'?'Clase':'Reserva'}</span>
+                  <span className={`chip ${esPendiente?'warn':'danger'}`}>
+                    {tipo==='académica' ? 'Clase' : (esPendiente ? '⏳ Pendiente' : '📌 Reserva')}
+                  </span>
                 </div>
                 <div className="name">{(s.nombre||'').slice(0,60)}</div>
-                <div className="meta" style={{fontSize:10.5,color:'var(--text-soft)'}}>{motivo.slice(0,70)}</div>
+                <div className="meta" style={{fontSize:10.5,color:'var(--text-soft)'}}>{motivo.slice(0,70)}{esPropia ? ' · tuya' : ''}</div>
               </div>
             ))}
           </div>
@@ -1639,13 +1666,20 @@ function NuevaReserva({ data, reservas, setReservas, user, toast, goReservas, pr
       </div>
 
       {/* PASO 3 — Detalles (solo si hay sala) */}
-      {salaSel && (
-        <>
-          <div className="card" style={{borderColor: conflictoSel ? '#F4D2D2' : '#C7E0CC', background: conflictoSel?'#FDF7F7':'#F6FCF8'}}>
+      {salaSel && (() => {
+        const cf = conflictoSel;
+        const isPend = cf?.esPendiente;
+        const borderCol = !cf ? '#C7E0CC' : (isPend ? '#F5D680' : '#F4D2D2');
+        const bgCol    = !cf ? '#F6FCF8' : (isPend ? '#FEFAEA' : '#FDF7F7');
+        const textCol  = !cf ? 'var(--success)' : (isPend ? 'var(--warning)' : 'var(--danger)');
+        const icon     = !cf ? '✓ ' : (isPend ? '⏳ ' : '⚠ ');
+        const titleTxt = !cf ? 'Sala seleccionada' : (isPend ? 'Sala con reserva pendiente' : 'Sala con conflicto');
+        return (<>
+          <div className="card" style={{borderColor:borderCol, background:bgCol}}>
             <div className="card-header">
               <div>
-                <h3 style={{color: conflictoSel?'var(--danger)':'var(--success)'}}>
-                  {conflictoSel?'⚠ ':'✓ '}Sala seleccionada: <b style={{color:'var(--primary)'}}>{salaSel.codigo}</b>
+                <h3 style={{color:textCol}}>
+                  {icon}{titleTxt}: <b style={{color:'var(--primary)'}}>{salaSel.codigo}</b>
                 </h3>
                 <div className="sub">{salaSel.nombre}</div>
               </div>
@@ -1657,8 +1691,16 @@ function NuevaReserva({ data, reservas, setReservas, user, toast, goReservas, pr
               <div><div className="muted" style={{fontSize:11,textTransform:'uppercase',letterSpacing:.4}}>Responsable</div>{salaSel.responsable}</div>
               <div><div className="muted" style={{fontSize:11,textTransform:'uppercase',letterSpacing:.4}}>Horario</div><b>{modIni?.inicio} – {modFin?.fin}</b></div>
             </div>
-            {conflictoSel && (
-              <div className="chip danger" style={{marginTop:12,padding:'10px 14px',fontSize:13}}>{conflictoSel}</div>
+            {cf && (
+              <div className={`chip ${isPend?'warn':'danger'}`} style={{marginTop:12,padding:'10px 14px',fontSize:13}}>
+                {cf.motivo}{isPend && cf.esPropia ? ' · Es tu propia solicitud' : ''}
+              </div>
+            )}
+            {cf && isPend && (
+              <div className="login-hint" style={{marginTop:10,fontSize:12}}>
+                Las solicitudes pendientes <b>bloquean</b> el recurso hasta ser aprobadas o rechazadas para evitar topes.
+                {cf.esPropia && ' Puedes cancelarla desde la pestaña Reservas.'}
+              </div>
             )}
           </div>
 
@@ -1688,8 +1730,8 @@ function NuevaReserva({ data, reservas, setReservas, user, toast, goReservas, pr
               <button className="btn btn-primary" onClick={submit}>{I.check}Enviar solicitud</button>
             </div>
           </div>
-        </>
-      )}
+        </>);
+      })()}
     </div>
   );
 }
