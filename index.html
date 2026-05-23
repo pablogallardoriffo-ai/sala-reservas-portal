@@ -209,12 +209,31 @@
     /* === Main === */
     .main{display:flex;flex-direction:column;overflow:hidden;min-width:0}
     .topbar{
-      height:64px;background:var(--surface);border-bottom:1px solid var(--border);
+      height:72px;background:var(--surface);border-bottom:1px solid var(--border);
       display:flex;align-items:center;padding:0 28px;gap:16px;
     }
     .topbar h1{font-size:18px;font-weight:700}
     .topbar .crumbs{font-size:12px;color:var(--text-muted)}
-    .topbar .right{margin-left:auto;display:flex;align-items:center;gap:10px}
+    .topbar .right{margin-left:auto;display:flex;align-items:center;gap:14px}
+
+    /* Reloj institucional */
+    .clock{
+      display:flex;flex-direction:column;align-items:flex-end;
+      padding:6px 16px;border-left:3px solid var(--accent);
+      background:linear-gradient(90deg, rgba(255,206,0,0.06), transparent);
+      border-radius:0 8px 8px 0;
+    }
+    .clock-time{
+      font-family:'Inter',monospace;font-size:22px;font-weight:800;
+      color:var(--primary);letter-spacing:1.5px;line-height:1;
+      font-variant-numeric:tabular-nums;
+    }
+    .clock-time .sep{color:var(--accent);animation:tick 1s steps(2) infinite}
+    @keyframes tick{50%{opacity:.35}}
+    .clock-date{
+      font-size:11px;color:var(--text-muted);margin-top:5px;
+      text-transform:capitalize;font-weight:600;letter-spacing:.3px;
+    }
     .search{
       position:relative;display:flex;align-items:center;
       background:#F2F4F8;border-radius:8px;padding:8px 12px;width:280px;
@@ -525,16 +544,14 @@ const I = {
 
 /* ========= CONST ========= */
 const ROLES = {
-  admin:        { label:'Administrador',  badge:'ADMIN' },
-  subdireccion: { label:'Subdirección',   badge:'SUBDIR' },
-  reservador:   { label:'Reservador',     badge:'RSV' },
-  usuario:      { label:'Usuario',        badge:'USR' },
+  admin:      { label:'Administrador', badge:'ADMIN', desc:'Coordinación docente, jefatura de área y subdirección académica' },
+  reservador: { label:'Reservador',    badge:'RSV',   desc:'Asistentes de coordinación docente que recepcionan y gestionan solicitudes' },
+  usuario:    { label:'Usuario',       badge:'USR',   desc:'Cliente de la sede que consulta disponibilidad y solicita reservas' },
 };
 const DEFAULT_USERS = [
-  { id:1, username:'admin',      nombre:'Administrador General', email:'admin@duoc.cl',       password:'010203', role:'admin',        activo:true },
-  { id:2, username:'subdir',     nombre:'Subdirección Académica', email:'subdir@duoc.cl',     password:'010203', role:'subdireccion', activo:true },
-  { id:3, username:'reservador', nombre:'Coordinación Docente',  email:'reservas@duoc.cl',    password:'010203', role:'reservador',   activo:true },
-  { id:4, username:'usuario',    nombre:'Usuario Consulta',      email:'consulta@duoc.cl',    password:'010203', role:'usuario',      activo:true },
+  { id:1, username:'admin',      nombre:'Coordinación Docente · Jefe de Área', email:'admin@duoc.cl',    password:'010203', role:'admin',      activo:true },
+  { id:2, username:'reservador', nombre:'Asistente de Coordinación Docente',   email:'reservas@duoc.cl', password:'010203', role:'reservador', activo:true },
+  { id:3, username:'usuario',    nombre:'Usuario de la Sede',                  email:'consulta@duoc.cl', password:'010203', role:'usuario',    activo:true },
 ];
 const DIA_NOMBRES = ['Lunes','Martes','Miércoles','Jueves','Viernes','Sábado','Domingo'];
 const DIA_CORTO   = ['Lun','Mar','Mié','Jue','Vie','Sáb','Dom'];
@@ -649,10 +666,33 @@ function Login({ onLogin, users }){
           <button className="btn btn-primary btn-block" type="submit">Entrar</button>
 
           <div className="login-hint">
-            <b>Demo:</b> usuario <b>admin / subdir / reservador / usuario</b>, contraseña <b>010203</b>.
+            <b>Demo:</b> usuarios <b>admin · reservador · usuario</b>, contraseña <b>010203</b>.
+            <div style={{marginTop:6,fontSize:11,opacity:.85}}>{ROLES[role]?.desc}</div>
           </div>
         </form>
       </div>
+    </div>
+  );
+}
+
+/* ========= RELOJ INSTITUCIONAL ========= */
+function Clock(){
+  const [now, setNow] = useState(new Date());
+  useEffect(()=>{
+    const t = setInterval(()=> setNow(new Date()), 1000);
+    return ()=> clearInterval(t);
+  },[]);
+  const pad = (n)=> String(n).padStart(2,'0');
+  const hh = pad(now.getHours());
+  const mm = pad(now.getMinutes());
+  const ss = pad(now.getSeconds());
+  const fecha = now.toLocaleDateString('es-CL',{weekday:'long',day:'2-digit',month:'long',year:'numeric'});
+  return (
+    <div className="clock" title="Hora actual del dispositivo">
+      <div className="clock-time">
+        {hh}<span className="sep">:</span>{mm}<span className="sep">:</span>{ss}
+      </div>
+      <div className="clock-date">{fecha}</div>
     </div>
   );
 }
@@ -661,15 +701,15 @@ function Login({ onLogin, users }){
 function Shell({ user, onLogout, view, setView, children, title, crumbs }){
   const menu = useMemo(()=>{
     const base = [
-      ['dashboard', 'Dashboard',          I.dashboard, ['admin','subdireccion','reservador','usuario']],
-      ['horario',   'Horario semanal',    I.horario,   ['admin','subdireccion','reservador','usuario']],
-      ['salas',     'Salas',              I.salas,     ['admin','subdireccion','reservador','usuario']],
-      ['prog',      'Programación SABANA',I.prog,      ['admin','subdireccion','reservador','usuario']],
-      ['reservas',  'Reservas',           I.reservas,  ['admin','subdireccion','reservador']],
-      ['nueva',     'Solicitar reserva',  I.nueva,     ['admin','subdireccion','reservador']],
+      ['dashboard', 'Dashboard',          I.dashboard, ['admin','reservador','usuario']],
+      ['horario',   'Horario semanal',    I.horario,   ['admin','reservador','usuario']],
+      ['salas',     'Salas',              I.salas,     ['admin','reservador','usuario']],
+      ['prog',      'Programación SABANA',I.prog,      ['admin','reservador','usuario']],
+      ['nueva',     'Solicitar reserva',  I.nueva,     ['admin','reservador','usuario']],
+      ['reservas',  'Reservas',           I.reservas,  ['admin','reservador','usuario']],
       ['importar',  'Importar SABANA',    I.upload,    ['admin']],
       ['usuarios',  'Usuarios',           I.users,     ['admin']],
-      ['reportes',  'Reportes',           I.reports,   ['admin','subdireccion']],
+      ['reportes',  'Reportes',           I.reports,   ['admin','reservador']],
     ];
     return base.filter(([,,,roles]) => roles.includes(user.role));
   },[user.role]);
@@ -706,6 +746,7 @@ function Shell({ user, onLogout, view, setView, children, title, crumbs }){
             <div className="search">{I.search}<input placeholder="Buscar…" /></div>
             <button className="btn-icon" title="Notificaciones">{I.bell}</button>
             <span className="pill">{ROLES[user.role].badge}</span>
+            <Clock/>
           </div>
         </header>
         <section className="content">{children}</section>
@@ -1222,11 +1263,11 @@ function Reservas({ reservas, setReservas, data, user, toast, onGoNueva }){
   const [tab, setTab] = useState('lista');
   const [q, setQ] = useState('');
   const [estado, setEstado] = useState('');
-  const canApprove = user.role==='admin' || user.role==='subdireccion';
+  const canApprove = user.role==='admin' || user.role==='reservador';
 
   const filtered = useMemo(()=>{
     let arr = reservas;
-    if(user.role==='reservador') arr = arr.filter(r => r.co===user.email || r.creado_por===user.username);
+    if(user.role==='usuario') arr = arr.filter(r => r.co===user.email || r.creado_por===user.username);
     return arr.filter(r =>
       (!q || (r.r||'').toLowerCase().includes(q.toLowerCase()) || (r.mo||'').toLowerCase().includes(q.toLowerCase()) || (r.do||'').toLowerCase().includes(q.toLowerCase())) &&
       (!estado || r.es===estado)
@@ -1491,7 +1532,7 @@ function NuevaReserva({ data, reservas, setReservas, user, toast, goReservas, pr
       r: f.sala, ts: f.todoSemestre,
       mo: f.motivo, do: f.docente, ru: f.rut, co: f.correo,
       observacion: f.observacion,
-      es: user.role==='admin' || user.role==='subdireccion' ? 'aprobada' : 'pendiente',
+      es: user.role==='admin' || user.role==='reservador' ? 'aprobada' : 'pendiente',
       creado_por: user.username, creado_en: new Date().toISOString(),
     };
     setReservas([nuevo, ...reservas]);
@@ -1589,7 +1630,7 @@ function NuevaReserva({ data, reservas, setReservas, user, toast, goReservas, pr
         )}
 
         <div className="field" style={{marginTop:14,maxWidth:520}}>
-          <label>O elige por código (incluso si está ocupada — admin/subdir podrán forzar)</label>
+          <label>O elige por código (incluso si está ocupada — el admin/reservador podrá forzar)</label>
           <select value={f.sala} onChange={e=>setF({...f,sala:e.target.value})}>
             <option value="">— Selecciona una sala del listado superior o por código —</option>
             {data.salas.map(s=> <option key={s.codigo} value={s.codigo}>{s.codigo} — {(s.nombre||'').slice(0,46)} (cap. {s.capacidad})</option>)}
@@ -2061,11 +2102,17 @@ function Modal({ title, children, onClose, onSave, saveLabel='Guardar' }){
 /* ========= ROOT APP ========= */
 function App(){
   const stored = loadStore();
-  const [user, setUser] = useState(stored.user || null);
+  // Migración: rol 'subdireccion' fusionado con 'admin' (cambio de modelo de roles)
+  const migrateUser = (u) => u && u.role==='subdireccion' ? {...u, role:'admin'} : u;
+  const migrateUsers = (arr) => (arr||[])
+    .filter(u => u.username!=='subdir')
+    .map(u => u.role==='subdireccion' ? {...u, role:'admin'} : u);
+
+  const [user, setUser] = useState(migrateUser(stored.user) || null);
   const [view, setView] = useState('dashboard');
   const [data, setData] = useState(null);
   const [reservas, setReservas] = useState([]);
-  const [users, setUsers] = useState(stored.users || DEFAULT_USERS);
+  const [users, setUsers] = useState(stored.users ? migrateUsers(stored.users) : DEFAULT_USERS);
   const [loading, setLoading] = useState(true);
   const [toast, setToast] = useToast();
   const [prefillNueva, setPrefillNueva] = useState(null);
