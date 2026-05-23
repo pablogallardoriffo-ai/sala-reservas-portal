@@ -4,13 +4,14 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Portal de Salas · DUOC UC</title>
-  <link rel="icon" type="image/svg+xml" href="./assets/logo-mark.svg" />
+  <link rel="icon" type="image/png" href="./assets/duoc-uc-oficial.png" />
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
   <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
   <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
   <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  <script src="https://cdn.sheetjs.com/xlsx-0.20.3/package/dist/xlsx.full.min.js"></script>
   <style>
     /* === Design tokens === */
     :root{
@@ -94,8 +95,8 @@
       border-radius:50%;
     }
     .login-side .brand{position:relative;display:flex;align-items:center;gap:14px}
-    .login-side .brand img{width:64px;height:auto}
-    .login-side .brand span{font-weight:800;font-size:20px;letter-spacing:.5px}
+    .login-side .brand{background:#fff;padding:14px 22px;border-radius:10px;align-self:flex-start;box-shadow:0 4px 14px rgba(0,0,0,.18)}
+    .login-side .brand img{height:48px;width:auto;display:block}
     .login-hero{position:relative}
     .login-hero h1{font-size:38px;font-weight:800;line-height:1.15;margin-bottom:16px}
     .login-hero p{color:#B8C2D8;font-size:15px;max-width:440px}
@@ -165,12 +166,14 @@
       display:flex;flex-direction:column;overflow-y:auto;
     }
     .sb-brand{
-      display:flex;align-items:center;gap:12px;padding:22px 20px;
-      border-bottom:1px solid rgba(255,255,255,.06);
+      display:flex;align-items:center;justify-content:center;padding:18px 16px;
+      border-bottom:1px solid rgba(255,255,255,.06);background:#fff;
     }
-    .sb-brand img{height:38px;width:auto;border-radius:6px}
-    .sb-brand .title{font-weight:700;font-size:14.5px;line-height:1.2;color:#fff}
-    .sb-brand .title small{display:block;font-weight:500;font-size:11px;color:var(--sidebar-text-muted);letter-spacing:.4px}
+    .sb-brand img{height:46px;width:auto;display:block;max-width:100%}
+    .sb-sub{
+      padding:10px 20px;border-bottom:1px solid rgba(255,255,255,.06);
+      color:var(--sidebar-text-muted);font-size:11px;font-weight:600;letter-spacing:.6px;text-transform:uppercase;text-align:center;
+    }
     .sb-section{padding:20px 14px 6px;font-size:10.5px;color:var(--sidebar-text-muted);font-weight:700;letter-spacing:1.2px;text-transform:uppercase}
     .sb-nav{padding:0 10px;display:flex;flex-direction:column;gap:2px}
     .sb-item{
@@ -441,6 +444,13 @@
     .free-card .name{font-size:12px;color:var(--text-muted);line-height:1.3}
     .free-card .meta{display:flex;gap:8px;flex-wrap:wrap;font-size:11.5px;color:var(--text-soft)}
 
+    .upload-zone{
+      border:2px dashed #C4D2EA;border-radius:var(--radius);padding:36px 20px;
+      text-align:center;background:#F8FAFD;cursor:pointer;transition:background .15s,border-color .15s;
+      margin-top:6px;
+    }
+    .upload-zone:hover{background:#EEF4FB;border-color:var(--primary-2)}
+
     /* Scrollbars */
     *::-webkit-scrollbar{width:10px;height:10px}
     *::-webkit-scrollbar-thumb{background:#D5DCE7;border-radius:8px}
@@ -477,6 +487,8 @@ const I = {
   edit:     <Icon size={16} d={<><path d="M11 4H4a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 113 3L12 15l-4 1 1-4 9.5-9.5z"/></>} />,
   key:      <Icon size={16} d={<><path d="M21 2l-2 2m-7.61 7.61a5.5 5.5 0 11-7.778 7.778 5.5 5.5 0 017.777-7.777zm0 0L15.5 7.5m0 0l3 3L22 7l-3-3m-3.5 3.5L19 4"/></>} />,
   filter:   <Icon size={16} d={<polygon points="22 3 2 3 10 12.46 10 19 14 21 14 12.46 22 3"/>} />,
+  upload:   <Icon d={<><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></>} />,
+  file:     <Icon size={16} d={<><path d="M13 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V9z"/><polyline points="13 2 13 9 20 9"/></>} />,
 };
 
 /* ========= CONST ========= */
@@ -570,8 +582,7 @@ function Login({ onLogin, users }){
     <div className="login-wrap">
       <div className="login-side">
         <div className="brand">
-          <img src="./assets/logo.svg" alt="DUOC UC"/>
-          <span>Portal de Salas</span>
+          <img src="./assets/duoc-uc-oficial.png" alt="Duoc UC · Sede Viña del Mar"/>
         </div>
         <div className="login-hero">
           <h1>Gestión académica<br/>de salas y reservas</h1>
@@ -624,6 +635,7 @@ function Shell({ user, onLogout, view, setView, children, title, crumbs }){
       ['prog',      'Programación SABANA',I.prog,      ['admin','subdireccion','reservador','usuario']],
       ['reservas',  'Reservas',           I.reservas,  ['admin','subdireccion','reservador']],
       ['nueva',     'Solicitar reserva',  I.nueva,     ['admin','subdireccion','reservador']],
+      ['importar',  'Importar SABANA',    I.upload,    ['admin']],
       ['usuarios',  'Usuarios',           I.users,     ['admin']],
       ['reportes',  'Reportes',           I.reports,   ['admin','subdireccion']],
     ];
@@ -634,9 +646,9 @@ function Shell({ user, onLogout, view, setView, children, title, crumbs }){
     <div className="app">
       <aside className="sidebar">
         <div className="sb-brand">
-          <img src="./assets/logo.svg" alt="DUOC UC"/>
-          <div className="title">DUOC UC<small>Portal de Salas</small></div>
+          <img src="./assets/duoc-uc-oficial.png" alt="Duoc UC · Sede Viña del Mar"/>
         </div>
+        <div className="sb-sub">Portal de Salas</div>
         <div className="sb-section">Navegación</div>
         <nav className="sb-nav">
           {menu.map(([k,l,ico]) => (
@@ -1660,6 +1672,250 @@ function Reportes({ data, reservas }){
 }
 
 /* ========= MODAL ========= */
+/* ========= IMPORTAR SABANA ========= */
+function ImportarSabana({ data, setData, toast }){
+  const [parsing, setParsing] = useState(false);
+  const [preview, setPreview] = useState(null);
+  const [archivo, setArchivo] = useState(null);
+  const [reemplazar, setReemplazar] = useState(true);
+
+  const findCol = (headers, candidatos) => {
+    const norm = (s) => (s||'').toString().toLowerCase().replace(/\s+/g,'').replace(/\./g,'');
+    for(const cand of candidatos){
+      const c = norm(cand);
+      const idx = headers.findIndex(h => norm(h)===c || norm(h).startsWith(c));
+      if(idx>=0) return idx;
+    }
+    return -1;
+  };
+
+  const onFile = async (e) => {
+    const f = e.target.files?.[0];
+    if(!f) return;
+    setArchivo(f); setParsing(true); setPreview(null);
+    try {
+      const ab = await f.arrayBuffer();
+      const wb = XLSX.read(ab, { type:'array', cellDates:true });
+      const sheet = wb.Sheets[wb.SheetNames[0]];
+      const rows = XLSX.utils.sheet_to_json(sheet, { header:1, defval:null });
+      if(rows.length<2) throw new Error('La hoja está vacía o no tiene encabezados.');
+
+      // Encontrar fila de encabezados (la que contenga "Aula" o "Sala")
+      let headerRow = 0;
+      for(let i=0;i<Math.min(5,rows.length);i++){
+        const h = (rows[i]||[]).map(x => (x||'').toString().toLowerCase());
+        if(h.some(x => x.includes('aula')) || h.some(x => x.includes('horinic'))){
+          headerRow = i; break;
+        }
+      }
+      const headers = rows[headerRow];
+      const dataRows = rows.slice(headerRow+1);
+
+      const cAula = findCol(headers, ['Aula','Sala']);
+      const cDen  = findCol(headers, ['Denominación de sala','Denominacion de sala','Denominacion','Den sala']);
+      const cCap  = findCol(headers, ['CapÓpt','Cap Opt','Capacidad']);
+      const cAsig = findCol(headers, ['Nom. Asignatura','Nombre Asignatura','Asignatura']);
+      const cSec  = findCol(headers, ['Nombre Seccion','Seccion','Sección']);
+      const cDoc  = findCol(headers, ['Instruct','Docente','Profesor']);
+      const cEsc  = findCol(headers, ['Escuela']);
+      const cJor  = findCol(headers, ['Nom.Jornada','Nom Jornada','Jornada']);
+      const cHi   = findCol(headers, ['HorInic','Hora Inicio','Inicio']);
+      const cHf   = findCol(headers, ['Final','Hora Fin','Fin']);
+      const cIns  = findCol(headers, ['Cant. ins','Cant ins','Inscritos']);
+      const cPla  = findCol(headers, ['Plazas Dis','Plazas','Disponibles']);
+      const cLun  = findCol(headers, ['Lun']);
+      const cMar  = findCol(headers, ['Martes','Mar']);
+      const cMie  = findCol(headers, ['Miér','Mier','Mie','Miercoles']);
+      const cJue  = findCol(headers, ['Jueves','Jue']);
+      const cVie  = findCol(headers, ['Viernes','Vie']);
+      const cSab  = findCol(headers, ['Sábado','Sabado','Sab']);
+      const cDom  = findCol(headers, ['Domingo','Dom']);
+
+      if(cAula<0 || cHi<0 || cHf<0) throw new Error('No se encontraron columnas mínimas: Aula, HorInic, Final.');
+
+      const tipoFromDen = (den) => {
+        const d = (den||'').toUpperCase();
+        if(d.includes('LABORATORIO') || d.includes('LAB')) return 'Laboratorio';
+        if(d.includes('TALLER')) return 'Taller';
+        if(d.includes('AUDIT')) return 'Auditorio';
+        if(d.includes('GIMNASIO') || d.includes('GIM')) return 'Gimnasio';
+        if(d.includes('PISC')) return 'Piscina';
+        if(d.includes('CANCHA') || d.includes('COMPLEJO') || d.includes('FUT')) return 'Cancha';
+        if(d.includes('ESTUDIO')) return 'Estudio';
+        if(d.includes('REUNIONES') || d.includes('NEGOCIOS')) return 'Reunion';
+        return 'Sala';
+      };
+      const fmtHora = (v) => {
+        if(v==null) return '';
+        if(typeof v==='string') return v.slice(0,5);
+        if(v instanceof Date){
+          const h=String(v.getHours()).padStart(2,'0');
+          const m=String(v.getMinutes()).padStart(2,'0');
+          return `${h}:${m}`;
+        }
+        // Excel fraction de día
+        if(typeof v==='number'){
+          const totalMin = Math.round(v*24*60);
+          const h=String(Math.floor(totalMin/60)).padStart(2,'0');
+          const m=String(totalMin%60).padStart(2,'0');
+          return `${h}:${m}`;
+        }
+        return String(v).slice(0,5);
+      };
+
+      const nuevasSalas = new Map();
+      const nuevaProg = [];
+      const escuelasSet = new Set();
+
+      for(const row of dataRows){
+        if(!row || row.length===0) continue;
+        const aula = row[cAula];
+        if(!aula) continue;
+        const den = cDen>=0 ? row[cDen] : '';
+        const cap = cCap>=0 ? Number(row[cCap])||0 : 0;
+        if(!nuevasSalas.has(aula)){
+          nuevasSalas.set(aula, {
+            codigo: String(aula),
+            nombre: den ? String(den) : String(aula),
+            capacidad: cap,
+            tipo: tipoFromDen(den),
+            responsable: 'Por asignar',
+          });
+        }
+        const dw = [cLun,cMar,cMie,cJue,cVie,cSab,cDom].map(c => c>=0 && row[c] ? '1':'0').join('');
+        if(dw==='0000000') continue;
+        const hi = fmtHora(row[cHi]);
+        const hf = fmtHora(row[cHf]);
+        if(!hi || !hf) continue;
+        const escuela = cEsc>=0 ? (row[cEsc]||'') : '';
+        if(escuela) escuelasSet.add(escuela);
+        nuevaProg.push({
+          s: String(aula),
+          a: cAsig>=0 ? row[cAsig] : null,
+          sc: cSec>=0 ? row[cSec] : null,
+          d: cDoc>=0 ? row[cDoc] : null,
+          es: String(escuela).slice(0,3),
+          j: cJor>=0 ? String(row[cJor]||'').slice(0,1) : '',
+          hi, hf, dw,
+          i: cIns>=0 ? row[cIns] : null,
+          p: cPla>=0 ? row[cPla] : null,
+        });
+      }
+
+      setPreview({
+        nombre: f.name,
+        sesiones: nuevaProg.length,
+        salasUnicas: nuevasSalas.size,
+        escuelas: escuelasSet.size,
+        salas: [...nuevasSalas.values()],
+        prog: nuevaProg,
+        cols: { cAula, cDen, cCap, cAsig, cSec, cDoc, cEsc, cJor, cHi, cHf, cLun, cMar, cMie, cJue, cVie, cSab, cDom },
+      });
+    } catch(err) {
+      console.error(err);
+      toast('Error al leer el archivo: '+err.message);
+    } finally {
+      setParsing(false);
+    }
+  };
+
+  const aplicar = () => {
+    if(!preview) return;
+    if(!window.confirm(`Se ${reemplazar?'REEMPLAZARÁ':'AGREGARÁ a'} la programación con ${preview.sesiones} sesiones. ¿Continuar?`)) return;
+
+    // Merge salas: mantener responsables y overrides existentes, agregar nuevas
+    const mapSalas = new Map(data.salas.map(s => [s.codigo, s]));
+    for(const ns of preview.salas){
+      if(mapSalas.has(ns.codigo)){
+        const cur = mapSalas.get(ns.codigo);
+        mapSalas.set(ns.codigo, {...cur, nombre:ns.nombre||cur.nombre, capacidad:ns.capacidad||cur.capacidad, tipo:ns.tipo||cur.tipo});
+      } else {
+        mapSalas.set(ns.codigo, ns);
+      }
+    }
+    setData({
+      ...data,
+      salas: [...mapSalas.values()].sort((a,b)=>a.codigo.localeCompare(b.codigo)),
+      programacion: reemplazar ? preview.prog : [...data.programacion, ...preview.prog],
+      _sabanaInfo: { archivo: preview.nombre, sesiones: preview.sesiones, importadoEn: new Date().toISOString() },
+    });
+    toast(`SABANA importada: ${preview.sesiones} sesiones cargadas.`);
+    setPreview(null); setArchivo(null);
+  };
+
+  return (
+    <div className="stack">
+      <div className="card">
+        <div className="card-header">
+          <div><h3>Importar SABANA desde Excel</h3><div className="sub">El archivo debe ser .xlsx o .xls con los encabezados estándar (Aula, HorInic, Final, Lun., Martes, …)</div></div>
+          {data._sabanaInfo && <span className="chip success">Última carga: {data._sabanaInfo.archivo}</span>}
+        </div>
+
+        <div className="upload-zone" onClick={()=>document.getElementById('sabana-file').click()}>
+          <div style={{fontSize:36,opacity:.6,marginBottom:6}}>{I.upload}</div>
+          <div style={{fontWeight:700,fontSize:14}}>Haz clic para seleccionar un archivo</div>
+          <div className="muted" style={{fontSize:12,marginTop:4}}>Acepta .xlsx, .xls (se procesa en tu navegador, no se envía a ningún servidor)</div>
+          <input id="sabana-file" type="file" accept=".xlsx,.xls" style={{display:'none'}} onChange={onFile}/>
+        </div>
+
+        {parsing && <div className="loader"><div className="spinner"/>Procesando archivo…</div>}
+
+        {archivo && !parsing && !preview && (
+          <div className="chip danger" style={{marginTop:14}}>No se pudo procesar el archivo. Verifica los encabezados.</div>
+        )}
+      </div>
+
+      {preview && (
+        <div className="card">
+          <div className="card-header">
+            <div><h3>Vista previa de la importación</h3><div className="sub">{preview.nombre}</div></div>
+          </div>
+          <div className="grid grid-4" style={{marginBottom:18}}>
+            <div className="kpi kpi-blue"><span className="label">Sesiones</span><span className="value">{preview.sesiones.toLocaleString('es-CL')}</span><div className="icon">{I.prog}</div></div>
+            <div className="kpi kpi-green"><span className="label">Salas únicas</span><span className="value">{preview.salasUnicas}</span><div className="icon">{I.salas}</div></div>
+            <div className="kpi kpi-amber"><span className="label">Escuelas</span><span className="value">{preview.escuelas}</span><div className="icon">{I.reports}</div></div>
+            <div className="kpi kpi-red"><span className="label">Salas nuevas</span><span className="value">{preview.salas.filter(s=>!data.salas.some(x=>x.codigo===s.codigo)).length}</span><div className="icon">{I.plus}</div></div>
+          </div>
+
+          <div className="field" style={{maxWidth:380}}>
+            <label>Modo de carga</label>
+            <select value={reemplazar?'1':'0'} onChange={e=>setReemplazar(e.target.value==='1')}>
+              <option value="1">Reemplazar toda la programación actual (recomendado)</option>
+              <option value="0">Agregar a la programación existente</option>
+            </select>
+          </div>
+
+          <div className="card-header" style={{marginTop:10}}>
+            <div><h3 style={{fontSize:14}}>Primeras 8 sesiones detectadas</h3></div>
+          </div>
+          <div className="tbl-scroll" style={{maxHeight:260}}>
+            <table className="tbl">
+              <thead><tr><th>Sala</th><th>Asignatura</th><th>Sección</th><th>Días</th><th>Horario</th><th>Docente</th></tr></thead>
+              <tbody>
+                {preview.prog.slice(0,8).map((p,i)=>(
+                  <tr key={i}>
+                    <td><b style={{color:'var(--primary)'}}>{p.s}</b></td>
+                    <td style={{maxWidth:240}}>{p.a}</td>
+                    <td className="muted">{p.sc}</td>
+                    <td>{[...p.dw].map((b,j)=>b==='1'?DIA_CORTO[j]:null).filter(Boolean).join(' · ')}</td>
+                    <td>{p.hi}–{p.hf}</td>
+                    <td>{p.d}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+
+          <div className="row" style={{justifyContent:'flex-end',marginTop:16,gap:10}}>
+            <button className="btn btn-ghost" onClick={()=>{setPreview(null);setArchivo(null)}}>Cancelar</button>
+            <button className="btn btn-primary" onClick={aplicar}>{I.check}Aplicar importación</button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function Modal({ title, children, onClose, onSave, saveLabel='Guardar' }){
   return (
     <div className="modal-back" onClick={onClose}>
@@ -1749,6 +2005,7 @@ function App(){
     prog:['Programación académica','SABANA · 2026·1'],
     reservas:['Reservas','Gestión y búsqueda de disponibilidad'],
     nueva:['Solicitar reserva','Nueva solicitud'],
+    importar:['Importar SABANA','Cargar programación académica desde Excel'],
     usuarios:['Usuarios','Administración de cuentas'],
     reportes:['Reportes','Ocupación y métricas'],
   };
@@ -1763,6 +2020,7 @@ function App(){
         {view==='prog'      && <Programacion data={data}/>}
         {view==='reservas'  && <Reservas reservas={reservas} setReservas={setReservas} data={data} user={user} toast={setToast} onGoNueva={goNueva}/>}
         {view==='nueva'     && <NuevaReserva data={data} reservas={reservas} setReservas={setReservas} user={user} toast={setToast} goReservas={()=>setView('reservas')} prefill={prefillNueva}/>}
+        {view==='importar'  && <ImportarSabana data={data} setData={setData} toast={setToast}/>}
         {view==='usuarios'  && <Usuarios users={users} setUsers={setUsers} toast={setToast}/>}
         {view==='reportes'  && <Reportes data={data} reservas={reservas}/>}
       </Shell>
