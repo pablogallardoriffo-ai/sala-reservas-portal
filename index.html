@@ -12,6 +12,7 @@
   <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
   <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
   <script src="https://cdn.sheetjs.com/xlsx-0.20.3/package/dist/xlsx.full.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
   <style>
     /* === Design tokens === */
     :root{
@@ -566,10 +567,19 @@ const ESCUELAS_FULL = {
 
 /* ========= UTILS ========= */
 const STORE_KEY = 'duoc_portal_v1';
+const CFG_KEY   = 'duoc_portal_supabase';
+const MODE_KEY  = 'duoc_portal_mode'; // 'cloud' | 'local'
 const loadStore = () => {
   try { return JSON.parse(localStorage.getItem(STORE_KEY)) || {}; } catch(e){ return {}; }
 };
 const saveStore = (s) => localStorage.setItem(STORE_KEY, JSON.stringify(s));
+const loadCloudConfig = () => {
+  try { return JSON.parse(localStorage.getItem(CFG_KEY)) || null; } catch(e){ return null; }
+};
+const saveCloudConfig = (c) => localStorage.setItem(CFG_KEY, JSON.stringify(c));
+const clearCloudConfig = () => { localStorage.removeItem(CFG_KEY); localStorage.removeItem(MODE_KEY); };
+const getMode = () => localStorage.getItem(MODE_KEY);
+const setMode = (m) => localStorage.setItem(MODE_KEY, m);
 
 const fechaToDow = (iso) => {
   // iso YYYY-MM-DD → 0 Lun .. 6 Dom
@@ -611,19 +621,325 @@ const useToast = () => {
   return [msg, setMsg];
 };
 
+/* ============================================================
+   CAPA DE DATOS (db): abstrae Supabase (cloud) o localStorage (local)
+   ============================================================ */
+function createDb({ mode, supabase }){
+  const isCloud = mode === 'cloud' && supabase;
+
+  /* ----- CARGA INICIAL ----- */
+  const loadAll = async () => {
+    if(isCloud){
+      const [salas, modulos, prog, reservas, users] = await Promise.all([
+        supabase.from('salas').select('*').order('codigo'),
+        supabase.from('modulos').select('*').order('num'),
+        supabase.from('programacion').select('*'),
+        supabase.from('reservas').select('*').order('id', { ascending:false }).limit(2000),
+        supabase.from('app_users').select('*').order('id'),
+      ]);
+      const anyErr = [salas, modulos, prog, reservas, users].find(r=>r.error);
+      if(anyErr) throw new Error(anyErr.error.message);
+      return {
+        salas: salas.data || [],
+        modulos: modulos.data || [],
+        programacion: prog.data || [],
+        reservas: reservas.data || [],
+        users: users.data || [],
+      };
+    }
+    // Modo local: JSON estático + overrides en localStorage
+    const [s,p,r,m] = await Promise.all([
+      fetch('./data/salas.json').then(r=>r.json()),
+      fetch('./data/programacion.json').then(r=>r.json()),
+      fetch('./data/reservas.json').then(r=>r.json()),
+      fetch('./data/modulos.json').then(r=>r.json()),
+    ]);
+    const st = loadStore();
+    const customSalas = st.customSalas || [];
+    const deletedSalas = new Set(st.deletedSalas || []);
+    const overrides = st.salaOverrides || {};
+    const salasMerged = [
+      ...s.filter(x => !deletedSalas.has(x.codigo))
+         .map(x => overrides[x.codigo] ? {...x, ...overrides[x.codigo]} : x),
+      ...customSalas
+    ];
+    const custom = st.customReservas || [];
+    const estadosMap = new Map((st.reservaEstados||[]).map(e=>[e.id,e]));
+    const rWithStates = r.map(x => estadosMap.has(x.id) ? {...x, ...estadosMap.get(x.id)} : x);
+    return {
+      salas: salasMerged,
+      programacion: p,
+      reservas: [...custom, ...rWithStates],
+      modulos: m,
+      users: st.users || DEFAULT_USERS,
+      _local: { customSalas, deletedSalas:[...deletedSalas], salaOverrides:overrides },
+    };
+  };
+
+  /* ----- LOGIN ----- */
+  const login = async (username, password) => {
+    if(isCloud){
+      const { data, error } = await supabase
+        .from('app_users')
+        .select('*')
+        .eq('username', username)
+        .eq('password', password)
+        .eq('activo', true)
+        .maybeSingle();
+      if(error) throw new Error(error.message);
+      return data;
+    }
+    const u = (loadStore().users || DEFAULT_USERS).find(x => x.username===username && x.password===password && x.activo);
+    return u || null;
+  };
+
+  /* ----- RESERVAS ----- */
+  const createReserva = async (r) => {
+    if(isCloud){
+      // En cloud no enviamos id (lo asigna la BD)
+      const payload = {...r}; delete payload.id;
+      const { data, error } = await supabase.from('reservas').insert(payload).select().single();
+      if(error) throw new Error(error.message);
+      return data;
+    }
+    return { ...r, id: Date.now() };
+  };
+  const updateReservaEstado = async (id, patch) => {
+    if(isCloud){
+      const { data, error } = await supabase.from('reservas').update(patch).eq('id', id).select().single();
+      if(error) throw new Error(error.message);
+      return data;
+    }
+    return { id, ...patch };
+  };
+
+  /* ----- SALAS ----- */
+  const createSala = async (s) => {
+    if(isCloud){
+      const { data, error } = await supabase.from('salas').insert(s).select().single();
+      if(error) throw new Error(error.message);
+      return data;
+    }
+    return s;
+  };
+  const updateSala = async (codigo, patch) => {
+    if(isCloud){
+      const { data, error } = await supabase.from('salas').update(patch).eq('codigo', codigo).select().single();
+      if(error) throw new Error(error.message);
+      return data;
+    }
+    return { codigo, ...patch };
+  };
+  const deleteSala = async (codigo) => {
+    if(isCloud){
+      const { error } = await supabase.from('salas').delete().eq('codigo', codigo);
+      if(error) throw new Error(error.message);
+    }
+    return true;
+  };
+
+  /* ----- USUARIOS ----- */
+  const createUser = async (u) => {
+    if(isCloud){
+      const payload = {...u}; delete payload.id;
+      const { data, error } = await supabase.from('app_users').insert(payload).select().single();
+      if(error) throw new Error(error.message);
+      return data;
+    }
+    return { ...u, id: Date.now() };
+  };
+  const updateUser = async (id, patch) => {
+    if(isCloud){
+      const { data, error } = await supabase.from('app_users').update(patch).eq('id', id).select().single();
+      if(error) throw new Error(error.message);
+      return data;
+    }
+    return { id, ...patch };
+  };
+  const deleteUser = async (id) => {
+    if(isCloud){
+      const { error } = await supabase.from('app_users').delete().eq('id', id);
+      if(error) throw new Error(error.message);
+    }
+    return true;
+  };
+
+  /* ----- SABANA bulk ----- */
+  const replaceProgramacion = async (prog, salasNuevas) => {
+    if(isCloud){
+      if(salasNuevas?.length){
+        const { error: e1 } = await supabase.from('salas').upsert(salasNuevas, { onConflict:'codigo', ignoreDuplicates:true });
+        if(e1) throw new Error('Error al upsert salas: '+e1.message);
+      }
+      // Borra programación previa e inserta nueva en chunks
+      const { error: eDel } = await supabase.from('programacion').delete().gte('id', 0);
+      if(eDel) throw new Error('Error al limpiar programación: '+eDel.message);
+      const CHUNK = 500;
+      for(let i=0;i<prog.length;i+=CHUNK){
+        const slice = prog.slice(i, i+CHUNK).map(x=>{ const c={...x}; delete c.id; return c; });
+        const { error } = await supabase.from('programacion').insert(slice);
+        if(error) throw new Error(`Error en chunk ${i}: `+error.message);
+      }
+    }
+    return true;
+  };
+
+  /* ----- BULK INITIAL SEED (from /data/*.json) ----- */
+  const seedFromBundle = async () => {
+    if(!isCloud) throw new Error('Seed solo disponible en modo cloud.');
+    const [salas, prog, reservas] = await Promise.all([
+      fetch('./data/salas.json').then(r=>r.json()),
+      fetch('./data/programacion.json').then(r=>r.json()),
+      fetch('./data/reservas.json').then(r=>r.json()),
+    ]);
+    const counts = { salas:0, programacion:0, reservas:0 };
+
+    // SALAS: upsert (no duplica)
+    const { error: e1 } = await supabase.from('salas').upsert(salas, { onConflict:'codigo' });
+    if(e1) throw new Error('Salas: '+e1.message);
+    counts.salas = salas.length;
+
+    // PROGRAMACION: solo si está vacía
+    const { count: progCount } = await supabase.from('programacion').select('*', { count:'exact', head:true });
+    if((progCount||0)===0){
+      const CHUNK = 500;
+      for(let i=0;i<prog.length;i+=CHUNK){
+        const slice = prog.slice(i, i+CHUNK);
+        const { error } = await supabase.from('programacion').insert(slice);
+        if(error) throw new Error(`Programación chunk ${i}: `+error.message);
+      }
+      counts.programacion = prog.length;
+    }
+
+    // RESERVAS: solo si está vacía
+    const { count: resCount } = await supabase.from('reservas').select('*', { count:'exact', head:true });
+    if((resCount||0)===0){
+      const CHUNK = 200;
+      for(let i=0;i<reservas.length;i+=CHUNK){
+        const slice = reservas.slice(i, i+CHUNK).map(x=>{ const c={...x}; delete c.id; return c; });
+        const { error } = await supabase.from('reservas').insert(slice);
+        if(error) throw new Error(`Reservas chunk ${i}: `+error.message);
+      }
+      counts.reservas = reservas.length;
+    }
+    return counts;
+  };
+
+  /* ----- REALTIME ----- */
+  const subscribe = (table, onChange) => {
+    if(!isCloud) return () => {};
+    const ch = supabase.channel(`rt-${table}`)
+      .on('postgres_changes', { event:'*', schema:'public', table }, payload => onChange(payload))
+      .subscribe();
+    return () => supabase.removeChannel(ch);
+  };
+
+  return {
+    isCloud, mode,
+    loadAll, login,
+    createReserva, updateReservaEstado,
+    createSala, updateSala, deleteSala,
+    createUser, updateUser, deleteUser,
+    replaceProgramacion, seedFromBundle,
+    subscribe,
+  };
+}
+
+/* ============================================================
+   PANTALLA DE CONFIGURACIÓN (cloud vs local)
+   ============================================================ */
+function SetupScreen({ onConfigured }){
+  const [tab, setTab] = useState('cloud'); // 'cloud' | 'local'
+  const [url, setUrl] = useState('');
+  const [key, setKey] = useState('');
+  const [testing, setTesting] = useState(false);
+  const [err, setErr] = useState('');
+
+  const test = async () => {
+    setErr(''); setTesting(true);
+    try {
+      if(!url || !key) throw new Error('URL y anon key son obligatorias.');
+      if(!url.startsWith('https://') || !url.includes('.supabase.co')) throw new Error('URL inválida (formato: https://xxxx.supabase.co).');
+      const sb = window.supabase.createClient(url, key);
+      const { error } = await sb.from('app_users').select('id').limit(1);
+      if(error) throw new Error('No se pudo conectar: '+error.message+'. ¿Ejecutaste el schema.sql?');
+      saveCloudConfig({ url, key });
+      setMode('cloud');
+      onConfigured('cloud');
+    } catch(e){
+      setErr(e.message);
+    } finally {
+      setTesting(false);
+    }
+  };
+
+  const useLocal = () => {
+    setMode('local');
+    onConfigured('local');
+  };
+
+  return (
+    <div className="login-wrap">
+      <div className="login-side">
+        <div className="brand"><img src="./assets/duoc-uc-oficial.png" alt="Duoc UC"/></div>
+        <div className="login-hero">
+          <h1>Configurar<br/>portal de salas</h1>
+          <p>Conéctalo a Supabase para que todos los usuarios compartan los mismos datos en tiempo real, o úsalo en modo local (solo este navegador).</p>
+        </div>
+        <div className="login-meta">Duoc UC · Sede Viña del Mar</div>
+      </div>
+      <div className="login-form-wrap">
+        <div className="login-card" style={{maxWidth:480}}>
+          <div className="seg" style={{width:'100%',marginBottom:18}}>
+            <button className={tab==='cloud'?'on':''} onClick={()=>setTab('cloud')} style={{flex:1}}>☁️ Compartido (Supabase)</button>
+            <button className={tab==='local'?'on':''} onClick={()=>setTab('local')} style={{flex:1}}>💾 Solo este equipo</button>
+          </div>
+
+          {tab==='cloud' && <>
+            <h2>Conectar a Supabase</h2>
+            <div className="sub" style={{marginBottom:18}}>Pega los valores que aparecen en <b>Supabase → Project Settings → API</b>.</div>
+            <div className="field"><label>Project URL</label><input value={url} onChange={e=>setUrl(e.target.value.trim())} placeholder="https://xxxxxxxx.supabase.co"/></div>
+            <div className="field"><label>Anon key (public)</label><input value={key} onChange={e=>setKey(e.target.value.trim())} placeholder="eyJhbGciOiJIUzI1NiIs…"/></div>
+            {err && <div className="chip danger" style={{marginBottom:12,padding:'8px 12px'}}>{err}</div>}
+            <button className="btn btn-primary btn-block" onClick={test} disabled={testing}>
+              {testing ? 'Conectando…' : 'Conectar y guardar'}
+            </button>
+            <div className="login-hint" style={{marginTop:14}}>
+              <b>¿Aún no has hecho el setup?</b> Sigue las instrucciones en <code>SETUP.md</code> del repo (crear proyecto Supabase + ejecutar <code>db/schema.sql</code>).
+            </div>
+          </>}
+
+          {tab==='local' && <>
+            <h2>Modo local</h2>
+            <div className="sub" style={{marginBottom:18}}>Los datos viven solo en este navegador (localStorage). No hay sincronización entre usuarios. Útil para evaluación o si todavía no tienes Supabase configurado.</div>
+            <button className="btn btn-ghost btn-block" onClick={useLocal}>Continuar en modo local</button>
+            <div className="login-hint" style={{marginTop:14}}>Podrás cambiar a modo compartido cuando quieras desde el menú del usuario.</div>
+          </>}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 /* ========= LOGIN ========= */
-function Login({ onLogin, users }){
+function Login({ onLogin, db, mode, onReconfigure }){
   const [role, setRole] = useState('admin');
   const [username, setUsername] = useState('admin');
   const [password, setPassword] = useState('');
   const [err, setErr] = useState('');
+  const [busy, setBusy] = useState(false);
 
-  const submit = (e) => {
+  const submit = async (e) => {
     e?.preventDefault?.();
-    const u = users.find(u => u.username===username.trim() && u.password===password && u.activo);
-    if(!u){ setErr('Credenciales inválidas o usuario inactivo.'); return; }
-    if(u.role!==role){ setErr(`El usuario "${u.username}" no tiene rol ${ROLES[role].label}.`); return; }
-    onLogin(u);
+    setErr(''); setBusy(true);
+    try {
+      const u = await db.login(username.trim(), password);
+      if(!u){ setErr('Credenciales inválidas o usuario inactivo.'); return; }
+      if(u.role!==role){ setErr(`El usuario "${u.username}" no tiene rol ${ROLES[role].label}.`); return; }
+      onLogin(u);
+    } catch(e){
+      setErr('Error: '+e.message);
+    } finally { setBusy(false); }
   };
 
   const quickFill = (r) => {
@@ -667,11 +983,15 @@ function Login({ onLogin, users }){
 
           {err && <div className="chip danger" style={{marginBottom:12}}>{err}</div>}
 
-          <button className="btn btn-primary btn-block" type="submit">Entrar</button>
+          <button className="btn btn-primary btn-block" type="submit" disabled={busy}>{busy?'Verificando…':'Entrar'}</button>
 
           <div className="login-hint">
-            <b>Demo:</b> usuarios <b>admin · reservador · usuario</b>, contraseña <b>010203</b>.
-            <div style={{marginTop:6,fontSize:11,opacity:.85}}>{ROLES[role]?.desc}</div>
+            <div className="row between" style={{marginBottom:6}}>
+              <span><b>Demo:</b> admin · reservador · usuario · pass <b>010203</b></span>
+              <span className={`chip ${mode==='cloud'?'success':'muted'}`}>{mode==='cloud'?'☁ Compartido':'💾 Local'}</span>
+            </div>
+            <div style={{fontSize:11,opacity:.85}}>{ROLES[role]?.desc}</div>
+            <div style={{marginTop:8,fontSize:11}}><a href="#" onClick={e=>{e.preventDefault();onReconfigure();}} style={{color:'var(--primary-2)',textDecoration:'underline'}}>Reconfigurar base de datos</a></div>
           </div>
         </form>
       </div>
@@ -702,7 +1022,7 @@ function Clock(){
 }
 
 /* ========= APP SHELL ========= */
-function Shell({ user, onLogout, view, setView, children, title, crumbs }){
+function Shell({ user, mode, onReconfigure, onLogout, view, setView, children, title, crumbs }){
   const menu = useMemo(()=>{
     const base = [
       ['dashboard', 'Dashboard',          I.dashboard, ['admin','reservador','usuario']],
@@ -734,6 +1054,11 @@ function Shell({ user, onLogout, view, setView, children, title, crumbs }){
           ))}
         </nav>
         <div className="sb-spacer"/>
+        <div style={{padding:'0 14px 8px'}}>
+          <button className="sb-item" style={{width:'100%',justifyContent:'center',fontSize:11,color:'var(--sidebar-text-muted)'}} onClick={onReconfigure} title="Cambiar configuración de base de datos">
+            {mode==='cloud' ? '☁ BD compartida — Reconfigurar' : '💾 Modo local — Conectar BD'}
+          </button>
+        </div>
         <div className="sb-user">
           <div className="avatar">{(user.nombre||user.username||'?').slice(0,1).toUpperCase()}</div>
           <div className="meta"><b>{user.nombre || user.username}</b><small>{ROLES[user.role].label}</small></div>
@@ -749,6 +1074,7 @@ function Shell({ user, onLogout, view, setView, children, title, crumbs }){
           <div className="right">
             <div className="search">{I.search}<input placeholder="Buscar…" /></div>
             <button className="btn-icon" title="Notificaciones">{I.bell}</button>
+            <span className={`pill ${mode==='cloud'?'success':''}`} title={mode==='cloud'?'Datos sincronizados con Supabase':'Datos solo en este navegador'}>{mode==='cloud'?'☁ ONLINE':'💾 LOCAL'}</span>
             <span className="pill">{ROLES[user.role].badge}</span>
             <Clock/>
           </div>
@@ -993,11 +1319,12 @@ function Horario({ data, reservas, onGoNueva }){
 }
 
 /* ========= SALAS ========= */
-function Salas({ data, setData, user, toast }){
+function Salas({ data, user, toast, onCreate, onUpdate, onDelete }){
   const [q, setQ] = useState('');
   const [tipo, setTipo] = useState('');
   const [modal, setModal] = useState(null);
   const [form, setForm] = useState({codigo:'',nombre:'',capacidad:'',tipo:'Sala',responsable:''});
+  const [busy, setBusy] = useState(false);
   const canEdit = user.role==='admin';
 
   const tipos = useMemo(()=> [...new Set(data.salas.map(s=>s.tipo))].sort(), [data]);
@@ -1006,51 +1333,32 @@ function Salas({ data, setData, user, toast }){
     (!tipo || s.tipo===tipo)
   ), [data, q, tipo]);
 
-  const add = () => {
+  const resetForm = () => setForm({codigo:'',nombre:'',capacidad:'',tipo:'Sala',responsable:''});
+
+  const add = async () => {
     if(!form.codigo || !form.nombre){ toast('Completa código y nombre.'); return; }
     if(data.salas.some(s => s.codigo===form.codigo)){ toast('Ya existe una sala con ese código.'); return; }
-    const nueva = {...form, capacidad:Number(form.capacidad)||0};
-    setData({
-      ...data,
-      salas:[...data.salas, nueva],
-      _customSalas:[...(data._customSalas||[]), nueva],
-    });
-    setForm({codigo:'',nombre:'',capacidad:'',tipo:'Sala',responsable:''});
-    setModal(null); toast('Sala creada correctamente.');
+    setBusy(true);
+    try {
+      await onCreate({...form, capacidad:Number(form.capacidad)||0});
+      resetForm(); setModal(null); toast('Sala creada correctamente.');
+    } finally { setBusy(false); }
   };
   const startEdit = (sala) => {
     setForm({codigo:sala.codigo, nombre:sala.nombre||'', capacidad:String(sala.capacidad||''), tipo:sala.tipo||'Sala', responsable:sala.responsable||''});
     setModal('edit');
   };
-  const update = () => {
+  const update = async () => {
     if(!form.nombre){ toast('La denominación es obligatoria.'); return; }
-    const actualizado = {...form, capacidad:Number(form.capacidad)||0};
-    const eraCustom = (data._customSalas||[]).some(s=>s.codigo===form.codigo);
-    setData({
-      ...data,
-      salas: data.salas.map(s => s.codigo===form.codigo ? {...s, ...actualizado} : s),
-      _customSalas: eraCustom
-        ? (data._customSalas||[]).map(s=>s.codigo===form.codigo?{...s,...actualizado}:s)
-        : (data._customSalas||[]),
-      _salaOverrides: eraCustom
-        ? (data._salaOverrides||{})
-        : {...(data._salaOverrides||{}), [form.codigo]: {nombre:actualizado.nombre, capacidad:actualizado.capacidad, tipo:actualizado.tipo, responsable:actualizado.responsable}},
-    });
-    setForm({codigo:'',nombre:'',capacidad:'',tipo:'Sala',responsable:''});
-    setModal(null); toast('Sala actualizada.');
+    setBusy(true);
+    try {
+      await onUpdate(form.codigo, { nombre:form.nombre, capacidad:Number(form.capacidad)||0, tipo:form.tipo, responsable:form.responsable });
+      resetForm(); setModal(null); toast('Sala actualizada.');
+    } finally { setBusy(false); }
   };
-  const del = (codigo) => {
+  const del = async (codigo) => {
     if(!window.confirm(`¿Eliminar la sala ${codigo}? No se puede deshacer.`)) return;
-    const eraCustom = (data._customSalas||[]).some(s=>s.codigo===codigo);
-    const overrides = {...(data._salaOverrides||{})}; delete overrides[codigo];
-    setData({
-      ...data,
-      salas: data.salas.filter(s => s.codigo!==codigo),
-      _customSalas: (data._customSalas||[]).filter(s=>s.codigo!==codigo),
-      _deletedSalas: eraCustom ? (data._deletedSalas||[]) : [...(data._deletedSalas||[]), codigo],
-      _salaOverrides: overrides,
-    });
-    toast('Sala eliminada.');
+    try { await onDelete(codigo); toast('Sala eliminada.'); } catch(e){}
   };
 
   return (
@@ -1263,7 +1571,7 @@ function Programacion({ data }){
 }
 
 /* ========= RESERVAS ========= */
-function Reservas({ reservas, setReservas, data, user, toast, onGoNueva }){
+function Reservas({ reservas, data, user, toast, onGoNueva, onUpdateEstado }){
   const [tab, setTab] = useState('lista');
   const [q, setQ] = useState('');
   const [estado, setEstado] = useState('');
@@ -1278,9 +1586,11 @@ function Reservas({ reservas, setReservas, data, user, toast, onGoNueva }){
     ).sort((a,b)=> (b.fi||'').localeCompare(a.fi||''));
   },[reservas, q, estado, user]);
 
-  const setEstadoReserva = (id, nuevo) => {
-    setReservas(reservas.map(r => r.id===id ? {...r, es:nuevo, decidido_por:user.username, decidido_en:new Date().toISOString()} : r));
-    toast(`Reserva ${nuevo==='aprobada'?'aprobada':'rechazada'}.`);
+  const setEstadoReserva = async (id, nuevo) => {
+    try {
+      await onUpdateEstado(id, { es:nuevo, decidido_por:user.username, decidido_en:new Date().toISOString() });
+      toast(`Reserva ${nuevo==='aprobada'?'aprobada':'rechazada'}.`);
+    } catch(e){}
   };
 
   return (
@@ -1471,7 +1781,7 @@ function BuscarLibres({ data, reservas, onGoNueva }){
 }
 
 /* ========= NUEVA RESERVA ========= */
-function NuevaReserva({ data, reservas, setReservas, user, toast, goReservas, prefill }){
+function NuevaReserva({ data, reservas, user, toast, goReservas, prefill, onCreate }){
   const [f, setF] = useState({
     fi: prefill?.fecha || isoDate(new Date()),
     ff: '',
@@ -1549,7 +1859,6 @@ function NuevaReserva({ data, reservas, setReservas, user, toast, goReservas, pr
       if(!window.confirm(`⚠ Conflicto detectado: ${conflictoSel.motivo}\n\n¿Deseas forzar la reserva de todas formas? (acción excepcional)`)) return;
     }
     const nuevo = {
-      id: Date.now(),
       fi: f.fi, ff: f.ff || f.fi,
       hi: modIni?.inicio || '',
       hf: modFin?.fin || '',
@@ -1560,9 +1869,13 @@ function NuevaReserva({ data, reservas, setReservas, user, toast, goReservas, pr
       es: user.role==='admin' || user.role==='reservador' ? 'aprobada' : 'pendiente',
       creado_por: user.username, creado_en: new Date().toISOString(),
     };
-    setReservas([nuevo, ...reservas]);
-    toast(nuevo.es==='aprobada' ? 'Reserva creada y aprobada.' : 'Solicitud enviada. Pendiente de autorización.');
-    goReservas?.();
+    (async () => {
+      try {
+        await onCreate(nuevo);
+        toast(nuevo.es==='aprobada' ? 'Reserva creada y aprobada.' : 'Solicitud enviada. Pendiente de autorización.');
+        goReservas?.();
+      } catch(e){}
+    })();
   };
 
   return (
@@ -1737,35 +2050,45 @@ function NuevaReserva({ data, reservas, setReservas, user, toast, goReservas, pr
 }
 
 /* ========= USUARIOS ========= */
-function Usuarios({ users, setUsers, toast }){
-  const [modal, setModal] = useState(null); // 'add' | 'edit' | 'pwd' | null
+function Usuarios({ users, toast, onCreate, onUpdate, onDelete }){
+  const [modal, setModal] = useState(null);
   const [form, setForm] = useState({id:null,username:'',nombre:'',email:'',password:'',role:'usuario',activo:true});
   const [pwdForm, setPwdForm] = useState({id:null, username:'', password:'', confirm:''});
 
-  const add = () => {
+  const resetForm = () => setForm({id:null,username:'',nombre:'',email:'',password:'',role:'usuario',activo:true});
+
+  const add = async () => {
     if(!form.username||!form.password||!form.nombre) return toast('Completa los campos requeridos.');
     if(users.some(u=>u.username===form.username)) return toast('Ese usuario ya existe.');
-    setUsers([...users, {...form, id:Date.now()}]);
-    resetForm(); setModal(null); toast('Usuario creado.');
+    try {
+      const { id, ...rest } = form;
+      await onCreate(rest);
+      resetForm(); setModal(null); toast('Usuario creado.');
+    } catch(e){}
   };
-  const update = () => {
+  const update = async () => {
     if(!form.nombre) return toast('El nombre es obligatorio.');
-    setUsers(users.map(u => u.id===form.id ? {...u, nombre:form.nombre, email:form.email, role:form.role, activo:form.activo} : u));
-    resetForm(); setModal(null); toast('Usuario actualizado.');
+    try {
+      await onUpdate(form.id, { nombre:form.nombre, email:form.email, role:form.role, activo:form.activo });
+      resetForm(); setModal(null); toast('Usuario actualizado.');
+    } catch(e){}
   };
-  const resetPassword = () => {
+  const resetPassword = async () => {
     if(!pwdForm.password || pwdForm.password.length<4) return toast('La contraseña debe tener al menos 4 caracteres.');
     if(pwdForm.password!==pwdForm.confirm) return toast('Las contraseñas no coinciden.');
-    setUsers(users.map(u => u.id===pwdForm.id ? {...u, password:pwdForm.password} : u));
-    setPwdForm({id:null,username:'',password:'',confirm:''}); setModal(null);
-    toast('Contraseña actualizada.');
+    try {
+      await onUpdate(pwdForm.id, { password:pwdForm.password });
+      setPwdForm({id:null,username:'',password:'',confirm:''}); setModal(null);
+      toast('Contraseña actualizada.');
+    } catch(e){}
   };
-  const del = (id) => {
+  const del = async (id) => {
     if(!window.confirm('¿Eliminar usuario?')) return;
-    setUsers(users.filter(u=>u.id!==id)); toast('Usuario eliminado.');
+    try { await onDelete(id); toast('Usuario eliminado.'); } catch(e){}
   };
-  const toggle = (id) => setUsers(users.map(u=>u.id===id?{...u,activo:!u.activo}:u));
-  const resetForm = () => setForm({id:null,username:'',nombre:'',email:'',password:'',role:'usuario',activo:true});
+  const toggle = async (id, current) => {
+    try { await onUpdate(id, { activo: !current }); } catch(e){}
+  };
   const startEdit = (u) => { setForm({...u, password:''}); setModal('edit'); };
   const startPwd = (u) => { setPwdForm({id:u.id, username:u.username, password:'', confirm:''}); setModal('pwd'); };
 
@@ -1789,7 +2112,7 @@ function Usuarios({ users, setUsers, toast }){
                 <td><span className="chip info">{ROLES[u.role].label}</span></td>
                 <td>{u.activo ? <span className="chip success">Activo</span> : <span className="chip danger">Inactivo</span>}</td>
                 <td className="nowrap" style={{textAlign:'right'}}>
-                  <button className="btn btn-sm btn-ghost" onClick={()=>toggle(u.id)}>{u.activo?'Desactivar':'Activar'}</button>{' '}
+                  <button className="btn btn-sm btn-ghost" onClick={()=>toggle(u.id, u.activo)}>{u.activo?'Desactivar':'Activar'}</button>{' '}
                   <button className="btn-icon" onClick={()=>startEdit(u)} title="Editar">{I.edit}</button>
                   <button className="btn-icon" onClick={()=>startPwd(u)} title="Asignar contraseña">{I.key}</button>
                   <button className="btn-icon" onClick={()=>del(u.id)} title="Eliminar">{I.trash}</button>
@@ -1883,7 +2206,7 @@ function Reportes({ data, reservas }){
 
 /* ========= MODAL ========= */
 /* ========= IMPORTAR SABANA ========= */
-function ImportarSabana({ data, setData, toast }){
+function ImportarSabana({ data, toast, onReplace, onSeed, isCloud }){
   const [parsing, setParsing] = useState(false);
   const [preview, setPreview] = useState(null);
   const [archivo, setArchivo] = useState(null);
@@ -2029,36 +2352,42 @@ function ImportarSabana({ data, setData, toast }){
     }
   };
 
-  const aplicar = () => {
+  const aplicar = async () => {
     if(!preview) return;
     if(!window.confirm(`Se ${reemplazar?'REEMPLAZARÁ':'AGREGARÁ a'} la programación con ${preview.sesiones} sesiones. ¿Continuar?`)) return;
+    const salasNuevas = preview.salas.filter(s => !data.salas.some(x=>x.codigo===s.codigo));
+    const progFinal = reemplazar ? preview.prog : [...data.programacion, ...preview.prog];
+    try {
+      await onReplace(progFinal, salasNuevas);
+      toast(`SABANA importada: ${preview.sesiones} sesiones cargadas.`);
+      setPreview(null); setArchivo(null);
+    } catch(e){}
+  };
 
-    // Merge salas: mantener responsables y overrides existentes, agregar nuevas
-    const mapSalas = new Map(data.salas.map(s => [s.codigo, s]));
-    for(const ns of preview.salas){
-      if(mapSalas.has(ns.codigo)){
-        const cur = mapSalas.get(ns.codigo);
-        mapSalas.set(ns.codigo, {...cur, nombre:ns.nombre||cur.nombre, capacidad:ns.capacidad||cur.capacidad, tipo:ns.tipo||cur.tipo});
-      } else {
-        mapSalas.set(ns.codigo, ns);
-      }
-    }
-    setData({
-      ...data,
-      salas: [...mapSalas.values()].sort((a,b)=>a.codigo.localeCompare(b.codigo)),
-      programacion: reemplazar ? preview.prog : [...data.programacion, ...preview.prog],
-      _sabanaInfo: { archivo: preview.nombre, sesiones: preview.sesiones, importadoEn: new Date().toISOString() },
-    });
-    toast(`SABANA importada: ${preview.sesiones} sesiones cargadas.`);
-    setPreview(null); setArchivo(null);
+  const [seeding, setSeeding] = useState(false);
+  const seedNow = async () => {
+    if(!window.confirm('Cargar 122 salas, 5.081 sesiones y 620 reservas desde los JSON del repositorio a la base de datos compartida. ¿Continuar?')) return;
+    setSeeding(true);
+    try { await onSeed(); } finally { setSeeding(false); }
   };
 
   return (
     <div className="stack">
+      {isCloud && (
+        <div className="card" style={{borderColor:'#C7E0CC',background:'#F6FCF8'}}>
+          <div className="card-header">
+            <div><h3 style={{color:'var(--success)'}}>☁️ Datos iniciales del repositorio</h3><div className="sub">Carga las 122 salas, 5.081 sesiones académicas y 620 reservas históricas a tu base de datos Supabase compartida.</div></div>
+          </div>
+          <div className="row" style={{gap:10}}>
+            <button className="btn btn-primary" onClick={seedNow} disabled={seeding}>{seeding?'Cargando…':'Cargar todo'}</button>
+            <div className="muted" style={{fontSize:12}}>Solo se insertan tablas vacías; ejecutar de nuevo es seguro (no duplica).</div>
+          </div>
+        </div>
+      )}
       <div className="card">
         <div className="card-header">
           <div><h3>Importar SABANA desde Excel</h3><div className="sub">El archivo debe ser .xlsx o .xls con los encabezados estándar (Aula, HorInic, Final, Lun., Martes, …)</div></div>
-          {data._sabanaInfo && <span className="chip success">Última carga: {data._sabanaInfo.archivo}</span>}
+          {data._sabanaInfo && <span className="chip success">Última carga: {data._sabanaInfo.archivo || `${data._sabanaInfo.sesiones} sesiones`}</span>}
         </div>
 
         <div className="upload-zone" onClick={()=>document.getElementById('sabana-file').click()}>
@@ -2143,72 +2472,234 @@ function Modal({ title, children, onClose, onSave, saveLabel='Guardar' }){
 
 /* ========= ROOT APP ========= */
 function App(){
-  const stored = loadStore();
-  // Migración: rol 'subdireccion' fusionado con 'admin' (cambio de modelo de roles)
+  // Migración legacy: rol 'subdireccion' → 'admin'
   const migrateUser = (u) => u && u.role==='subdireccion' ? {...u, role:'admin'} : u;
   const migrateUsers = (arr) => (arr||[])
     .filter(u => u.username!=='subdir')
     .map(u => u.role==='subdireccion' ? {...u, role:'admin'} : u);
 
+  const stored = loadStore();
+  const [mode, setModeState] = useState(getMode());        // 'cloud' | 'local' | null
+  const [supabase, setSupabase] = useState(null);
+  const [db, setDbState] = useState(null);
   const [user, setUser] = useState(migrateUser(stored.user) || null);
   const [view, setView] = useState('dashboard');
   const [data, setData] = useState(null);
   const [reservas, setReservas] = useState([]);
   const [users, setUsers] = useState(stored.users ? migrateUsers(stored.users) : DEFAULT_USERS);
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState(null);
   const [toast, setToast] = useToast();
   const [prefillNueva, setPrefillNueva] = useState(null);
 
-  // Persist
-  useEffect(()=> {
-    if(!data) return;
-    saveStore({
-      user, users,
-      customReservas: reservas.filter(r=>r.creado_por),
-      reservaEstados: reservas.filter(r=>r.decidido_por).map(r=>({id:r.id,es:r.es,decidido_por:r.decidido_por,decidido_en:r.decidido_en})),
-      customSalas: data._customSalas || [],
-      deletedSalas: data._deletedSalas || [],
-      salaOverrides: data._salaOverrides || {},
-    });
-  }, [user, users, reservas, data]);
-
-  // Cargar data inicial
+  // Inicializar Supabase cuando el modo es cloud
   useEffect(()=>{
+    if(mode !== 'cloud'){ return; }
+    const cfg = loadCloudConfig();
+    if(!cfg){ setModeState(null); return; }
+    if(!window.supabase){ setLoadError('Cliente Supabase no disponible (revisa conexión).'); return; }
+    const sb = window.supabase.createClient(cfg.url, cfg.key, { auth:{ persistSession:false } });
+    setSupabase(sb);
+  }, [mode]);
+
+  // Construir db cuando hay modo y (si cloud) cliente listo
+  useEffect(()=>{
+    if(!mode) return;
+    if(mode==='cloud' && !supabase) return;
+    setDbState(createDb({ mode, supabase }));
+  }, [mode, supabase]);
+
+  // Cargar data inicial cuando hay db lista
+  useEffect(()=>{
+    if(!db) return;
+    let cancelled = false;
     (async ()=>{
-      try{
-        const [s,p,r,m] = await Promise.all([
-          fetch('./data/salas.json').then(r=>r.json()),
-          fetch('./data/programacion.json').then(r=>r.json()),
-          fetch('./data/reservas.json').then(r=>r.json()),
-          fetch('./data/modulos.json').then(r=>r.json()),
-        ]);
-        const st = loadStore();
-        const customSalas = st.customSalas || [];
-        const deletedSalas = new Set(st.deletedSalas || []);
-        const overrides = st.salaOverrides || {};
-        const salasMerged = [
-          ...s.filter(x => !deletedSalas.has(x.codigo))
-             .map(x => overrides[x.codigo] ? {...x, ...overrides[x.codigo]} : x),
-          ...customSalas
-        ];
+      setLoading(true); setLoadError(null);
+      try {
+        const out = await db.loadAll();
+        if(cancelled) return;
         setData({
-          salas:salasMerged, programacion:p, modulos:m,
-          _customSalas:customSalas, _deletedSalas:[...deletedSalas], _salaOverrides:overrides,
+          salas: out.salas,
+          programacion: out.programacion,
+          modulos: out.modulos,
+          _customSalas: out._local?.customSalas || [],
+          _deletedSalas: out._local?.deletedSalas || [],
+          _salaOverrides: out._local?.salaOverrides || {},
         });
-
-        // merge reservas: aplicar estados decididos y agregar custom
-        const custom = st.customReservas || [];
-        const estadosMap = new Map((st.reservaEstados||[]).map(e=>[e.id,e]));
-        const rWithStates = r.map(x => estadosMap.has(x.id) ? {...x, ...estadosMap.get(x.id)} : x);
-        setReservas([...custom, ...rWithStates]);
+        setReservas(out.reservas);
+        setUsers(out.users || []);
       } catch(e){
-        console.error(e); setToast('No se pudieron cargar los datos.');
-      } finally { setLoading(false); }
+        if(cancelled) return;
+        console.error(e);
+        setLoadError(e.message || 'Error al cargar datos');
+      } finally {
+        if(!cancelled) setLoading(false);
+      }
     })();
-  },[]);
+    return () => { cancelled = true; };
+  }, [db]);
 
-  if(!user) return <Login users={users} onLogin={u => { setUser(u); setView('dashboard'); }} />;
-  if(loading || !data) return (
+  // Realtime: refresca el slice afectado cuando cambian datos en cloud
+  useEffect(()=>{
+    if(!db || !db.isCloud) return;
+    const unsubR = db.subscribe('reservas', async () => {
+      const { data: fresh } = await supabase.from('reservas').select('*').order('id',{ascending:false}).limit(2000);
+      if(fresh) setReservas(fresh);
+    });
+    const unsubS = db.subscribe('salas', async () => {
+      const { data: fresh } = await supabase.from('salas').select('*').order('codigo');
+      if(fresh) setData(d => d ? {...d, salas:fresh} : d);
+    });
+    const unsubU = db.subscribe('app_users', async () => {
+      const { data: fresh } = await supabase.from('app_users').select('*').order('id');
+      if(fresh) setUsers(fresh);
+    });
+    return () => { unsubR(); unsubS(); unsubU(); };
+  }, [db, supabase]);
+
+  // Persistencia en modo local (sesión + overrides)
+  useEffect(()=>{
+    if(!data || !mode) return;
+    if(mode==='local'){
+      saveStore({
+        user, users,
+        customReservas: reservas.filter(r=>r.creado_por),
+        reservaEstados: reservas.filter(r=>r.decidido_por).map(r=>({id:r.id,es:r.es,decidido_por:r.decidido_por,decidido_en:r.decidido_en})),
+        customSalas: data._customSalas || [],
+        deletedSalas: data._deletedSalas || [],
+        salaOverrides: data._salaOverrides || {},
+      });
+    } else {
+      // En cloud solo persistimos el user logueado
+      saveStore({ user });
+    }
+  }, [user, users, reservas, data, mode]);
+
+  /* =========== OPERACIONES (wrappers async que llaman a db + actualizan state) =========== */
+  const reconfigure = () => { clearCloudConfig(); setUser(null); setModeState(null); setData(null); setSupabase(null); setDbState(null); };
+
+  const createReserva = async (r) => {
+    try {
+      const saved = await db.createReserva(r);
+      setReservas(prev => [saved, ...prev]);
+      return saved;
+    } catch(e){ setToast('Error al crear reserva: '+e.message); throw e; }
+  };
+  const updateReservaEstado = async (id, patch) => {
+    try {
+      const saved = await db.updateReservaEstado(id, patch);
+      setReservas(prev => prev.map(r => r.id===id ? {...r, ...saved} : r));
+      return saved;
+    } catch(e){ setToast('Error al actualizar reserva: '+e.message); throw e; }
+  };
+
+  const createSala = async (s) => {
+    try {
+      const saved = await db.createSala(s);
+      setData(d => ({...d, salas:[...d.salas, saved], _customSalas:[...(d._customSalas||[]), saved]}));
+      return saved;
+    } catch(e){ setToast('Error al crear sala: '+e.message); throw e; }
+  };
+  const updateSala = async (codigo, patch) => {
+    try {
+      const saved = await db.updateSala(codigo, patch);
+      setData(d => {
+        const eraCustom = (d._customSalas||[]).some(s=>s.codigo===codigo);
+        return {
+          ...d,
+          salas: d.salas.map(s => s.codigo===codigo ? {...s, ...saved} : s),
+          _customSalas: eraCustom ? (d._customSalas||[]).map(s=>s.codigo===codigo?{...s,...saved}:s) : (d._customSalas||[]),
+          _salaOverrides: (eraCustom || db.isCloud) ? (d._salaOverrides||{}) : {...(d._salaOverrides||{}), [codigo]: patch},
+        };
+      });
+      return saved;
+    } catch(e){ setToast('Error al actualizar sala: '+e.message); throw e; }
+  };
+  const deleteSala = async (codigo) => {
+    try {
+      await db.deleteSala(codigo);
+      setData(d => {
+        const eraCustom = (d._customSalas||[]).some(s=>s.codigo===codigo);
+        const overrides = {...(d._salaOverrides||{})}; delete overrides[codigo];
+        return {
+          ...d,
+          salas: d.salas.filter(s => s.codigo!==codigo),
+          _customSalas: (d._customSalas||[]).filter(s=>s.codigo!==codigo),
+          _deletedSalas: (eraCustom || db.isCloud) ? (d._deletedSalas||[]) : [...(d._deletedSalas||[]), codigo],
+          _salaOverrides: overrides,
+        };
+      });
+    } catch(e){ setToast('Error al eliminar sala: '+e.message); throw e; }
+  };
+
+  const createUser = async (u) => {
+    try {
+      const saved = await db.createUser(u);
+      setUsers(prev => [...prev, saved]);
+      return saved;
+    } catch(e){ setToast('Error al crear usuario: '+e.message); throw e; }
+  };
+  const updateUser = async (id, patch) => {
+    try {
+      const saved = await db.updateUser(id, patch);
+      setUsers(prev => prev.map(u => u.id===id ? {...u, ...saved} : u));
+      return saved;
+    } catch(e){ setToast('Error al actualizar usuario: '+e.message); throw e; }
+  };
+  const deleteUser = async (id) => {
+    try {
+      await db.deleteUser(id);
+      setUsers(prev => prev.filter(u => u.id!==id));
+    } catch(e){ setToast('Error al eliminar usuario: '+e.message); throw e; }
+  };
+
+  const replaceProgramacionOp = async (prog, salasNuevas) => {
+    try {
+      await db.replaceProgramacion(prog, salasNuevas);
+      // actualizar estado local
+      setData(d => {
+        const mapSalas = new Map(d.salas.map(s => [s.codigo, s]));
+        for(const ns of (salasNuevas||[])){
+          if(!mapSalas.has(ns.codigo)) mapSalas.set(ns.codigo, ns);
+        }
+        return { ...d,
+          salas: [...mapSalas.values()].sort((a,b)=>a.codigo.localeCompare(b.codigo)),
+          programacion: prog,
+          _sabanaInfo: { sesiones: prog.length, importadoEn: new Date().toISOString() },
+        };
+      });
+    } catch(e){ setToast('Error al importar SABANA: '+e.message); throw e; }
+  };
+
+  const seedFromBundle = async () => {
+    try {
+      const counts = await db.seedFromBundle();
+      const out = await db.loadAll();
+      setData({ salas:out.salas, programacion:out.programacion, modulos:out.modulos });
+      setReservas(out.reservas);
+      setUsers(out.users);
+      setToast(`Carga inicial: ${counts.salas} salas, ${counts.programacion} sesiones, ${counts.reservas} reservas.`);
+    } catch(e){ setToast('Error en carga inicial: '+e.message); }
+  };
+
+  /* =========== ROUTING DE PANTALLAS =========== */
+  if(!mode) return <SetupScreen onConfigured={m => { setModeState(m); }} />;
+  if(loadError) return (
+    <div className="login-wrap" style={{gridTemplateColumns:'1fr'}}>
+      <div className="login-form-wrap">
+        <div className="login-card">
+          <h2>Error de conexión</h2>
+          <div className="sub" style={{marginBottom:14}}>{loadError}</div>
+          <button className="btn btn-ghost btn-block" onClick={reconfigure}>Reconfigurar base de datos</button>
+        </div>
+      </div>
+    </div>
+  );
+  if(!db || loading) return (
+    <div className="loader" style={{paddingTop:140}}><div className="spinner"/><div>Conectando…</div></div>
+  );
+  if(!user) return <Login db={db} mode={mode} onReconfigure={reconfigure} onLogin={u => { setUser(u); setView('dashboard'); }} />;
+  if(!data) return (
     <div className="loader" style={{paddingTop:140}}><div className="spinner"/><div>Cargando datos del portal…</div></div>
   );
 
@@ -2229,15 +2720,15 @@ function App(){
 
   return (
     <>
-      <Shell user={user} onLogout={()=>{ setUser(null); }} view={view} setView={setView} title={title} crumbs={crumbs}>
+      <Shell user={user} mode={mode} onReconfigure={reconfigure} onLogout={()=>{ setUser(null); }} view={view} setView={setView} title={title} crumbs={crumbs}>
         {view==='dashboard' && <Dashboard data={data} reservas={reservas} user={user}/>}
         {view==='horario'   && <Horario data={data} reservas={reservas} onGoNueva={goNueva}/>}
-        {view==='salas'     && <Salas data={data} setData={setData} user={user} toast={setToast}/>}
+        {view==='salas'     && <Salas data={data} user={user} toast={setToast} onCreate={createSala} onUpdate={updateSala} onDelete={deleteSala}/>}
         {view==='prog'      && <Programacion data={data}/>}
-        {view==='reservas'  && <Reservas reservas={reservas} setReservas={setReservas} data={data} user={user} toast={setToast} onGoNueva={goNueva}/>}
-        {view==='nueva'     && <NuevaReserva data={data} reservas={reservas} setReservas={setReservas} user={user} toast={setToast} goReservas={()=>setView('reservas')} prefill={prefillNueva}/>}
-        {view==='importar'  && <ImportarSabana data={data} setData={setData} toast={setToast}/>}
-        {view==='usuarios'  && <Usuarios users={users} setUsers={setUsers} toast={setToast}/>}
+        {view==='reservas'  && <Reservas reservas={reservas} data={data} user={user} toast={setToast} onGoNueva={goNueva} onUpdateEstado={updateReservaEstado}/>}
+        {view==='nueva'     && <NuevaReserva data={data} reservas={reservas} user={user} toast={setToast} goReservas={()=>setView('reservas')} prefill={prefillNueva} onCreate={createReserva}/>}
+        {view==='importar'  && <ImportarSabana data={data} toast={setToast} onReplace={replaceProgramacionOp} onSeed={seedFromBundle} isCloud={db.isCloud}/>}
+        {view==='usuarios'  && <Usuarios users={users} toast={setToast} onCreate={createUser} onUpdate={updateUser} onDelete={deleteUser}/>}
         {view==='reportes'  && <Reportes data={data} reservas={reservas}/>}
       </Shell>
       {toast && <div className="toast">{toast}</div>}
