@@ -792,13 +792,14 @@ function createDb({ mode, supabase }){
     if(isCloud){
       // Tablas chicas: una sola query. Tablas grandes (programacion, eventos,
       // reservas): paginadas con fetchAll para superar el cap de 1.000 filas.
-      const [salasR, modulosR, usersR, prog, eventos, reservas] = await Promise.all([
+      const [salasR, modulosR, usersR, prog, eventos, reservas, jefes] = await Promise.all([
         supabase.from('salas').select('*').order('codigo'),
         supabase.from('modulos').select('*').order('num'),
         supabase.from('app_users').select('*').order('id'),
         fetchAll('programacion'),
         fetchAll('eventos'),
         fetchAll('reservas', { order:'id' }),
+        fetchAll('docente_jefes'),
       ]);
       const anyErr = [salasR, modulosR, usersR].find(r=>r.error);
       if(anyErr) throw new Error(anyErr.error.message);
@@ -809,6 +810,7 @@ function createDb({ mode, supabase }){
         eventos: eventos,
         reservas: reservas.slice().reverse(),  // más recientes primero
         users: usersR.data || [],
+        docente_jefes: jefes,
       };
     }
     // Modo local: JSON estático + overrides en localStorage
@@ -837,6 +839,7 @@ function createDb({ mode, supabase }){
       reservas: [...custom, ...rWithStates],
       modulos: m,
       users: st.users || DEFAULT_USERS,
+      docente_jefes: st.docente_jefes || [],
       _local: { customSalas, deletedSalas:[...deletedSalas], salaOverrides:overrides },
     };
   };
@@ -949,6 +952,21 @@ function createDb({ mode, supabase }){
     return true;
   };
 
+  /* ----- JEFATURAS DOCENTES bulk ----- */
+  const replaceJefes = async (jefes) => {
+    if(isCloud){
+      const { error: eDel } = await supabase.from('docente_jefes').delete().gte('id', 0);
+      if(eDel) throw new Error('Error al limpiar jefaturas: '+eDel.message);
+      const CHUNK = 500;
+      for(let i=0;i<jefes.length;i+=CHUNK){
+        const slice = jefes.slice(i, i+CHUNK).map(x=>{ const c={...x}; delete c.id; return c; });
+        const { error } = await supabase.from('docente_jefes').insert(slice);
+        if(error) throw new Error(`Jefaturas chunk ${i}: `+error.message);
+      }
+    }
+    return true;
+  };
+
   /* ----- LISTA DE RECURSOS bulk (eventos por fecha) ----- */
   const replaceEventos = async (eventos, salasNuevas) => {
     if(isCloud){
@@ -1036,7 +1054,7 @@ function createDb({ mode, supabase }){
     createReserva, updateReservaEstado,
     createSala, updateSala, deleteSala,
     createUser, updateUser, deleteUser,
-    replaceProgramacion, replaceEventos, seedFromBundle,
+    replaceProgramacion, replaceEventos, replaceJefes, seedFromBundle,
     subscribe, getStats, fetchAll,
   };
 }
@@ -1224,12 +1242,14 @@ function Shell({ user, mode, onReconfigure, onLogout, view, setView, children, t
       ['dashboard', 'Dashboard',          I.dashboard, ['admin','reservador','usuario']],
       ['horario',   'Horario semanal',    I.horario,   ['admin','reservador','usuario']],
       ['mapa',      'Mapa de calor',      I.heatmap,   ['admin','reservador','usuario']],
+      ['docente',   'Horario docente',    I.users,     ['admin','reservador','usuario']],
       ['salas',     'Salas',              I.salas,     ['admin','reservador','usuario']],
       ['prog',      'Programación SABANA',I.prog,      ['admin','reservador','usuario']],
       ['nueva',     'Solicitar reserva',  I.nueva,     ['admin','reservador','usuario']],
       ['reservas',  'Reservas',           I.reservas,  ['admin','reservador','usuario']],
       ['importar',  'Importar SABANA',    I.upload,    ['admin']],
       ['recursos',  'Importar LISTA DE RECURSOS', I.upload, ['admin']],
+      ['jefes',     'Cargar jefaturas',   I.upload,    ['admin']],
       ['usuarios',  'Usuarios',           I.users,     ['admin']],
       ['reportes',  'Reportes',           I.reports,   ['admin','reservador']],
     ];
@@ -1876,6 +1896,185 @@ function Horario({ data, reservas, onGoNueva }){
           ))}
         </div>
       </div>
+    </div>
+  );
+}
+
+/* ========= HORARIO DOCENTE =========
+   Selecciona un docente y muestra su agenda semanal (Lun-Sáb × módulos)
+   con cada bloque = sala · asignatura · sección · inscritos. Usa LISTA DE
+   RECURSOS (fecha exacta) si está cargada; sino el patrón semanal SABANA.
+   Si hay jefatura cargada para el docente, la muestra en el header. */
+function HorarioDocente({ data }){
+  const [docente, setDocente] = useState('');
+  const [q, setQ] = useState('');
+  const [fecha, setFecha] = useState(isoDate(new Date()));
+
+  const usaEventos = hasEventos(data);
+  const sesiones = useMemo(()=> sesionesConsolidadas(data), [data]);
+  const docentes = useMemo(()=> [...new Set(sesiones.map(s=>s.d).filter(Boolean))].sort(), [sesiones]);
+  const docentesFiltrados = useMemo(()=>{
+    if(!q) return docentes;
+    const qn = q.toLowerCase();
+    return docentes.filter(d => d.toLowerCase().includes(qn));
+  }, [docentes, q]);
+
+  // Jefatura del docente seleccionado
+  const jefatura = useMemo(()=>{
+    if(!docente || !data.docente_jefes) return null;
+    return data.docente_jefes.find(j => (j.docente||'').trim().toLowerCase() === docente.trim().toLowerCase()) || null;
+  }, [docente, data.docente_jefes]);
+
+  const monday = useMemo(()=> getMonday(fecha), [fecha]);
+  const week = useMemo(()=> [0,1,2,3,4,5,6].map(i => addDays(monday, i)), [monday]);
+
+  // Sesiones del docente
+  const misSesiones = useMemo(()=>{
+    if(!docente) return [];
+    return sesiones.filter(s => s.d === docente);
+  }, [sesiones, docente]);
+
+  // Grid 20 módulos × 6 días con bloques del docente
+  const grid = useMemo(()=>{
+    return data.modulos.map(mod => {
+      return [0,1,2,3,4,5].map(dw => {
+        const d = week[dw];
+        const dIso = isoDate(d);
+        return misSesiones.filter(s => {
+          if(!moduleInTimeRange(mod.num, s.hi, s.hf, data.modulos)) return false;
+          if(s.fi) return s.fi === dIso;
+          return s.dw && s.dw[dw] === '1';
+        });
+      });
+    });
+  }, [misSesiones, week, data.modulos]);
+
+  // Resumen de la semana
+  const stats = useMemo(()=>{
+    const sesionesUnicas = new Map();
+    for(const dw of [0,1,2,3,4,5]){
+      const dIso = isoDate(week[dw]);
+      for(const s of misSesiones){
+        const enFecha = s.fi ? s.fi === dIso : (s.dw && s.dw[dw]==='1');
+        if(!enFecha) continue;
+        const k = `${s.sc||''}|${s.s||''}|${s.hi}|${s.hf}|${dIso}`;
+        if(!sesionesUnicas.has(k)){
+          sesionesUnicas.set(k, { ins:Number(s.i)||0, sala:s.s, asig:s.a, sec:s.sc });
+        }
+      }
+    }
+    const seccionesUnicas = new Set([...sesionesUnicas.values()].map(x => x.sec));
+    const salasUnicas = new Set([...sesionesUnicas.values()].map(x => x.sala));
+    const alumnos = [...sesionesUnicas.values()].reduce((a,x)=>a+(x.ins||0), 0);
+    return {
+      sesiones: sesionesUnicas.size,
+      secciones: [...seccionesUnicas].filter(Boolean).length,
+      salas: [...salasUnicas].filter(Boolean).length,
+      alumnos,
+    };
+  }, [misSesiones, week]);
+
+  return (
+    <div className="stack">
+      {/* Selector */}
+      <div className="card">
+        <div className="card-header">
+          <div><h3>Selecciona un docente</h3><div className="sub">{docentes.length.toLocaleString('es-CL')} docentes con clases programadas{usaEventos?' · fuente LISTA DE RECURSOS':' · fuente SABANA'}.</div></div>
+        </div>
+        <div className="filters">
+          <div className="field" style={{flex:'1 1 320px'}}>
+            <label>Buscar docente</label>
+            <input value={q} onChange={e=>setQ(e.target.value)} placeholder="Nombre o apellido…"/>
+          </div>
+          <div className="field" style={{flex:'2 1 460px'}}>
+            <label>Docente {docentesFiltrados.length<docentes.length && <span className="muted" style={{fontSize:10}}>({docentesFiltrados.length} coincidencias)</span>}</label>
+            <select value={docente} onChange={e=>setDocente(e.target.value)}>
+              <option value="">— Selecciona —</option>
+              {docentesFiltrados.map(d => <option key={d} value={d}>{d}</option>)}
+            </select>
+          </div>
+          <div className="field">
+            <label>Semana</label>
+            <input type="date" value={fecha} onChange={e=>setFecha(e.target.value)}/>
+          </div>
+        </div>
+      </div>
+
+      {!docente ? (
+        <div className="card"><div className="empty"><span className="emoji">👨‍🏫</span>Selecciona un docente para ver su horario semanal.</div></div>
+      ) : (
+        <>
+          <div className="card">
+            <div className="card-header">
+              <div>
+                <h3>{docente}</h3>
+                <div className="sub">
+                  {jefatura
+                    ? <>Jefatura: <b>{jefatura.jefe}</b>{jefatura.jefe_correo?` · ${jefatura.jefe_correo}`:''}{jefatura.escuela?` · ${ESCUELAS_FULL[jefatura.escuela]||jefatura.escuela}`:''}</>
+                    : <span style={{color:'var(--text-soft)'}}>Sin jefatura cargada para este docente. Importa el archivo en <b>Cargar jefaturas</b>.</span>}
+                </div>
+              </div>
+              <div className="row" style={{gap:6}}>
+                <button className="btn-icon" title="Semana anterior" onClick={()=>setFecha(isoDate(addDays(new Date(fecha+'T00:00:00'), -7)))}>‹</button>
+                <span className="muted" style={{fontSize:12,minWidth:200,textAlign:'center'}}>
+                  {monday.toLocaleDateString('es-CL',{day:'2-digit',month:'short'})} – {addDays(monday,6).toLocaleDateString('es-CL',{day:'2-digit',month:'short',year:'numeric'})}
+                </span>
+                <button className="btn-icon" title="Semana siguiente" onClick={()=>setFecha(isoDate(addDays(new Date(fecha+'T00:00:00'), 7)))}>›</button>
+              </div>
+            </div>
+
+            <div className="grid grid-4">
+              <div className="kpi kpi-blue"><span className="label">Sesiones en la semana</span><span className="value">{stats.sesiones}</span><div className="icon">📅</div></div>
+              <div className="kpi kpi-green"><span className="label">Secciones distintas</span><span className="value">{stats.secciones}</span><div className="icon">📚</div></div>
+              <div className="kpi kpi-amber"><span className="label">Salas usadas</span><span className="value">{stats.salas}</span><div className="icon">🏫</div></div>
+              <div className="kpi kpi-blue"><span className="label">Alumnos · módulo</span><span className="value">{stats.alumnos.toLocaleString('es-CL')}</span><span className="delta">suma de inscritos × módulos</span><div className="icon">👥</div></div>
+            </div>
+          </div>
+
+          <div className="card" style={{padding:0,overflow:'hidden'}}>
+            <div className="card-header" style={{padding:'14px 18px'}}>
+              <div>
+                <h3>Agenda semanal</h3>
+                <div className="sub">Cada bloque: <b>sala</b> · <b>asignatura</b> · <b>sección</b> · <b>inscritos</b></div>
+              </div>
+            </div>
+            {stats.sesiones === 0 ? (
+              <div className="empty" style={{margin:20}}><span className="emoji">📭</span>Sin clases para {docente} en esta semana.</div>
+            ) : (
+              <div className="week-grid">
+                <div className="hdr">Horario</div>
+                {[0,1,2,3,4,5].map(i => (
+                  <div key={i} className="hdr">{DIA_CORTO[i]}<br/><small style={{fontWeight:400,opacity:.7}}>{week[i].toLocaleDateString('es-CL',{day:'2-digit',month:'2-digit'})}</small></div>
+                ))}
+                {data.modulos.map((mod, mi) => {
+                  const tieneAlgo = grid[mi].some(arr => arr.length>0);
+                  if(!tieneAlgo) return null;
+                  return (
+                    <React.Fragment key={mod.num}>
+                      <div className="row-h"><b>M{mod.num}</b><br/>{mod.inicio}<br/>{mod.fin}</div>
+                      {[0,1,2,3,4,5].map(dw => {
+                        const items = grid[mi][dw];
+                        return (
+                          <div key={dw} className="cell">
+                            {items.map((s,i) => (
+                              <div key={i} className="blk acad" title={`${s.a||''} · sección ${s.sc||''} · sala ${s.s} · ${s.hi}-${s.hf} · ${s.i||0} inscritos`}>
+                                <b>{s.s}</b>
+                                <div style={{opacity:.92,fontSize:10.5,marginTop:2}}>{(s.a||s.de||'').slice(0,32)}</div>
+                                <div style={{opacity:.78,fontSize:10}}>{s.sc}</div>
+                                <div style={{opacity:.92,fontSize:10,marginTop:2}}>👥 {s.i||0}</div>
+                              </div>
+                            ))}
+                          </div>
+                        );
+                      })}
+                    </React.Fragment>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+        </>
+      )}
     </div>
   );
 }
@@ -3761,6 +3960,202 @@ function ImportarRecursos({ data, toast, onReplace, isCloud }){
   );
 }
 
+/* ========= CARGAR JEFATURAS DOCENTES =========
+   Excel masivo con mapeo docente → jefe directo. Auto-detecta columnas
+   por encabezado (Docente, Jefe, Correo, Escuela). Reemplaza la tabla
+   docente_jefes con la nueva carga. */
+function ImportarJefes({ data, toast, onReplace }){
+  const [parsing, setParsing] = useState(false);
+  const [preview, setPreview] = useState(null);
+  const [archivo, setArchivo] = useState(null);
+
+  const findCol = (headers, candidatos) => {
+    const norm = (s) => (s||'').toString().toLowerCase().replace(/\s+/g,'').replace(/\./g,'');
+    for(const cand of candidatos){
+      const c = norm(cand);
+      const idx = headers.findIndex(h => {
+        const hn = norm(h);
+        return hn===c || hn.startsWith(c) || hn.includes(c);
+      });
+      if(idx>=0) return idx;
+    }
+    return -1;
+  };
+
+  const onFile = async (e) => {
+    const f = e.target.files?.[0];
+    if(!f) return;
+    setArchivo(f); setParsing(true); setPreview(null);
+    try {
+      const ab = await f.arrayBuffer();
+      const wb = XLSX.read(ab, { type:'array', cellDates:true });
+      const sheet = wb.Sheets[wb.SheetNames[0]];
+      const rows = XLSX.utils.sheet_to_json(sheet, { header:1, defval:null, blankrows:false });
+      if(rows.length < 2) throw new Error('El archivo está vacío o no tiene encabezados.');
+
+      // La fila de encabezados es la primera con texto
+      let headerRow = 0;
+      for(let i=0;i<Math.min(5,rows.length);i++){
+        const h = (rows[i]||[]).map(x => (x||'').toString().toLowerCase());
+        if(h.some(x => x.includes('docente') || x.includes('profesor') || x.includes('jefe'))){
+          headerRow = i; break;
+        }
+      }
+      const headers = rows[headerRow];
+      const dataRows = rows.slice(headerRow+1);
+
+      const cDoc = findCol(headers, ['Docente','Profesor','Nombre Docente','Instructor']);
+      const cJefe = findCol(headers, ['Jefe','Jefatura','Jefe Directo','Coordinador','Director']);
+      const cCorreo = findCol(headers, ['Correo Jefe','Email Jefe','Mail Jefe','Correo']);
+      const cEsc = findCol(headers, ['Escuela','Esc']);
+
+      if(cDoc<0 || cJefe<0){
+        throw new Error('No se encontraron las columnas mínimas: "Docente" y "Jefe".');
+      }
+
+      const jefes = [];
+      const docentesSet = new Set();
+      const jefesSet = new Set();
+      const dedup = new Set();
+      let descartadas = 0;
+      for(const row of dataRows){
+        if(!row) continue;
+        const docente = row[cDoc] ? String(row[cDoc]).trim() : '';
+        const jefe = row[cJefe] ? String(row[cJefe]).trim() : '';
+        if(!docente || !jefe){ descartadas++; continue; }
+        const k = docente.toLowerCase();
+        if(dedup.has(k)) continue;  // mismo docente repetido → toma el primero
+        dedup.add(k);
+        const jefe_correo = cCorreo>=0 && row[cCorreo] ? String(row[cCorreo]).trim() : null;
+        const escuela = cEsc>=0 && row[cEsc] ? String(row[cEsc]).trim().slice(0,3) : null;
+        jefes.push({ docente, jefe, jefe_correo, escuela });
+        docentesSet.add(docente);
+        jefesSet.add(jefe);
+      }
+
+      if(!jefes.length) throw new Error('No se encontraron filas válidas.');
+
+      // Stats: cuántos docentes del archivo coinciden con los docentes de la SABANA
+      const docentesSabana = new Set((data.programacion||[]).map(p=>p.d).filter(Boolean));
+      let conMatch = 0, sinMatch = 0;
+      for(const d of docentesSet){
+        if(docentesSabana.has(d)) conMatch++; else sinMatch++;
+      }
+
+      setPreview({
+        nombre: f.name,
+        rows: jefes.length,
+        docentes: docentesSet.size,
+        jefes: jefesSet.size,
+        conMatchSabana: conMatch,
+        sinMatchSabana: sinMatch,
+        totalSabana: docentesSabana.size,
+        descartadas,
+        cols: { cDoc, cJefe, cCorreo, cEsc },
+        headerRow,
+        items: jefes,
+      });
+    } catch(err){
+      console.error(err);
+      toast('Error al leer el archivo: '+err.message);
+    } finally {
+      setParsing(false);
+    }
+  };
+
+  const aplicar = async () => {
+    if(!preview) return;
+    if(!window.confirm(`Se REEMPLAZARÁ la tabla de jefaturas con ${preview.rows} registros. ¿Continuar?`)) return;
+    try {
+      await onReplace(preview.items);
+      toast(`Jefaturas cargadas: ${preview.rows} docentes mapeados a sus jefes.`);
+      setPreview(null); setArchivo(null);
+    } catch(e){}
+  };
+
+  return (
+    <div className="stack">
+      <div className="card">
+        <div className="card-header">
+          <div>
+            <h3>Cargar jefaturas docentes</h3>
+            <div className="sub">Archivo .xlsx/.xls con columnas reconocibles: <b>Docente</b>, <b>Jefe</b> (mínimas), opcionalmente <b>Correo Jefe</b> y <b>Escuela</b>. El nombre del docente debe matchear con el de la SABANA.</div>
+          </div>
+          {(data.docente_jefes||[]).length>0 && <span className="chip success">Cargadas: {(data.docente_jefes||[]).length} jefaturas</span>}
+        </div>
+
+        <div className="upload-zone" onClick={()=>document.getElementById('jefes-file').click()}>
+          {I.upload}
+          <h4>Selecciona el archivo Excel</h4>
+          <p className="muted">Columnas: Docente | Jefe | Correo Jefe (opc) | Escuela (opc)</p>
+          <input id="jefes-file" type="file" accept=".xlsx,.xls" style={{display:'none'}} onChange={onFile}/>
+          {parsing && <div style={{marginTop:10}}>Procesando…</div>}
+          {archivo && !parsing && <div style={{marginTop:10,fontSize:12}}>📄 {archivo.name}</div>}
+        </div>
+
+        <div className="login-hint" style={{marginTop:14}}>
+          <b>Uso:</b> una vez cargado, en <b>Horario docente</b> aparecerá la jefatura debajo del nombre del docente seleccionado. Útil para escalamientos y trazabilidad.
+        </div>
+      </div>
+
+      {preview && (
+        <div className="card">
+          <div className="card-header">
+            <div><h3>Previsualización</h3><div className="sub">{preview.nombre}</div></div>
+          </div>
+
+          <div className="grid grid-4" style={{marginBottom:14}}>
+            <div className="kpi kpi-blue"><span className="label">Registros</span><span className="value">{preview.rows.toLocaleString('es-CL')}</span><div className="icon">📋</div></div>
+            <div className="kpi kpi-green"><span className="label">Docentes únicos</span><span className="value">{preview.docentes.toLocaleString('es-CL')}</span><div className="icon">👨‍🏫</div></div>
+            <div className="kpi kpi-amber"><span className="label">Jefes únicos</span><span className="value">{preview.jefes.toLocaleString('es-CL')}</span><div className="icon">⭐</div></div>
+            <div className="kpi kpi-blue"><span className="label">Match con SABANA</span><span className="value">{preview.conMatchSabana}/{preview.totalSabana}</span><span className="delta">{preview.sinMatchSabana} sin match en archivo</span><div className="icon">🔗</div></div>
+          </div>
+
+          {preview.descartadas>0 && <div className="chip warn" style={{marginBottom:10}}>{preview.descartadas} filas descartadas (sin docente o sin jefe).</div>}
+          {preview.sinMatchSabana>0 && <div className="chip warn" style={{marginBottom:10,marginLeft:8}}>{preview.sinMatchSabana} docentes del archivo no aparecen en SABANA (sus jefaturas no se mostrarán hasta que coincidan).</div>}
+
+          <div className="tbl-scroll" style={{maxHeight:300}}>
+            <table className="tbl">
+              <thead><tr><th>Docente</th><th>Jefe</th><th>Correo</th><th>Escuela</th></tr></thead>
+              <tbody>
+                {preview.items.slice(0,50).map((j,i) => (
+                  <tr key={i}><td>{j.docente}</td><td><b>{j.jefe}</b></td><td className="muted">{j.jefe_correo||'—'}</td><td>{j.escuela||'—'}</td></tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          {preview.items.length>50 && <div className="muted" style={{padding:10,textAlign:'center',fontSize:12}}>Mostrando primeras 50 de {preview.items.length}.</div>}
+
+          <div className="row" style={{justifyContent:'flex-end',marginTop:12,gap:10}}>
+            <button className="btn btn-ghost" onClick={()=>{setPreview(null);setArchivo(null)}}>Cancelar</button>
+            <button className="btn btn-primary" onClick={aplicar}>{I.check}Aplicar carga</button>
+          </div>
+        </div>
+      )}
+
+      {/* Lista actual */}
+      {(data.docente_jefes||[]).length>0 && !preview && (
+        <div className="card">
+          <div className="card-header">
+            <div><h3>Jefaturas cargadas actualmente</h3><div className="sub">{(data.docente_jefes||[]).length} registros</div></div>
+          </div>
+          <div className="tbl-scroll" style={{maxHeight:400}}>
+            <table className="tbl">
+              <thead><tr><th>Docente</th><th>Jefe</th><th>Correo</th><th>Escuela</th></tr></thead>
+              <tbody>
+                {(data.docente_jefes||[]).slice(0,200).map((j,i) => (
+                  <tr key={i}><td>{j.docente}</td><td><b>{j.jefe}</b></td><td className="muted">{j.jefe_correo||'—'}</td><td>{j.escuela||'—'}</td></tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          {(data.docente_jefes||[]).length>200 && <div className="muted" style={{padding:10,textAlign:'center',fontSize:12}}>Mostrando 200 de {(data.docente_jefes||[]).length}.</div>}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function Modal({ title, children, onClose, onSave, saveLabel='Guardar' }){
   return (
     <div className="modal-back" onClick={onClose}>
@@ -3866,7 +4261,11 @@ function App(){
       const fresh = await db.fetchAll('eventos');
       if(fresh) setData(d => d ? {...d, eventos:fresh} : d);
     });
-    return () => { unsubR(); unsubS(); unsubU(); unsubE(); };
+    const unsubJ = db.subscribe('docente_jefes', async () => {
+      const fresh = await db.fetchAll('docente_jefes');
+      if(fresh) setData(d => d ? {...d, docente_jefes:fresh} : d);
+    });
+    return () => { unsubR(); unsubS(); unsubU(); unsubE(); unsubJ(); };
   }, [db, supabase]);
 
   // Persistencia en modo local (sesión + overrides)
@@ -3884,6 +4283,7 @@ function App(){
         deletedSalas: data._deletedSalas || [],
         salaOverrides: data._salaOverrides || {},
         eventos: data.eventos || [],
+        docente_jefes: data.docente_jefes || [],
       };
       try {
         saveStore(payload);
@@ -4017,6 +4417,13 @@ function App(){
     } catch(e){ setToast('Error al importar LISTA DE RECURSOS: '+e.message); throw e; }
   };
 
+  const replaceJefesOp = async (jefes) => {
+    try {
+      await db.replaceJefes(jefes);
+      setData(d => ({ ...d, docente_jefes: jefes }));
+    } catch(e){ setToast('Error al cargar jefaturas: '+e.message); throw e; }
+  };
+
   const seedFromBundle = async () => {
     try {
       const counts = await db.seedFromBundle();
@@ -4061,6 +4468,8 @@ function App(){
     nueva:['Solicitar reserva','Nueva solicitud'],
     importar:['Importar SABANA','Cargar programación académica desde Excel'],
     recursos:['Importar LISTA DE RECURSOS','Cargar sesiones por fecha desde Excel'],
+    jefes:['Cargar jefaturas','Mapeo docente → jefe directo'],
+    docente:['Horario docente','Agenda semanal del docente'],
     usuarios:['Usuarios','Administración de cuentas'],
     reportes:['Reportes','Ocupación y métricas'],
   };
@@ -4077,6 +4486,8 @@ function App(){
         {view==='nueva'     && <NuevaReserva data={data} reservas={reservas} user={user} toast={setToast} goReservas={()=>setView('reservas')} prefill={prefillNueva} onCreate={createReserva}/>}
         {view==='importar'  && <ImportarSabana data={data} toast={setToast} onReplace={replaceProgramacionOp} onSeed={seedFromBundle} isCloud={db.isCloud}/>}
         {view==='recursos'  && <ImportarRecursos data={data} toast={setToast} onReplace={replaceEventosOp} isCloud={db.isCloud}/>}
+        {view==='jefes'     && <ImportarJefes data={data} toast={setToast} onReplace={replaceJefesOp}/>}
+        {view==='docente'   && <HorarioDocente data={data}/>}
         {view==='usuarios'  && <Usuarios users={users} toast={setToast} onCreate={createUser} onUpdate={updateUser} onDelete={deleteUser}/>}
         {view==='reportes'  && <Reportes data={data} reservas={reservas}/>}
         {view==='mapa'      && <MapaCalor data={data} user={user}/>}

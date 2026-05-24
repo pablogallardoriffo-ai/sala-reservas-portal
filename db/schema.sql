@@ -68,6 +68,16 @@ CREATE TABLE IF NOT EXISTS eventos (
 CREATE INDEX IF NOT EXISTS idx_eventos_fi_s ON eventos(fi, s);
 CREATE INDEX IF NOT EXISTS idx_eventos_sc   ON eventos(sc);
 
+-- JEFATURAS DOCENTES — mapeo docente → jefe directo (lo carga el admin)
+CREATE TABLE IF NOT EXISTS docente_jefes (
+  id          BIGSERIAL PRIMARY KEY,
+  docente     TEXT NOT NULL,    -- nombre completo (matchea con programacion.d)
+  jefe        TEXT NOT NULL,    -- nombre del jefe
+  jefe_correo TEXT,             -- opcional
+  escuela     TEXT              -- escuela (3 letras)
+);
+CREATE INDEX IF NOT EXISTS idx_dj_docente ON docente_jefes(docente);
+
 -- RESERVAS
 CREATE TABLE IF NOT EXISTS reservas (
   id            BIGSERIAL PRIMARY KEY,
@@ -115,26 +125,29 @@ ON CONFLICT (num) DO NOTHING;
 -- La autenticación se valida en la capa de aplicación
 -- Para producción: implementar Supabase Auth + políticas por rol
 -- ============================================================
-ALTER TABLE app_users    ENABLE ROW LEVEL SECURITY;
-ALTER TABLE salas        ENABLE ROW LEVEL SECURITY;
-ALTER TABLE modulos      ENABLE ROW LEVEL SECURITY;
-ALTER TABLE programacion ENABLE ROW LEVEL SECURITY;
-ALTER TABLE eventos      ENABLE ROW LEVEL SECURITY;
-ALTER TABLE reservas     ENABLE ROW LEVEL SECURITY;
+ALTER TABLE app_users     ENABLE ROW LEVEL SECURITY;
+ALTER TABLE salas         ENABLE ROW LEVEL SECURITY;
+ALTER TABLE modulos       ENABLE ROW LEVEL SECURITY;
+ALTER TABLE programacion  ENABLE ROW LEVEL SECURITY;
+ALTER TABLE eventos       ENABLE ROW LEVEL SECURITY;
+ALTER TABLE docente_jefes ENABLE ROW LEVEL SECURITY;
+ALTER TABLE reservas      ENABLE ROW LEVEL SECURITY;
 
 DROP POLICY IF EXISTS allow_all ON app_users;
 DROP POLICY IF EXISTS allow_all ON salas;
 DROP POLICY IF EXISTS allow_all ON modulos;
 DROP POLICY IF EXISTS allow_all ON programacion;
 DROP POLICY IF EXISTS allow_all ON eventos;
+DROP POLICY IF EXISTS allow_all ON docente_jefes;
 DROP POLICY IF EXISTS allow_all ON reservas;
 
-CREATE POLICY allow_all ON app_users    FOR ALL USING (true) WITH CHECK (true);
-CREATE POLICY allow_all ON salas        FOR ALL USING (true) WITH CHECK (true);
-CREATE POLICY allow_all ON modulos      FOR ALL USING (true) WITH CHECK (true);
-CREATE POLICY allow_all ON programacion FOR ALL USING (true) WITH CHECK (true);
-CREATE POLICY allow_all ON eventos      FOR ALL USING (true) WITH CHECK (true);
-CREATE POLICY allow_all ON reservas     FOR ALL USING (true) WITH CHECK (true);
+CREATE POLICY allow_all ON app_users     FOR ALL USING (true) WITH CHECK (true);
+CREATE POLICY allow_all ON salas         FOR ALL USING (true) WITH CHECK (true);
+CREATE POLICY allow_all ON modulos       FOR ALL USING (true) WITH CHECK (true);
+CREATE POLICY allow_all ON programacion  FOR ALL USING (true) WITH CHECK (true);
+CREATE POLICY allow_all ON eventos       FOR ALL USING (true) WITH CHECK (true);
+CREATE POLICY allow_all ON docente_jefes FOR ALL USING (true) WITH CHECK (true);
+CREATE POLICY allow_all ON reservas      FOR ALL USING (true) WITH CHECK (true);
 
 -- ============================================================
 -- MIGRACIONES IDEMPOTENTES (para BD ya creada)
