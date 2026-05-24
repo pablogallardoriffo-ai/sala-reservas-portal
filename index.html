@@ -935,11 +935,11 @@ function createDb({ mode, supabase }){
   /* ----- SABANA bulk ----- */
   // Inserción resiliente en chunks. Reintenta cada chunk hasta 5 veces con
   // backoff exponencial generoso (2s, 5s, 10s, 20s, 30s) si supabase devuelve
-  // error o si fetch colapsa por red. Pausa breve entre chunks para no saturar
-  // la red móvil. Llama onProgress(done, total) entre chunks. opts.startFrom
-  // permite reanudar saltando los primeros N elementos (útil cuando ya hay
-  // filas en la BD por un upload previo a medias).
-  const insertChunks = async (table, rows, { onProgress, chunkSize = 200, startFrom = 0 } = {}) => {
+  // error o si fetch colapsa por red. chunkSize=500 es un balance entre
+  // velocidad (menos requests totales) y resiliencia (request más chica =
+  // menos probable de cortarse en LTE). Llama onProgress(done, total) entre
+  // chunks. opts.startFrom permite reanudar saltando los primeros N elementos.
+  const insertChunks = async (table, rows, { onProgress, chunkSize = 500, startFrom = 0 } = {}) => {
     const total = rows.length;
     let done = startFrom;
     onProgress?.(done, total);
@@ -957,13 +957,11 @@ function createDb({ mode, supabase }){
       }
       if(lastErr){
         const e = new Error(`${table} chunk ${i} (filas ${i+1}-${Math.min(i+chunkSize, total)} de ${total}): ${lastErr.message}`);
-        e.resumeFrom = i;  // permite reanudar exactamente desde el chunk fallido
+        e.resumeFrom = i;
         throw e;
       }
       done += slice.length;
       onProgress?.(done, total);
-      // pausa breve para no saturar la red móvil
-      await new Promise(r => setTimeout(r, 100));
     }
   };
 
@@ -1282,9 +1280,7 @@ function Shell({ user, mode, onReconfigure, onLogout, view, setView, children, t
       ['prog',      'Programación SABANA',I.prog,      ['admin','reservador','usuario']],
       ['nueva',     'Solicitar reserva',  I.nueva,     ['admin','reservador','usuario']],
       ['reservas',  'Reservas',           I.reservas,  ['admin','reservador','usuario']],
-      ['importar',  'Importar SABANA',    I.upload,    ['admin']],
-      ['recursos',  'Importar LISTA DE RECURSOS', I.upload, ['admin']],
-      ['jefes',     'Cargar jefaturas',   I.upload,    ['admin']],
+      ['importar',  'Importar datos',     I.upload,    ['admin']],
       ['usuarios',  'Usuarios',           I.users,     ['admin']],
       ['reportes',  'Reportes',           I.reports,   ['admin','reservador']],
     ];
@@ -4231,6 +4227,49 @@ function ImportarJefes({ data, toast, onReplace }){
   );
 }
 
+/* ========= IMPORTAR DATOS (wrapper unificado) =========
+   Una sola pestaña con 3 tabs internos: SABANA, LISTA DE RECURSOS y
+   Jefaturas. Cada tab monta el componente importador correspondiente. */
+function ImportarDatos({ data, toast, db, onReplaceSabana, onReplaceEventos, onReplaceJefes, onSeed }){
+  const [tab, setTab] = useState('recursos');  // arrancamos en el más usado
+
+  const tabs = [
+    { key:'sabana',   label:'📘 SABANA',            sub:'Programación académica (patrón semanal)', count:(data.programacion||[]).length },
+    { key:'recursos', label:'📅 LISTA DE RECURSOS', sub:'Sesiones por fecha (eventos)',           count:(data.eventos||[]).length },
+    { key:'jefes',    label:'⭐ Jefaturas',          sub:'Docente → jefe directo',                 count:(data.docente_jefes||[]).length },
+  ];
+
+  return (
+    <div className="stack">
+      {/* Tabs grandes */}
+      <div className="card" style={{padding:0,overflow:'hidden'}}>
+        <div className="row" style={{borderBottom:'1px solid var(--border-soft)'}}>
+          {tabs.map(t => (
+            <button key={t.key} onClick={()=>setTab(t.key)}
+              style={{
+                flex:1,padding:'14px 16px',background:tab===t.key?'#fff':'#FBFCFD',
+                borderRight:'1px solid var(--border-soft)',border:'none',cursor:'pointer',
+                borderBottom: tab===t.key?'3px solid var(--primary-2)':'3px solid transparent',
+                textAlign:'left'
+              }}>
+              <div style={{fontSize:14,fontWeight:700,color: tab===t.key?'var(--primary)':'var(--text)'}}>{t.label}</div>
+              <div style={{fontSize:11,color:'var(--text-muted)',marginTop:2}}>{t.sub}</div>
+              <div style={{fontSize:11,color:'var(--text-muted)',marginTop:4}}>
+                BD: <b style={{color: t.count>0 ? 'var(--success)' : 'var(--text-muted)'}}>{t.count.toLocaleString('es-CL')}</b> {t.count===1?'fila':'filas'}
+              </div>
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {/* Contenido del tab */}
+      {tab==='sabana'   && <ImportarSabana   data={data} toast={toast} onReplace={onReplaceSabana} onSeed={onSeed} isCloud={db.isCloud}/>}
+      {tab==='recursos' && <ImportarRecursos data={data} toast={toast} onReplace={onReplaceEventos} isCloud={db.isCloud}/>}
+      {tab==='jefes'    && <ImportarJefes    data={data} toast={toast} onReplace={onReplaceJefes}/>}
+    </div>
+  );
+}
+
 function Modal({ title, children, onClose, onSave, saveLabel='Guardar' }){
   return (
     <div className="modal-back" onClick={onClose}>
@@ -4541,9 +4580,7 @@ function App(){
     prog:['Programación académica','SABANA · 2026·1'],
     reservas:['Reservas','Gestión y búsqueda de disponibilidad'],
     nueva:['Solicitar reserva','Nueva solicitud'],
-    importar:['Importar SABANA','Cargar programación académica desde Excel'],
-    recursos:['Importar LISTA DE RECURSOS','Cargar sesiones por fecha desde Excel'],
-    jefes:['Cargar jefaturas','Mapeo docente → jefe directo'],
+    importar:['Importar datos','SABANA · LISTA DE RECURSOS · Jefaturas'],
     docente:['Horario docente','Agenda semanal del docente'],
     usuarios:['Usuarios','Administración de cuentas'],
     reportes:['Reportes','Ocupación y métricas'],
@@ -4559,9 +4596,11 @@ function App(){
         {view==='prog'      && <Programacion data={data}/>}
         {view==='reservas'  && <Reservas reservas={reservas} data={data} user={user} toast={setToast} onGoNueva={goNueva} onUpdateEstado={updateReservaEstado}/>}
         {view==='nueva'     && <NuevaReserva data={data} reservas={reservas} user={user} toast={setToast} goReservas={()=>setView('reservas')} prefill={prefillNueva} onCreate={createReserva}/>}
-        {view==='importar'  && <ImportarSabana data={data} toast={setToast} onReplace={replaceProgramacionOp} onSeed={seedFromBundle} isCloud={db.isCloud}/>}
-        {view==='recursos'  && <ImportarRecursos data={data} toast={setToast} onReplace={replaceEventosOp} isCloud={db.isCloud}/>}
-        {view==='jefes'     && <ImportarJefes data={data} toast={setToast} onReplace={replaceJefesOp}/>}
+        {view==='importar'  && <ImportarDatos data={data} toast={setToast} db={db}
+          onReplaceSabana={replaceProgramacionOp}
+          onReplaceEventos={replaceEventosOp}
+          onReplaceJefes={replaceJefesOp}
+          onSeed={seedFromBundle}/>}
         {view==='docente'   && <HorarioDocente data={data}/>}
         {view==='usuarios'  && <Usuarios users={users} toast={setToast} onCreate={createUser} onUpdate={updateUser} onDelete={deleteUser}/>}
         {view==='reportes'  && <Reportes data={data} reservas={reservas}/>}
