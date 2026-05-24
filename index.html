@@ -787,20 +787,30 @@ function createDb({ mode, supabase }){
     return all;
   };
 
-  /* ----- CARGA INICIAL ----- */
+  // Variante tolerante: si la tabla aún no existe (migración pendiente) o
+  // hay un error, retorna [] y loguea. Útil para tablas "opcionales" que
+  // no deben tirar abajo todo loadAll.
+  const fetchAllSafe = async (table, opts) => {
+    try { return await fetchAll(table, opts); }
+    catch(e){ console.warn(`fetchAll(${table}) → []:`, e.message); return []; }
+  };
+
+  /* ----- CARGA INICIAL =====
+     Cargamos PRIMERO lo crítico para que la app se vea rápido. Los eventos
+     (~13MB descargados, 71K filas en RAM) los cargamos en BACKGROUND
+     después — bloquearlos en el primer render hace que el navegador móvil
+     colapse con "Aw snap". El campo eventos arranca como [] y se llena
+     cuando termina la carga en background. */
   const loadAll = async () => {
     if(isCloud){
-      // Tablas chicas: una sola query. Tablas grandes (programacion, eventos,
-      // reservas): paginadas con fetchAll para superar el cap de 1.000 filas.
-      const [salasR, modulosR, usersR, prog, eventos, reservas, jefes, importLog] = await Promise.all([
+      const [salasR, modulosR, usersR, prog, reservas, jefes, importLog] = await Promise.all([
         supabase.from('salas').select('*').order('codigo'),
         supabase.from('modulos').select('*').order('num'),
         supabase.from('app_users').select('*').order('id'),
         fetchAll('programacion'),
-        fetchAll('eventos'),
         fetchAll('reservas', { order:'id' }),
-        fetchAll('docente_jefes'),
-        fetchAll('import_log'),
+        fetchAllSafe('docente_jefes'),  // tolerante (puede no existir)
+        fetchAllSafe('import_log'),     // tolerante (puede no existir)
       ]);
       const anyErr = [salasR, modulosR, usersR].find(r=>r.error);
       if(anyErr) throw new Error(anyErr.error.message);
@@ -808,7 +818,8 @@ function createDb({ mode, supabase }){
         salas: salasR.data || [],
         modulos: modulosR.data || [],
         programacion: prog,
-        eventos: eventos,
+        eventos: [],          // ← se llena después por loadEventosBg
+        _eventosLoaded: false,
         reservas: reservas.slice().reverse(),
         users: usersR.data || [],
         docente_jefes: jefes,
@@ -938,11 +949,11 @@ function createDb({ mode, supabase }){
   /* ----- SABANA bulk ----- */
   // Inserción resiliente en chunks. Reintenta cada chunk hasta 5 veces con
   // backoff exponencial generoso (2s, 5s, 10s, 20s, 30s) si supabase devuelve
-  // error o si fetch colapsa por red. chunkSize=500 es un balance entre
-  // velocidad (menos requests totales) y resiliencia (request más chica =
-  // menos probable de cortarse en LTE). Llama onProgress(done, total) entre
-  // chunks. opts.startFrom permite reanudar saltando los primeros N elementos.
-  const insertChunks = async (table, rows, { onProgress, chunkSize = 500, startFrom = 0 } = {}) => {
+  // error o si fetch colapsa por red. chunkSize=1000 es el máximo razonable
+  // antes de hits comunes a límite de payload de PostgREST (~1MB con eventos).
+  // Llama onProgress(done, total) entre chunks. opts.startFrom permite
+  // reanudar saltando los primeros N elementos.
+  const insertChunks = async (table, rows, { onProgress, chunkSize = 1000, startFrom = 0 } = {}) => {
     const total = rows.length;
     let done = startFrom;
     onProgress?.(done, total);
@@ -1130,7 +1141,7 @@ function createDb({ mode, supabase }){
     createUser, updateUser, deleteUser,
     replaceProgramacion, replaceEventos, replaceJefes, seedFromBundle,
     createJefe, updateJefe, deleteJefe, logImport,
-    subscribe, getStats, fetchAll,
+    subscribe, getStats, fetchAll, fetchAllSafe,
   };
 }
 
@@ -2049,6 +2060,17 @@ function HorarioDocente({ data }){
 
   return (
     <div className="stack">
+      {!data._eventosLoaded && (
+        <div className="card" style={{padding:'10px 14px',background:'#EAF2FE',borderColor:'#C4D2EA'}}>
+          <div className="row" style={{gap:10,alignItems:'center'}}>
+            <span style={{fontSize:16}}>🔄</span>
+            <div style={{fontSize:12.5,lineHeight:1.4,flex:1}}>
+              <b>Cargando LISTA DE RECURSOS en segundo plano</b> · mientras tanto se usa el patrón semanal de SABANA. La agenda se actualiza con fechas exactas apenas terminen de bajar las sesiones.
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Selector */}
       <div className="card">
         <div className="card-header">
@@ -3364,6 +3386,18 @@ function MapaCalor({ data, user }){
 
   return (
     <div className="stack">
+      {/* Cargando eventos en background */}
+      {!data._eventosLoaded && (
+        <div className="card" style={{padding:'10px 14px',background:'#EAF2FE',borderColor:'#C4D2EA'}}>
+          <div className="row" style={{gap:10,alignItems:'center'}}>
+            <span style={{fontSize:16}}>🔄</span>
+            <div style={{fontSize:12.5,lineHeight:1.4,flex:1}}>
+              <b>Cargando LISTA DE RECURSOS en segundo plano</b> · mientras tanto ves el patrón semanal del SABANA. El mapa se actualiza automáticamente apenas terminen de bajar las ~71K sesiones.
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Aviso de fuente */}
       <div className="card" style={{padding:'12px 16px',background:usaEventos?'#EFFCF5':'#FFFBEA',borderColor:usaEventos?'#9CC8A8':'#F5D680'}}>
         <div className="row" style={{gap:12,alignItems:'flex-start'}}>
@@ -4082,7 +4116,7 @@ function ImportarRecursos({ data, toast, onReplace, isCloud }){
               <div style={{height:'100%',width:`${Math.round(progress.done/progress.total*100)}%`,background:progress.autoAttempt?'linear-gradient(90deg,var(--warning),#F5D680)':'linear-gradient(90deg,var(--primary),var(--primary-2))',transition:'width .3s'}}/>
             </div>
             <div className="muted" style={{fontSize:11,marginTop:6}}>
-              Chunks de 500 filas con 5 reintentos automáticos cada uno. Si la red corta entre chunks, se reanuda solo desde donde quedó (hasta {MAX_AUTO_RESUME} veces). No necesitas hacer nada, solo no cerrar la pestaña.
+              Chunks de 1.000 filas con 5 reintentos automáticos cada uno. Si la red corta entre chunks, se reanuda solo desde donde quedó (hasta {MAX_AUTO_RESUME} veces). No necesitas hacer nada, solo no cerrar la pestaña.
             </div>
           </div>
         )}
@@ -4574,6 +4608,10 @@ function App(){
           salas: out.salas,
           programacion: out.programacion,
           modulos: out.modulos,
+          eventos: out.eventos || [],                    // ← se llena después
+          _eventosLoaded: out._eventosLoaded || false,
+          docente_jefes: out.docente_jefes || [],
+          import_log: out.import_log || [],
           _customSalas: out._local?.customSalas || [],
           _deletedSalas: out._local?.deletedSalas || [],
           _salaOverrides: out._local?.salaOverrides || {},
@@ -4591,9 +4629,26 @@ function App(){
     return () => { cancelled = true; };
   }, [db]);
 
+  // Carga eventos (~13MB / 71K filas) en BACKGROUND después del primer render.
+  // Evita que el navegador móvil colapse con "Aw snap" por meter todo en RAM
+  // antes de mostrar la app. El resto de la app es usable mientras tanto.
+  useEffect(()=>{
+    if(!db || !db.isCloud || !data || data._eventosLoaded) return;
+    let cancelled = false;
+    (async ()=>{
+      try {
+        const eventos = await db.fetchAllSafe('eventos');
+        if(cancelled) return;
+        setData(d => d ? { ...d, eventos, _eventosLoaded:true } : d);
+      } catch(e){ console.warn('background eventos:', e); }
+    })();
+    return () => { cancelled = true; };
+  }, [db, data?._eventosLoaded]);
+
   // Realtime: refresca el slice afectado cuando cambian datos en cloud.
-  // Tablas grandes (reservas, eventos) van por fetchAll paginado para no
-  // truncar a 1.000 filas.
+  // NO suscribimos a `eventos` porque cada cambio re-fetcharía ~13MB y
+  // colapsaría el navegador. Si el admin sube eventos, el setData en
+  // replaceEventosOp se encarga localmente.
   useEffect(()=>{
     if(!db || !db.isCloud) return;
     const unsubR = db.subscribe('reservas', async () => {
@@ -4608,19 +4663,19 @@ function App(){
       const { data: fresh } = await supabase.from('app_users').select('*').order('id');
       if(fresh) setUsers(fresh);
     });
-    const unsubE = db.subscribe('eventos', async () => {
-      const fresh = await db.fetchAll('eventos');
-      if(fresh) setData(d => d ? {...d, eventos:fresh} : d);
-    });
+    // OJO: NO suscribimos a `eventos`. Cada cambio re-fetchea ~13MB / 71K
+    // filas y eso colapsa el navegador móvil. La subida local ya actualiza
+    // data.eventos via setData(...). Otros usuarios verán los nuevos al
+    // recargar (F5).
     const unsubJ = db.subscribe('docente_jefes', async () => {
-      const fresh = await db.fetchAll('docente_jefes');
+      const fresh = await db.fetchAllSafe('docente_jefes');
       if(fresh) setData(d => d ? {...d, docente_jefes:fresh} : d);
     });
     const unsubIL = db.subscribe('import_log', async () => {
-      const fresh = await db.fetchAll('import_log');
+      const fresh = await db.fetchAllSafe('import_log');
       if(fresh) setData(d => d ? {...d, import_log:fresh} : d);
     });
-    return () => { unsubR(); unsubS(); unsubU(); unsubE(); unsubJ(); unsubIL(); };
+    return () => { unsubR(); unsubS(); unsubU(); unsubJ(); unsubIL(); };
   }, [db, supabase]);
 
   // Persistencia en modo local (sesión + overrides)
