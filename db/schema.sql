@@ -43,6 +43,7 @@ CREATE TABLE IF NOT EXISTS programacion (
   d    TEXT,           -- docente
   es   TEXT,           -- escuela (3 letras)
   j    TEXT,           -- jornada (D/V)
+  n    TEXT,           -- nivel (SABANA col L)
   hi   TEXT,           -- hora inicio HH:MM
   hf   TEXT,           -- hora fin    HH:MM
   dw   CHAR(7),        -- dias semana bits LMMJVSD
@@ -134,6 +135,11 @@ CREATE POLICY allow_all ON modulos      FOR ALL USING (true) WITH CHECK (true);
 CREATE POLICY allow_all ON programacion FOR ALL USING (true) WITH CHECK (true);
 CREATE POLICY allow_all ON eventos      FOR ALL USING (true) WITH CHECK (true);
 CREATE POLICY allow_all ON reservas     FOR ALL USING (true) WITH CHECK (true);
+
+-- ============================================================
+-- MIGRACIONES IDEMPOTENTES (para BD ya creada)
+-- ============================================================
+ALTER TABLE programacion ADD COLUMN IF NOT EXISTS n TEXT;
 
 -- ============================================================
 -- REAL-TIME: replicación para que todos los clientes vean cambios al instante

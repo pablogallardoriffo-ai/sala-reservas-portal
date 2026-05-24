@@ -397,6 +397,19 @@
     .blk.acad{background:#3B5998}
     .blk.res{background:#E0A800;color:#1A1A1A}
 
+    /* Heat map */
+    .heat-tbl{width:100%;border-collapse:collapse;font-size:13px;table-layout:fixed}
+    .heat-tbl thead th{
+      background:#0E1A33;color:#fff;padding:10px 8px;font-weight:700;font-size:11px;
+      text-align:center;letter-spacing:.4px;border-right:1px solid rgba(255,255,255,.06);
+    }
+    .heat-tbl tbody td{border:1px solid var(--border-soft);min-width:84px}
+    .heat-tbl tbody td.lab{
+      background:#FBFCFD;color:var(--text-muted);text-align:center;font-size:12px;
+      font-weight:600;padding:0;
+    }
+    .heat-tbl tbody td.lab b{color:var(--primary);font-size:13px}
+
     .toast{
       position:fixed;bottom:24px;right:24px;z-index:80;background:#0E1A33;color:#fff;
       padding:12px 18px;border-radius:var(--radius);box-shadow:var(--shadow-lg);font-size:13px;
@@ -596,6 +609,7 @@ const I = {
   filter:   <Icon size={16} d={<polygon points="22 3 2 3 10 12.46 10 19 14 21 14 12.46 22 3"/>} />,
   upload:   <Icon d={<><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></>} />,
   file:     <Icon size={16} d={<><path d="M13 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V9z"/><polyline points="13 2 13 9 20 9"/></>} />,
+  heatmap:  <Icon d={<><rect x="3" y="3" width="6" height="6"/><rect x="9" y="3" width="6" height="6"/><rect x="15" y="3" width="6" height="6"/><rect x="3" y="9" width="6" height="6"/><rect x="9" y="9" width="6" height="6"/><rect x="15" y="9" width="6" height="6"/><rect x="3" y="15" width="6" height="6"/><rect x="9" y="15" width="6" height="6"/><rect x="15" y="15" width="6" height="6"/></>} />,
 };
 
 /* ========= CONST ========= */
@@ -697,9 +711,9 @@ const buildSabanaIndex = (programacion) => {
 };
 const enrichEvento = (ev, sabanaIdx) => {
   const meta = sabanaIdx.get(secCodeFrom(ev.sc));
-  if(meta) return { ...ev, a:meta.a, es:meta.es, j:meta.j, d:meta.d, i:meta.i, p:meta.p };
+  if(meta) return { ...ev, a:meta.a, es:meta.es, j:meta.j, n:meta.n, d:meta.d, i:meta.i, p:meta.p };
   // Sin SABANA: provee fallbacks útiles para la UI (que normalmente lee p.a/p.d).
-  return { ...ev, a: ev.de || ev.sc || '', d:'', es:'', j:'', i:null, p:null };
+  return { ...ev, a: ev.de || ev.sc || '', d:'', es:'', j:'', n:null, i:null, p:null };
 };
 // Día de la semana (0=Lun ... 6=Dom) para un ISO YYYY-MM-DD.
 const dowFromIso = (iso) => {
@@ -1185,6 +1199,7 @@ function Shell({ user, mode, onReconfigure, onLogout, view, setView, children, t
     const base = [
       ['dashboard', 'Dashboard',          I.dashboard, ['admin','reservador','usuario']],
       ['horario',   'Horario semanal',    I.horario,   ['admin','reservador','usuario']],
+      ['mapa',      'Mapa de calor',      I.heatmap,   ['admin','reservador','usuario']],
       ['salas',     'Salas',              I.salas,     ['admin','reservador','usuario']],
       ['prog',      'Programación SABANA',I.prog,      ['admin','reservador','usuario']],
       ['nueva',     'Solicitar reserva',  I.nueva,     ['admin','reservador','usuario']],
@@ -2909,6 +2924,306 @@ function Reportes({ data, reservas }){
   );
 }
 
+/* ========= MAPA DE CALOR =========
+   Grid de 20 módulos × 6 días (Lun-Sáb). Cada celda = suma de alumnos
+   inscritos en todas las clases que ocupan ese (módulo, día) después de
+   filtros. Escala verde claro (0) → rojo intenso (max).
+
+   Fuente de datos: prefiere LISTA DE RECURSOS (fecha exacta) enriquecida
+   con SABANA (inscritos, escuela, nivel, docente). Cae al patrón semanal
+   del SABANA si no hay eventos cargados. */
+function MapaCalor({ data, user }){
+  const [sala, setSala]       = useState('');
+  const [semana, setSemana]   = useState(0);   // 0 = todas
+  const [tipo, setTipo]       = useState('');
+  const [escuela, setEscuela] = useState('');
+  const [jornada, setJornada] = useState('');
+  const [nivel, setNivel]     = useState('');
+  const [docente, setDocente] = useState('');
+  const [seccion, setSeccion] = useState('');
+
+  const usaEventos = hasEventos(data);
+  const sesiones = useMemo(()=> sesionesConsolidadas(data), [data]);
+
+  // Listas para selects (calculadas desde sesiones consolidadas)
+  const tipos     = useMemo(()=> [...new Set(data.salas.map(s=>s.tipo).filter(Boolean))].sort(), [data.salas]);
+  const escuelas  = useMemo(()=> [...new Set(sesiones.map(s=>s.es).filter(Boolean))].sort(), [sesiones]);
+  const jornadas  = useMemo(()=> [...new Set(sesiones.map(s=>s.j).filter(Boolean))].sort(), [sesiones]);
+  const niveles   = useMemo(()=> [...new Set(sesiones.map(s=>s.n).filter(Boolean))].sort((a,b)=>{
+    const na = Number(a), nb = Number(b);
+    if(!isNaN(na) && !isNaN(nb)) return na - nb;
+    return String(a).localeCompare(String(b));
+  }), [sesiones]);
+  const docentes  = useMemo(()=> [...new Set(sesiones.map(s=>s.d).filter(Boolean))].sort(), [sesiones]);
+  const secciones = useMemo(()=> [...new Set(sesiones.map(s=>s.sc).filter(Boolean))].sort(), [sesiones]);
+
+  // Mutex Docente ↔ Sección (como en la planilla original)
+  const setDocenteEx = (v) => { setDocente(v); if(v) setSeccion(''); };
+  const setSeccionEx = (v) => { setSeccion(v); if(v) setDocente(''); };
+
+  // Semanas calendario (solo significativo con eventos)
+  const semanas = useMemo(()=>{
+    if(!usaEventos) return [];
+    const fechas = [...new Set(data.eventos.map(e=>e.fi).filter(Boolean))].sort();
+    if(!fechas.length) return [];
+    const first = new Date(getMonday(fechas[0]));
+    const last  = new Date(fechas[fechas.length-1]+'T00:00:00');
+    const out = [];
+    let cur = new Date(first);
+    let n = 1;
+    while(cur <= last){
+      out.push({ num:n++, lunes:isoDate(cur), domingo:isoDate(addDays(cur, 6)) });
+      cur = addDays(cur, 7);
+    }
+    return out;
+  }, [data.eventos, usaEventos]);
+
+  // Sesiones filtradas
+  const tipoBySala = useMemo(()=> new Map(data.salas.map(s=>[s.codigo, s.tipo])), [data.salas]);
+  const filtradas = useMemo(()=>{
+    const semObj = semana ? semanas.find(w => w.num === semana) : null;
+    return sesiones.filter(s => {
+      if(sala && s.s !== sala) return false;
+      if(tipo && tipoBySala.get(s.s) !== tipo) return false;
+      if(escuela && s.es !== escuela) return false;
+      if(jornada && s.j !== jornada) return false;
+      if(nivel && String(s.n||'') !== nivel) return false;
+      if(docente && s.d !== docente) return false;
+      if(seccion && s.sc !== seccion) return false;
+      if(semObj && s.fi && (s.fi < semObj.lunes || s.fi > semObj.domingo)) return false;
+      return true;
+    });
+  }, [sesiones, sala, tipo, escuela, jornada, nivel, docente, seccion, semana, semanas, tipoBySala]);
+
+  // Grid del mapa: 20 módulos × 7 días. Para cada (módulo, día) sumamos
+  // inscritos de las sesiones cuyo rango horario cubre ese módulo,
+  // deduplicando por (sección, fecha, hora, sala) para no contar dos veces
+  // el mismo asiento si la fila aparece duplicada en la fuente.
+  const mapa = useMemo(()=>{
+    const grid = data.modulos.map(()=> [0,0,0,0,0,0,0]);
+    const seen = new Set();
+    for(const sess of filtradas){
+      const key = `${sess.sc||''}|${sess.fi||''}|${sess.hi||''}|${sess.hf||''}|${sess.s||''}`;
+      if(seen.has(key)) continue;
+      seen.add(key);
+      const ins = Number(sess.i) || 0;
+      if(!ins) continue;
+      const dws = sess.fi
+        ? [dowFromIso(sess.fi)]
+        : (sess.dw ? [...sess.dw].map((b,i)=> b==='1' ? i : -1).filter(i=>i>=0) : []);
+      data.modulos.forEach((mod, mi) => {
+        if(moduleInTimeRange(mod.num, sess.hi, sess.hf, data.modulos)){
+          for(const dw of dws) grid[mi][dw] += ins;
+        }
+      });
+    }
+    return grid;
+  }, [filtradas, data.modulos]);
+
+  const flat = mapa.flat();
+  const maxCell = Math.max(0, ...flat);
+  const totalAlumnoModulo = flat.reduce((a,b)=>a+b, 0);
+  const peakIdx = (() => {
+    let best = null, bestV = 0;
+    for(let mi=0; mi<mapa.length; mi++){
+      for(let dw=0; dw<6; dw++){
+        if(mapa[mi][dw] > bestV){ bestV = mapa[mi][dw]; best = { mod:data.modulos[mi], dw, v:bestV }; }
+      }
+    }
+    return best;
+  })();
+
+  // Color: 0 → verde muy claro; bajo → verde; medio → ámbar; alto → rojo.
+  const colorFor = (v) => {
+    if(v === 0) return '#F0FDF4';
+    const pct = Math.min(1, v / Math.max(1, maxCell));
+    const lerp = (a,b,t)=> Math.round(a + (b-a)*t);
+    let r,g,b;
+    if(pct < 0.5){
+      const t = pct / 0.5;
+      r = lerp(34, 251, t);  g = lerp(197, 191, t); b = lerp(94, 36, t);
+    } else {
+      const t = (pct - 0.5) / 0.5;
+      r = lerp(251, 220, t); g = lerp(191, 38, t);  b = lerp(36, 38, t);
+    }
+    return `rgb(${r},${g},${b})`;
+  };
+  const textFor = (v) => v / Math.max(1, maxCell) > 0.45 ? '#fff' : '#1A1A1A';
+
+  const resetFiltros = () => {
+    setSala(''); setSemana(0); setTipo(''); setEscuela(''); setJornada('');
+    setNivel(''); setDocente(''); setSeccion('');
+  };
+  const algunFiltro = !!(sala||semana||tipo||escuela||jornada||nivel||docente||seccion);
+
+  return (
+    <div className="stack">
+      {/* Aviso de fuente */}
+      <div className="card" style={{padding:'12px 16px',background:usaEventos?'#EFFCF5':'#FFFBEA',borderColor:usaEventos?'#9CC8A8':'#F5D680'}}>
+        <div className="row" style={{gap:12,alignItems:'flex-start'}}>
+          <span style={{fontSize:18}}>{usaEventos?'📅':'⚠'}</span>
+          <div style={{fontSize:12.5,lineHeight:1.5,flex:1}}>
+            {usaEventos
+              ? <>Fuente: <b>LISTA DE RECURSOS</b> ({(data.eventos||[]).length.toLocaleString('es-CL')} sesiones por fecha) enriquecida con <b>SABANA</b> ({data.programacion.length.toLocaleString('es-CL')} filas) para los inscritos. El filtro <b>Semana</b> está activo.</>
+              : <>Fuente: <b>SABANA</b> (patrón semanal). Cada celda es la suma de inscritos sumada para todas las repeticiones semanales. Importa una <b>LISTA DE RECURSOS</b> para tener fechas exactas y activar el filtro por semana.</>}
+          </div>
+        </div>
+      </div>
+
+      {/* KPIs */}
+      <div className="grid grid-4">
+        <div className="kpi kpi-blue">
+          <span className="label">Sesiones filtradas</span>
+          <span className="value">{filtradas.length.toLocaleString('es-CL')}</span>
+          <span className="delta">{algunFiltro?'con filtros':'sin filtros'}</span>
+          <div className="icon">📚</div>
+        </div>
+        <div className="kpi kpi-green">
+          <span className="label">Alumno · módulo total</span>
+          <span className="value">{totalAlumnoModulo.toLocaleString('es-CL')}</span>
+          <span className="delta">suma de inscritos × módulos cubiertos</span>
+          <div className="icon">👥</div>
+        </div>
+        <div className="kpi kpi-amber">
+          <span className="label">Pico máximo</span>
+          <span className="value">{maxCell.toLocaleString('es-CL')}</span>
+          <span className="delta">{peakIdx ? `Mód.${peakIdx.mod.num} · ${DIA_NOMBRES[peakIdx.dw]}` : '—'}</span>
+          <div className="icon">🔥</div>
+        </div>
+        <div className="kpi kpi-blue">
+          <span className="label">Semanas detectadas</span>
+          <span className="value">{usaEventos ? semanas.length : '—'}</span>
+          <span className="delta">{usaEventos && semanas.length ? `${fmtFecha(semanas[0].lunes)} → ${fmtFecha(semanas[semanas.length-1].domingo)}` : 'requiere LISTA DE RECURSOS'}</span>
+          <div className="icon">🗓</div>
+        </div>
+      </div>
+
+      {/* Filtros */}
+      <div className="card">
+        <div className="card-header">
+          <div><h3>Filtros</h3><div className="sub">Combina filtros para refinar el mapa. <b>Docente</b> y <b>Sección</b> son excluyentes (uno desactiva al otro).</div></div>
+          {algunFiltro && <button className="btn btn-ghost" onClick={resetFiltros} style={{fontSize:12,padding:'6px 12px'}}>Limpiar todos</button>}
+        </div>
+        <div className="filters">
+          <div className="field">
+            <label>Sala</label>
+            <select value={sala} onChange={e=>setSala(e.target.value)}>
+              <option value="">Todas</option>
+              {data.salas.map(s => <option key={s.codigo} value={s.codigo}>{s.codigo}</option>)}
+            </select>
+          </div>
+          <div className="field">
+            <label>Semana</label>
+            <select value={semana} onChange={e=>setSemana(Number(e.target.value))} disabled={!usaEventos}>
+              <option value={0}>Todas</option>
+              {semanas.map(w => (
+                <option key={w.num} value={w.num}>
+                  S{w.num} · {new Date(w.lunes+'T00:00:00').toLocaleDateString('es-CL',{day:'2-digit',month:'short'})}–{new Date(w.domingo+'T00:00:00').toLocaleDateString('es-CL',{day:'2-digit',month:'short'})}
+                </option>
+              ))}
+            </select>
+          </div>
+          <div className="field">
+            <label>Tipo de recinto</label>
+            <select value={tipo} onChange={e=>setTipo(e.target.value)}>
+              <option value="">Todos</option>
+              {tipos.map(t => <option key={t} value={t}>{t}</option>)}
+            </select>
+          </div>
+          <div className="field">
+            <label>Escuela</label>
+            <select value={escuela} onChange={e=>setEscuela(e.target.value)}>
+              <option value="">Todas</option>
+              {escuelas.map(e => <option key={e} value={e}>{ESCUELAS_FULL[e]||e}</option>)}
+            </select>
+          </div>
+          <div className="field">
+            <label>Jornada</label>
+            <select value={jornada} onChange={e=>setJornada(e.target.value)}>
+              <option value="">Todas</option>
+              {jornadas.map(j => <option key={j} value={j}>{j==='D'?'Diurno':j==='V'?'Vespertino':j}</option>)}
+            </select>
+          </div>
+          <div className="field">
+            <label>Nivel</label>
+            <select value={nivel} onChange={e=>setNivel(e.target.value)} disabled={niveles.length===0}>
+              <option value="">{niveles.length===0?'Sin datos · re-importa SABANA':'Todos'}</option>
+              {niveles.map(n => <option key={n} value={n}>{n}</option>)}
+            </select>
+          </div>
+          <div className="field">
+            <label>Docente {docente && <span className="chip success" style={{marginLeft:6,fontSize:10}}>activo</span>}</label>
+            <select value={docente} onChange={e=>setDocenteEx(e.target.value)}>
+              <option value="">— Desactivado —</option>
+              {docentes.map(d => <option key={d} value={d}>{d}</option>)}
+            </select>
+          </div>
+          <div className="field">
+            <label>Sección {seccion && <span className="chip success" style={{marginLeft:6,fontSize:10}}>activo</span>}</label>
+            <select value={seccion} onChange={e=>setSeccionEx(e.target.value)}>
+              <option value="">— Desactivado —</option>
+              {secciones.map(s => <option key={s} value={s}>{s}</option>)}
+            </select>
+          </div>
+        </div>
+        <div className="login-hint" style={{marginTop:10,fontSize:11.5}}>
+          <b>Filtros aún no implementados</b>: <i>Edificio</i>, <i>Director</i>, <i>Categorización</i>, <i>Género</i> — no existen en la SABANA actual. Si nos compartes un mapeo (ej. <code>Escuela → Director</code> o <code>prefijo sala → Edificio</code>), los activamos.
+        </div>
+      </div>
+
+      {/* Mapa de calor */}
+      <div className="card" style={{padding:0,overflow:'hidden'}}>
+        <div className="card-header" style={{padding:'14px 18px'}}>
+          <div>
+            <h3>Mapa de calor · alumnos por módulo</h3>
+            <div className="sub">Sede Viña del Mar · 2026·1{sala?` · sala ${sala}`:''}{semana?` · S${semana}`:''}</div>
+          </div>
+          <div className="row" style={{gap:10,fontSize:11,alignItems:'center'}}>
+            <span style={{color:'var(--text-muted)'}}>0</span>
+            <div style={{display:'flex',height:14,width:160,borderRadius:4,overflow:'hidden',border:'1px solid var(--border-soft)'}}>
+              {[0.01,0.1,0.2,0.3,0.4,0.5,0.6,0.7,0.8,0.9,1].map((p,i)=>(
+                <div key={i} style={{flex:1,background:colorFor(p*Math.max(1,maxCell))}}/>
+              ))}
+            </div>
+            <span style={{color:'var(--text-muted)'}}>{maxCell.toLocaleString('es-CL')}</span>
+          </div>
+        </div>
+        <div style={{overflowX:'auto'}}>
+          <table className="heat-tbl">
+            <thead>
+              <tr>
+                <th style={{width:54}}>Mód.</th>
+                <th style={{width:82}}>Inicio</th>
+                <th style={{width:82}}>Fin</th>
+                {DIA_NOMBRES.slice(0,6).map(d => <th key={d}>{d.toUpperCase()}</th>)}
+              </tr>
+            </thead>
+            <tbody>
+              {data.modulos.map((mod, mi) => (
+                <tr key={mod.num}>
+                  <td className="lab"><b>{mod.num}</b></td>
+                  <td className="lab">{mod.inicio}</td>
+                  <td className="lab">{mod.fin}</td>
+                  {[0,1,2,3,4,5].map(dw => {
+                    const v = mapa[mi][dw];
+                    return (
+                      <td key={dw}
+                        style={{background:colorFor(v),color:textFor(v),fontWeight:v>0?700:500,textAlign:'center',padding:'10px 4px'}}
+                        title={`${DIA_NOMBRES[dw]} · Mód ${mod.num} (${mod.inicio}-${mod.fin}): ${v.toLocaleString('es-CL')} alumnos`}>
+                        {v ? v.toLocaleString('es-CL') : 0}
+                      </td>
+                    );
+                  })}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 /* ========= MODAL ========= */
 /* ========= IMPORTAR SABANA ========= */
 function ImportarSabana({ data, toast, onReplace, onSeed, isCloud }){
@@ -2957,6 +3272,7 @@ function ImportarSabana({ data, toast, onReplace, onSeed, isCloud }){
       const cDoc  = findCol(headers, ['Instruct','Docente','Profesor']);
       const cEsc  = findCol(headers, ['Escuela']);
       const cJor  = findCol(headers, ['Nom.Jornada','Nom Jornada','Jornada']);
+      const cNiv  = findCol(headers, ['Nivel','Nivel.','Nivel ']);
       const cHi   = findCol(headers, ['HorInic','Hora Inicio','Inicio']);
       const cHf   = findCol(headers, ['Final','Hora Fin','Fin']);
       const cIns  = findCol(headers, ['Cant. ins','Cant ins','Inscritos']);
@@ -3034,6 +3350,7 @@ function ImportarSabana({ data, toast, onReplace, onSeed, isCloud }){
           d: cDoc>=0 ? row[cDoc] : null,
           es: String(escuela).slice(0,3),
           j: cJor>=0 ? String(row[cJor]||'').slice(0,1) : '',
+          n: cNiv>=0 && row[cNiv]!=null ? String(row[cNiv]) : null,
           hi, hf, dw,
           i: cIns>=0 ? row[cIns] : null,
           p: cPla>=0 ? row[cPla] : null,
@@ -3302,6 +3619,24 @@ function ImportarRecursos({ data, toast, onReplace, isCloud }){
     } catch(e){}
   };
 
+  // Carga el snapshot empaquetado en /data/eventos.json (el archivo que
+  // adjuntó el usuario, pre-parseado). Útil cuando se opera desde el móvil
+  // y no se puede subir el Excel.
+  const [seedingRepo, setSeedingRepo] = useState(false);
+  const cargarDesdeRepo = async () => {
+    if(!window.confirm('Se REEMPLAZARÁ la lista de eventos con el snapshot empaquetado en el repositorio (71.833 sesiones · semestre 2026·1). ¿Continuar?')) return;
+    setSeedingRepo(true);
+    try {
+      const r = await fetch('./data/eventos.json');
+      if(!r.ok) throw new Error(`HTTP ${r.status}`);
+      const eventos = await r.json();
+      await onReplace(eventos, []);
+      toast(`Snapshot cargado: ${eventos.length.toLocaleString('es-CL')} sesiones.`);
+    } catch(e){
+      toast('Error al cargar snapshot: '+e.message);
+    } finally { setSeedingRepo(false); }
+  };
+
   return (
     <div className="stack">
       <div className="card">
@@ -3320,6 +3655,20 @@ function ImportarRecursos({ data, toast, onReplace, isCloud }){
           <input id="recursos-file" type="file" accept=".xlsx,.xls" style={{display:'none'}} onChange={onFile}/>
           {parsing && <div style={{marginTop:10}}>Procesando…</div>}
           {archivo && !parsing && <div style={{marginTop:10,fontSize:12}}>📄 {archivo.name}</div>}
+        </div>
+
+        <div style={{marginTop:14,padding:12,background:'#EAF2FE',borderRadius:8,border:'1px solid #C4D2EA'}}>
+          <div className="row between" style={{gap:12,flexWrap:'wrap'}}>
+            <div style={{flex:1,minWidth:240}}>
+              <b style={{fontSize:13}}>📦 Snapshot empaquetado (semestre 2026·1)</b>
+              <div className="muted" style={{fontSize:11.5,marginTop:2}}>
+                Subimos al repo el archivo <code>recursos_2104.xlsx</code> pre-parseado (71.833 sesiones). Útil si estás en el celular y no puedes adjuntar Excel.
+              </div>
+            </div>
+            <button className="btn btn-primary" onClick={cargarDesdeRepo} disabled={seedingRepo}>
+              {seedingRepo ? 'Cargando…' : 'Cargar snapshot al portal'}
+            </button>
+          </div>
         </div>
 
         <div className="login-hint" style={{marginTop:14}}>
@@ -3657,6 +4006,7 @@ function App(){
   const titles = {
     dashboard:['Dashboard','Panel de control'],
     horario:['Horario semanal','Disponibilidad física Lun-Dom × Módulos'],
+    mapa:['Mapa de calor','Ocupación de la sede por módulo y día'],
     salas:['Catálogo de salas','Salas y recintos'],
     prog:['Programación académica','SABANA · 2026·1'],
     reservas:['Reservas','Gestión y búsqueda de disponibilidad'],
@@ -3681,6 +4031,7 @@ function App(){
         {view==='recursos'  && <ImportarRecursos data={data} toast={setToast} onReplace={replaceEventosOp} isCloud={db.isCloud}/>}
         {view==='usuarios'  && <Usuarios users={users} toast={setToast} onCreate={createUser} onUpdate={updateUser} onDelete={deleteUser}/>}
         {view==='reportes'  && <Reportes data={data} reservas={reservas}/>}
+        {view==='mapa'      && <MapaCalor data={data} user={user}/>}
       </Shell>
       {toast && <div className="toast">{toast}</div>}
     </>
