@@ -765,26 +765,50 @@ const useToast = () => {
 function createDb({ mode, supabase }){
   const isCloud = mode === 'cloud' && supabase;
 
+  // Supabase limita las queries REST a 1.000 filas por defecto. Para tablas
+  // que pueden ser grandes (programacion ~5K, eventos ~72K, reservas) hay que
+  // paginar manualmente con range(from, to). Trae todas las filas concatenando
+  // páginas de PAGE filas hasta recibir una página incompleta (= fin).
+  const fetchAll = async (table, { order } = {}) => {
+    const PAGE = 1000;
+    let all = [];
+    let from = 0;
+    for(;;){
+      let q = supabase.from(table).select('*');
+      if(order) q = q.order(order);
+      q = q.range(from, from + PAGE - 1);
+      const { data, error } = await q;
+      if(error) throw new Error(`${table}: ${error.message}`);
+      if(!data || !data.length) break;
+      all = all.concat(data);
+      if(data.length < PAGE) break;
+      from += PAGE;
+    }
+    return all;
+  };
+
   /* ----- CARGA INICIAL ----- */
   const loadAll = async () => {
     if(isCloud){
-      const [salas, modulos, prog, eventos, reservas, users] = await Promise.all([
+      // Tablas chicas: una sola query. Tablas grandes (programacion, eventos,
+      // reservas): paginadas con fetchAll para superar el cap de 1.000 filas.
+      const [salasR, modulosR, usersR, prog, eventos, reservas] = await Promise.all([
         supabase.from('salas').select('*').order('codigo'),
         supabase.from('modulos').select('*').order('num'),
-        supabase.from('programacion').select('*'),
-        supabase.from('eventos').select('*'),
-        supabase.from('reservas').select('*').order('id', { ascending:false }).limit(2000),
         supabase.from('app_users').select('*').order('id'),
+        fetchAll('programacion'),
+        fetchAll('eventos'),
+        fetchAll('reservas', { order:'id' }),
       ]);
-      const anyErr = [salas, modulos, prog, eventos, reservas, users].find(r=>r.error);
+      const anyErr = [salasR, modulosR, usersR].find(r=>r.error);
       if(anyErr) throw new Error(anyErr.error.message);
       return {
-        salas: salas.data || [],
-        modulos: modulos.data || [],
-        programacion: prog.data || [],
-        eventos: eventos.data || [],
-        reservas: reservas.data || [],
-        users: users.data || [],
+        salas: salasR.data || [],
+        modulos: modulosR.data || [],
+        programacion: prog,
+        eventos: eventos,
+        reservas: reservas.slice().reverse(),  // más recientes primero
+        users: usersR.data || [],
       };
     }
     // Modo local: JSON estático + overrides en localStorage
@@ -1013,7 +1037,7 @@ function createDb({ mode, supabase }){
     createSala, updateSala, deleteSala,
     createUser, updateUser, deleteUser,
     replaceProgramacion, replaceEventos, seedFromBundle,
-    subscribe, getStats,
+    subscribe, getStats, fetchAll,
   };
 }
 
@@ -3799,12 +3823,14 @@ function App(){
     return () => { cancelled = true; };
   }, [db]);
 
-  // Realtime: refresca el slice afectado cuando cambian datos en cloud
+  // Realtime: refresca el slice afectado cuando cambian datos en cloud.
+  // Tablas grandes (reservas, eventos) van por fetchAll paginado para no
+  // truncar a 1.000 filas.
   useEffect(()=>{
     if(!db || !db.isCloud) return;
     const unsubR = db.subscribe('reservas', async () => {
-      const { data: fresh } = await supabase.from('reservas').select('*').order('id',{ascending:false}).limit(2000);
-      if(fresh) setReservas(fresh);
+      const fresh = await db.fetchAll('reservas', { order:'id' });
+      if(fresh) setReservas(fresh.slice().reverse());
     });
     const unsubS = db.subscribe('salas', async () => {
       const { data: fresh } = await supabase.from('salas').select('*').order('codigo');
@@ -3815,7 +3841,7 @@ function App(){
       if(fresh) setUsers(fresh);
     });
     const unsubE = db.subscribe('eventos', async () => {
-      const { data: fresh } = await supabase.from('eventos').select('*');
+      const fresh = await db.fetchAll('eventos');
       if(fresh) setData(d => d ? {...d, eventos:fresh} : d);
     });
     return () => { unsubR(); unsubS(); unsubU(); unsubE(); };
