@@ -581,7 +581,7 @@
   <div id="root"></div>
 
   <script type="text/babel" data-presets="env,react">
-const { useState, useEffect, useMemo, useCallback } = React;
+const { useState, useEffect, useMemo, useCallback, useRef } = React;
 
 /* ========= ICONS (inline SVG) ========= */
 const Icon = ({ d, size=18, stroke=1.7 }) => (
@@ -3883,9 +3883,45 @@ function ImportarRecursos({ data, toast, onReplace, isCloud }){
     }
   };
 
-  // Progreso de subida (para que el usuario vea avance en móvil)
-  const [progress, setProgress] = useState(null);  // { done, total } o null
-  const onProgress = (done, total) => setProgress({ done, total });
+  // Progreso de subida (para que el usuario vea avance en móvil).
+  // autoAttempt / autoMax aparecen cuando el loop auto-resume está activo.
+  const [progress, setProgress] = useState(null);
+  const onProgress = (done, total) => setProgress(p => ({ ...(p||{}), done, total }));
+
+  // Flag de cancelación para el botón "Detener" durante el auto-resume.
+  const stopRef = useRef(false);
+
+  // Loop que reintenta automáticamente una subida fallida hasta MAX veces.
+  // Después del primer intento, los siguientes son siempre con resume=true.
+  // Si el error es "recuperable" (red, fetch, chunk) sigue intentando.
+  // Si el usuario apreta "Detener", aborta sin reintentar.
+  const MAX_AUTO_RESUME = 15;
+  const runWithAutoResume = async (uploadFn, { isResume = false } = {}) => {
+    let auto = 0;
+    let resume = isResume;
+    while(true){
+      if(stopRef.current) throw new Error('Subida detenida por el usuario.');
+      try {
+        await uploadFn(resume);
+        return;
+      } catch(e){
+        if(stopRef.current) throw new Error('Subida detenida por el usuario.');
+        const recoverable = /failed to fetch|networkerror|network|timeout|chunk/i.test(e.message || '');
+        if(!recoverable || auto >= MAX_AUTO_RESUME){
+          // No recuperable o se agotaron los reintentos
+          throw new Error(`${e.message}${auto>0?` (después de ${auto} reintentos automáticos)`:''}`);
+        }
+        auto++;
+        resume = true;
+        setProgress(p => ({ ...(p||{}), autoAttempt: auto, autoMax: MAX_AUTO_RESUME }));
+        // Espera 5 segundos antes del siguiente intento
+        for(let s=0; s<5; s++){
+          if(stopRef.current) throw new Error('Subida detenida por el usuario.');
+          await new Promise(r => setTimeout(r, 1000));
+        }
+      }
+    }
+  };
 
   const aplicar = async () => {
     if(!preview) return;
@@ -3893,11 +3929,16 @@ function ImportarRecursos({ data, toast, onReplace, isCloud }){
     const salasNuevas = preview.salas.filter(s => !data.salas.some(x=>x.codigo===s.codigo));
     const eventosFinal = reemplazar ? preview.eventos : [...(data.eventos||[]), ...preview.eventos];
     setProgress({ done:0, total:eventosFinal.length });
+    stopRef.current = false;
     try {
-      await onReplace(eventosFinal, salasNuevas, { onProgress });
+      await runWithAutoResume(
+        async (isResume) => { await onReplace(eventosFinal, salasNuevas, { onProgress, resume: isResume }); }
+      );
       toast(`LISTA DE RECURSOS importada: ${preview.sesiones} sesiones cargadas.`);
       setPreview(null); setArchivo(null);
-    } catch(e){} finally { setProgress(null); }
+    } catch(e){
+      toast('Error al importar: '+e.message);
+    } finally { setProgress(null); stopRef.current = false; }
   };
 
   // Carga el snapshot empaquetado en /data/eventos.json (el archivo que
@@ -3907,20 +3948,25 @@ function ImportarRecursos({ data, toast, onReplace, isCloud }){
   const cargarDesdeRepo = async ({ resume = false } = {}) => {
     const yaCargado = (data.eventos||[]).length;
     const mensaje = resume
-      ? `Se REANUDARÁ la subida desde la fila ${yaCargado+1} (ya hay ${yaCargado.toLocaleString('es-CL')} en BD). Total: 71.833 sesiones. ¿Continuar?`
-      : `Se REEMPLAZARÁ la lista de eventos con el snapshot empaquetado en el repositorio (71.833 sesiones · semestre 2026·1). ¿Continuar?`;
+      ? `Se REANUDARÁ la subida desde la fila ${yaCargado+1} (ya hay ${yaCargado.toLocaleString('es-CL')} en BD). Total: 71.833 sesiones. Si falla un chunk, se reintentará automáticamente. ¿Continuar?`
+      : `Se REEMPLAZARÁ la lista de eventos con el snapshot empaquetado en el repositorio (71.833 sesiones · semestre 2026·1). Si la red corta, se retomará automáticamente. ¿Continuar?`;
     if(!window.confirm(mensaje)) return;
     setSeedingRepo(true);
+    stopRef.current = false;
     try {
       const r = await fetch('./data/eventos.json');
       if(!r.ok) throw new Error(`HTTP ${r.status}`);
       const eventos = await r.json();
       setProgress({ done: resume ? yaCargado : 0, total: eventos.length });
-      await onReplace(eventos, [], { onProgress, resume });
+      await runWithAutoResume(
+        async (isResume) => { await onReplace(eventos, [], { onProgress, resume: isResume }); },
+        { isResume: resume }
+      );
       toast(`Snapshot cargado: ${eventos.length.toLocaleString('es-CL')} sesiones.`);
     } catch(e){
-      toast('Error al cargar snapshot: '+e.message+' · Toca "Continuar subida" para reanudar.');
-    } finally { setSeedingRepo(false); setProgress(null); }
+      const cancelado = /detenida/.test(e.message);
+      toast(cancelado ? 'Subida detenida.' : ('Error: '+e.message+' · Vuelve a tocar "Cargar snapshot" para reintentar.'));
+    } finally { setSeedingRepo(false); setProgress(null); stopRef.current = false; }
   };
 
   return (
@@ -3969,20 +4015,32 @@ function ImportarRecursos({ data, toast, onReplace, isCloud }){
           </div>
         </div>
 
-        {/* Barra de progreso de la subida (chunks reintentables) */}
+        {/* Barra de progreso de la subida (chunks reintentables + auto-resume) */}
         {progress && (
           <div style={{marginTop:14,padding:14,background:'#FBFCFD',borderRadius:8,border:'1px solid var(--border-soft)'}}>
-            <div className="row between" style={{marginBottom:8}}>
-              <b style={{fontSize:13}}>Subiendo a la base de datos…</b>
-              <span style={{fontWeight:700,fontSize:13,color:'var(--primary-2)'}}>
-                {progress.done.toLocaleString('es-CL')} / {progress.total.toLocaleString('es-CL')} ({Math.round(progress.done/progress.total*100)}%)
-              </span>
+            <div className="row between" style={{marginBottom:8,flexWrap:'wrap',gap:8}}>
+              <div>
+                <b style={{fontSize:13}}>{progress.autoAttempt ? '🔄 Reanudando subida…' : 'Subiendo a la base de datos…'}</b>
+                {progress.autoAttempt && (
+                  <div style={{fontSize:11,color:'var(--warning)',marginTop:2}}>
+                    Auto-reintento {progress.autoAttempt}/{progress.autoMax} · esperando 5s antes de retomar
+                  </div>
+                )}
+              </div>
+              <div className="row" style={{gap:10,alignItems:'center'}}>
+                <span style={{fontWeight:700,fontSize:13,color:'var(--primary-2)'}}>
+                  {progress.done.toLocaleString('es-CL')} / {progress.total.toLocaleString('es-CL')} ({Math.round(progress.done/progress.total*100)}%)
+                </span>
+                <button className="btn btn-ghost" style={{padding:'4px 10px',fontSize:11}} onClick={()=>{stopRef.current=true;}}>
+                  ✕ Detener
+                </button>
+              </div>
             </div>
             <div style={{height:12,background:'#EEF2F7',borderRadius:6,overflow:'hidden'}}>
-              <div style={{height:'100%',width:`${Math.round(progress.done/progress.total*100)}%`,background:'linear-gradient(90deg,var(--primary),var(--primary-2))',transition:'width .3s'}}/>
+              <div style={{height:'100%',width:`${Math.round(progress.done/progress.total*100)}%`,background:progress.autoAttempt?'linear-gradient(90deg,var(--warning),#F5D680)':'linear-gradient(90deg,var(--primary),var(--primary-2))',transition:'width .3s'}}/>
             </div>
             <div className="muted" style={{fontSize:11,marginTop:6}}>
-              Chunks de 200 filas con 3 reintentos cada uno. No cierres la pestaña. Si la red falla, el chunk se reintenta automáticamente.
+              Chunks de 500 filas con 5 reintentos automáticos cada uno. Si la red corta entre chunks, se reanuda solo desde donde quedó (hasta {MAX_AUTO_RESUME} veces). No necesitas hacer nada, solo no cerrar la pestaña.
             </div>
           </div>
         )}
