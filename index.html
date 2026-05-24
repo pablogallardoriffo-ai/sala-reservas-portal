@@ -3002,6 +3002,16 @@ function MapaCalor({ data, user }){
     return out;
   }, [data.eventos, usaEventos]);
 
+  // Default del filtro Semana: la semana actual si está dentro del semestre,
+  // sino S1. Evita que el usuario abra el mapa con "Todas" (= suma de las 18
+  // semanas, ~38K alumnos en el pico) y crea que los números están mal.
+  useEffect(()=>{
+    if(!usaEventos || !semanas.length || semana !== 0) return;
+    const hoy = isoDate(new Date());
+    const actual = semanas.find(w => hoy >= w.lunes && hoy <= w.domingo);
+    setSemana(actual ? actual.num : 1);
+  }, [usaEventos, semanas]);
+
   // Sesiones filtradas
   const tipoBySala = useMemo(()=> new Map(data.salas.map(s=>[s.codigo, s.tipo])), [data.salas]);
   const filtradas = useMemo(()=>{
@@ -3195,12 +3205,24 @@ function MapaCalor({ data, user }){
         </div>
       </div>
 
+      {/* Aviso si "Todas las semanas" — números son la SUMA de las 18 semanas */}
+      {usaEventos && !semana && (
+        <div className="chip warn" style={{padding:'8px 12px',fontSize:12}}>
+          ⚠ Estás viendo <b>todas las semanas sumadas</b>. Los números son ~18× los de una semana real. Selecciona una semana arriba para ver la ocupación real.
+        </div>
+      )}
+
       {/* Mapa de calor */}
       <div className="card" style={{padding:0,overflow:'hidden'}}>
         <div className="card-header" style={{padding:'14px 18px'}}>
           <div>
             <h3>Mapa de calor · alumnos por módulo</h3>
-            <div className="sub">Sede Viña del Mar · 2026·1{sala?` · sala ${sala}`:''}{semana?` · S${semana}`:''}</div>
+            <div className="sub">
+              Sede Viña del Mar · 2026·1{sala?` · sala ${sala}`:''}
+              {usaEventos && semana
+                ? ` · Semana ${semana} (${semanas.find(w=>w.num===semana)?.lunes||''} → ${semanas.find(w=>w.num===semana)?.domingo||''})`
+                : usaEventos ? ' · todas las semanas (acumulado)' : ''}
+            </div>
           </div>
           <div className="row" style={{gap:10,fontSize:11,alignItems:'center'}}>
             <span style={{color:'var(--text-muted)'}}>0</span>
