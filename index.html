@@ -933,28 +933,46 @@ function createDb({ mode, supabase }){
   };
 
   /* ----- SABANA bulk ----- */
-  // Inserción resiliente en chunks. Reintenta cada chunk con backoff
-  // exponencial (1s, 2s, 4s) si supabase devuelve error o si fetch
-  // colapsa por red. Llama onProgress(done, total) entre chunks para
-  // alimentar UIs de progreso. CHUNK=200 es un compromiso para móvil
-  // (request más liviana, menos probable de timeout en LTE inestable).
-  const insertChunks = async (table, rows, { onProgress, chunkSize = 200 } = {}) => {
-    let done = 0;
-    for(let i=0;i<rows.length;i+=chunkSize){
-      const slice = rows.slice(i, i+chunkSize).map(x=>{ const c={...x}; delete c.id; return c; });
+  // Inserción resiliente en chunks. Reintenta cada chunk hasta 5 veces con
+  // backoff exponencial generoso (2s, 5s, 10s, 20s, 30s) si supabase devuelve
+  // error o si fetch colapsa por red. Pausa breve entre chunks para no saturar
+  // la red móvil. Llama onProgress(done, total) entre chunks. opts.startFrom
+  // permite reanudar saltando los primeros N elementos (útil cuando ya hay
+  // filas en la BD por un upload previo a medias).
+  const insertChunks = async (table, rows, { onProgress, chunkSize = 200, startFrom = 0 } = {}) => {
+    const total = rows.length;
+    let done = startFrom;
+    onProgress?.(done, total);
+    for(let i = startFrom; i < total; i += chunkSize){
+      const slice = rows.slice(i, i + chunkSize).map(x => { const c = {...x}; delete c.id; return c; });
+      const backoffs = [2000, 5000, 10000, 20000, 30000];
       let lastErr = null;
-      for(let attempt=0; attempt<3; attempt++){
+      for(let attempt = 0; attempt < backoffs.length + 1; attempt++){
         try {
           const { error } = await supabase.from(table).insert(slice);
           if(error){ lastErr = new Error(error.message); }
           else { lastErr = null; break; }
         } catch(e){ lastErr = e; }
-        if(attempt < 2) await new Promise(r => setTimeout(r, 1000 * Math.pow(2, attempt))); // 1s, 2s
+        if(attempt < backoffs.length) await new Promise(r => setTimeout(r, backoffs[attempt]));
       }
-      if(lastErr) throw new Error(`${table} chunk ${i} (filas ${i+1}-${Math.min(i+chunkSize, rows.length)} de ${rows.length}): ${lastErr.message}`);
+      if(lastErr){
+        const e = new Error(`${table} chunk ${i} (filas ${i+1}-${Math.min(i+chunkSize, total)} de ${total}): ${lastErr.message}`);
+        e.resumeFrom = i;  // permite reanudar exactamente desde el chunk fallido
+        throw e;
+      }
       done += slice.length;
-      onProgress?.(done, rows.length);
+      onProgress?.(done, total);
+      // pausa breve para no saturar la red móvil
+      await new Promise(r => setTimeout(r, 100));
     }
+  };
+
+  // Cuenta filas actuales en una tabla (head:true = sin traer datos)
+  const countRows = async (table) => {
+    if(!isCloud) return 0;
+    const { count, error } = await supabase.from(table).select('*', { count:'exact', head:true });
+    if(error) throw new Error(`Count ${table}: ${error.message}`);
+    return count || 0;
   };
 
   const replaceProgramacion = async (prog, salasNuevas, opts = {}) => {
@@ -980,16 +998,25 @@ function createDb({ mode, supabase }){
     return true;
   };
 
-  /* ----- LISTA DE RECURSOS bulk (eventos por fecha) ----- */
+  /* ----- LISTA DE RECURSOS bulk (eventos por fecha) -----
+     opts.resume = true → no borra la tabla y salta los primeros N elementos
+     (donde N = filas ya en BD). Permite reintentar un upload caído sin
+     perder lo subido. */
   const replaceEventos = async (eventos, salasNuevas, opts = {}) => {
     if(isCloud){
       if(salasNuevas?.length){
         const { error: e1 } = await supabase.from('salas').upsert(salasNuevas, { onConflict:'codigo', ignoreDuplicates:true });
         if(e1) throw new Error('Error al upsert salas: '+e1.message);
       }
-      const { error: eDel } = await supabase.from('eventos').delete().gte('id', 0);
-      if(eDel) throw new Error('Error al limpiar eventos: '+eDel.message);
-      await insertChunks('eventos', eventos, opts);
+      let startFrom = 0;
+      if(opts.resume){
+        startFrom = await countRows('eventos');
+        if(startFrom >= eventos.length) return true;  // ya está todo
+      } else {
+        const { error: eDel } = await supabase.from('eventos').delete().gte('id', 0);
+        if(eDel) throw new Error('Error al limpiar eventos: '+eDel.message);
+      }
+      await insertChunks('eventos', eventos, { ...opts, startFrom });
     }
     return true;
   };
@@ -3881,18 +3908,22 @@ function ImportarRecursos({ data, toast, onReplace, isCloud }){
   // adjuntó el usuario, pre-parseado). Útil cuando se opera desde el móvil
   // y no se puede subir el Excel.
   const [seedingRepo, setSeedingRepo] = useState(false);
-  const cargarDesdeRepo = async () => {
-    if(!window.confirm('Se REEMPLAZARÁ la lista de eventos con el snapshot empaquetado en el repositorio (71.833 sesiones · semestre 2026·1). ¿Continuar?')) return;
+  const cargarDesdeRepo = async ({ resume = false } = {}) => {
+    const yaCargado = (data.eventos||[]).length;
+    const mensaje = resume
+      ? `Se REANUDARÁ la subida desde la fila ${yaCargado+1} (ya hay ${yaCargado.toLocaleString('es-CL')} en BD). Total: 71.833 sesiones. ¿Continuar?`
+      : `Se REEMPLAZARÁ la lista de eventos con el snapshot empaquetado en el repositorio (71.833 sesiones · semestre 2026·1). ¿Continuar?`;
+    if(!window.confirm(mensaje)) return;
     setSeedingRepo(true);
     try {
       const r = await fetch('./data/eventos.json');
       if(!r.ok) throw new Error(`HTTP ${r.status}`);
       const eventos = await r.json();
-      setProgress({ done:0, total:eventos.length });
-      await onReplace(eventos, [], { onProgress });
+      setProgress({ done: resume ? yaCargado : 0, total: eventos.length });
+      await onReplace(eventos, [], { onProgress, resume });
       toast(`Snapshot cargado: ${eventos.length.toLocaleString('es-CL')} sesiones.`);
     } catch(e){
-      toast('Error al cargar snapshot: '+e.message);
+      toast('Error al cargar snapshot: '+e.message+' · Toca "Continuar subida" para reanudar.');
     } finally { setSeedingRepo(false); setProgress(null); }
   };
 
@@ -3922,11 +3953,23 @@ function ImportarRecursos({ data, toast, onReplace, isCloud }){
               <b style={{fontSize:13}}>📦 Snapshot empaquetado (semestre 2026·1)</b>
               <div className="muted" style={{fontSize:11.5,marginTop:2}}>
                 Subimos al repo el archivo <code>recursos_2104.xlsx</code> pre-parseado (71.833 sesiones). Útil si estás en el celular y no puedes adjuntar Excel.
+                {(data.eventos||[]).length > 0 && (data.eventos||[]).length < 71833 && (
+                  <div style={{marginTop:6,color:'var(--warning)',fontWeight:600}}>
+                    ⚠ Tienes {(data.eventos||[]).length.toLocaleString('es-CL')} sesiones en BD (subida incompleta). Usa <b>Continuar subida</b> para retomar desde la fila {(data.eventos||[]).length+1}.
+                  </div>
+                )}
               </div>
             </div>
-            <button className="btn btn-primary" onClick={cargarDesdeRepo} disabled={seedingRepo || !!progress}>
-              {seedingRepo || progress ? 'Cargando…' : 'Cargar snapshot al portal'}
-            </button>
+            <div className="row" style={{gap:8,flexWrap:'wrap'}}>
+              {(data.eventos||[]).length > 0 && (data.eventos||[]).length < 71833 && (
+                <button className="btn btn-success" onClick={()=>cargarDesdeRepo({resume:true})} disabled={seedingRepo || !!progress}>
+                  ▶ Continuar subida
+                </button>
+              )}
+              <button className="btn btn-primary" onClick={()=>cargarDesdeRepo()} disabled={seedingRepo || !!progress}>
+                {seedingRepo || progress ? 'Cargando…' : 'Cargar snapshot al portal'}
+              </button>
+            </div>
           </div>
         </div>
 
