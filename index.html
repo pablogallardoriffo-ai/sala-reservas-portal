@@ -192,6 +192,13 @@
     }
     .sb-icon{width:18px;height:18px;flex-shrink:0;opacity:.9}
     .sb-spacer{flex:1}
+    .sb-badge{
+      display:inline-flex;align-items:center;justify-content:center;
+      min-width:22px;height:20px;padding:0 7px;border-radius:10px;
+      font-size:11px;font-weight:700;letter-spacing:.2px;margin-right:6px;
+      background:rgba(255,255,255,.08);color:var(--sidebar-text-muted);
+    }
+    .sb-badge.has{background:var(--danger);color:#fff;box-shadow:0 0 0 2px rgba(232,52,52,.18)}
     .sb-user{
       margin:14px 14px 18px;padding:12px;border-radius:var(--radius-sm);
       background:var(--sidebar-2);display:flex;align-items:center;gap:10px;
@@ -1322,19 +1329,19 @@ function Clock(){
 }
 
 /* ========= APP SHELL ========= */
-function Shell({ user, mode, onReconfigure, onLogout, view, setView, children, title, crumbs }){
+function Shell({ user, mode, onReconfigure, onLogout, view, setView, children, title, crumbs, pendientes = 0 }){
   const menu = useMemo(()=>{
     const base = [
-      ['dashboard', 'Dashboard',          I.dashboard, ['admin','reservador','usuario']],
-      ['horario',   'Horario semanal',    I.horario,   ['admin','reservador','usuario']],
-      ['mapa',      'Mapa de calor',      I.heatmap,   ['admin','reservador','usuario']],
-      ['docente',   'Horario docente',    I.users,     ['admin','reservador','usuario']],
-      ['salas',     'Salas',              I.salas,     ['admin','reservador','usuario']],
-      ['nueva',     'Solicitar reserva',  I.nueva,     ['admin','reservador','usuario']],
-      ['reservas',  'Reservas',           I.reservas,  ['admin','reservador','usuario']],
-      ['importar',  'Importar datos',     I.upload,    ['admin']],
-      ['usuarios',  'Usuarios',           I.users,     ['admin']],
-      ['reportes',  'Reportes',           I.reports,   ['admin','reservador']],
+      ['dashboard', 'Dashboard',                I.dashboard, ['admin','reservador','usuario']],
+      ['horario',   'Horario Sala',             I.horario,   ['admin','reservador','usuario']],
+      ['mapa',      'Mapa de calor',            I.heatmap,   ['admin','reservador','usuario']],
+      ['docente',   'Horario docente',          I.users,     ['admin','reservador','usuario']],
+      ['salas',     'Salas',                    I.salas,     ['admin','reservador','usuario']],
+      ['nueva',     'Solicitar reserva',        I.nueva,     ['admin','reservador','usuario']],
+      ['reservas',  'Solicitudes de Reservas',  I.reservas,  ['admin','reservador','usuario']],
+      ['importar',  'Importar datos',           I.upload,    ['admin']],
+      ['usuarios',  'Usuarios',                 I.users,     ['admin']],
+      ['reportes',  'Reportes',                 I.reports,   ['admin','reservador']],
     ];
     return base.filter(([,,,roles]) => roles.includes(user.role));
   },[user.role]);
@@ -1350,7 +1357,12 @@ function Shell({ user, mode, onReconfigure, onLogout, view, setView, children, t
         <nav className="sb-nav">
           {menu.map(([k,l,ico]) => (
             <div key={k} className={`sb-item ${view===k?'active':''}`} onClick={()=>setView(k)}>
-              {ico}<span>{l}</span><div className="sb-spacer"/><div className="sb-bullet"/>
+              {ico}<span>{l}</span>
+              <div className="sb-spacer"/>
+              {k==='reservas' && (
+                <span className={`sb-badge ${pendientes>0?'has':''}`} title={`${pendientes} solicitudes pendientes`}>{pendientes}</span>
+              )}
+              <div className="sb-bullet"/>
             </div>
           ))}
         </nav>
@@ -4763,10 +4775,10 @@ function App(){
 
   const titles = {
     dashboard:['Dashboard','Panel de control'],
-    horario:['Horario semanal','Disponibilidad física Lun-Dom × Módulos'],
+    horario:['Horario Sala','Disponibilidad física Lun-Dom × Módulos por sala'],
     mapa:['Mapa de calor','Ocupación de la sede por módulo y día'],
     salas:['Catálogo de salas','Salas y recintos'],
-    reservas:['Reservas','Gestión y búsqueda de disponibilidad'],
+    reservas:['Solicitudes de Reservas','Gestión y búsqueda de disponibilidad'],
     nueva:['Solicitar reserva','Nueva solicitud'],
     importar:['Importar datos','SABANA · LISTA DE RECURSOS · Jefaturas'],
     docente:['Horario docente','Agenda semanal del docente'],
@@ -4777,7 +4789,8 @@ function App(){
 
   return (
     <>
-      <Shell user={user} mode={mode} onReconfigure={reconfigure} onLogout={()=>{ setUser(null); }} view={view} setView={setView} title={title} crumbs={crumbs}>
+      <Shell user={user} mode={mode} onReconfigure={reconfigure} onLogout={()=>{ setUser(null); }} view={view} setView={setView} title={title} crumbs={crumbs}
+        pendientes={(reservas||[]).filter(r => r.es==='pendiente').length}>
         {view==='dashboard' && <Dashboard data={data} reservas={reservas} user={user} db={db}/>}
         {view==='horario'   && <Horario data={data} reservas={reservas} onGoNueva={goNueva}/>}
         {view==='salas'     && <Salas data={data} user={user} toast={setToast} onCreate={createSala} onUpdate={updateSala} onDelete={deleteSala}/>}
