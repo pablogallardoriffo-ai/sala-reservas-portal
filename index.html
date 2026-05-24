@@ -933,42 +933,55 @@ function createDb({ mode, supabase }){
   };
 
   /* ----- SABANA bulk ----- */
-  const replaceProgramacion = async (prog, salasNuevas) => {
+  // Inserción resiliente en chunks. Reintenta cada chunk con backoff
+  // exponencial (1s, 2s, 4s) si supabase devuelve error o si fetch
+  // colapsa por red. Llama onProgress(done, total) entre chunks para
+  // alimentar UIs de progreso. CHUNK=200 es un compromiso para móvil
+  // (request más liviana, menos probable de timeout en LTE inestable).
+  const insertChunks = async (table, rows, { onProgress, chunkSize = 200 } = {}) => {
+    let done = 0;
+    for(let i=0;i<rows.length;i+=chunkSize){
+      const slice = rows.slice(i, i+chunkSize).map(x=>{ const c={...x}; delete c.id; return c; });
+      let lastErr = null;
+      for(let attempt=0; attempt<3; attempt++){
+        try {
+          const { error } = await supabase.from(table).insert(slice);
+          if(error){ lastErr = new Error(error.message); }
+          else { lastErr = null; break; }
+        } catch(e){ lastErr = e; }
+        if(attempt < 2) await new Promise(r => setTimeout(r, 1000 * Math.pow(2, attempt))); // 1s, 2s
+      }
+      if(lastErr) throw new Error(`${table} chunk ${i} (filas ${i+1}-${Math.min(i+chunkSize, rows.length)} de ${rows.length}): ${lastErr.message}`);
+      done += slice.length;
+      onProgress?.(done, rows.length);
+    }
+  };
+
+  const replaceProgramacion = async (prog, salasNuevas, opts = {}) => {
     if(isCloud){
       if(salasNuevas?.length){
         const { error: e1 } = await supabase.from('salas').upsert(salasNuevas, { onConflict:'codigo', ignoreDuplicates:true });
         if(e1) throw new Error('Error al upsert salas: '+e1.message);
       }
-      // Borra programación previa e inserta nueva en chunks
       const { error: eDel } = await supabase.from('programacion').delete().gte('id', 0);
       if(eDel) throw new Error('Error al limpiar programación: '+eDel.message);
-      const CHUNK = 500;
-      for(let i=0;i<prog.length;i+=CHUNK){
-        const slice = prog.slice(i, i+CHUNK).map(x=>{ const c={...x}; delete c.id; return c; });
-        const { error } = await supabase.from('programacion').insert(slice);
-        if(error) throw new Error(`Error en chunk ${i}: `+error.message);
-      }
+      await insertChunks('programacion', prog, opts);
     }
     return true;
   };
 
   /* ----- JEFATURAS DOCENTES bulk ----- */
-  const replaceJefes = async (jefes) => {
+  const replaceJefes = async (jefes, opts = {}) => {
     if(isCloud){
       const { error: eDel } = await supabase.from('docente_jefes').delete().gte('id', 0);
       if(eDel) throw new Error('Error al limpiar jefaturas: '+eDel.message);
-      const CHUNK = 500;
-      for(let i=0;i<jefes.length;i+=CHUNK){
-        const slice = jefes.slice(i, i+CHUNK).map(x=>{ const c={...x}; delete c.id; return c; });
-        const { error } = await supabase.from('docente_jefes').insert(slice);
-        if(error) throw new Error(`Jefaturas chunk ${i}: `+error.message);
-      }
+      await insertChunks('docente_jefes', jefes, opts);
     }
     return true;
   };
 
   /* ----- LISTA DE RECURSOS bulk (eventos por fecha) ----- */
-  const replaceEventos = async (eventos, salasNuevas) => {
+  const replaceEventos = async (eventos, salasNuevas, opts = {}) => {
     if(isCloud){
       if(salasNuevas?.length){
         const { error: e1 } = await supabase.from('salas').upsert(salasNuevas, { onConflict:'codigo', ignoreDuplicates:true });
@@ -976,12 +989,7 @@ function createDb({ mode, supabase }){
       }
       const { error: eDel } = await supabase.from('eventos').delete().gte('id', 0);
       if(eDel) throw new Error('Error al limpiar eventos: '+eDel.message);
-      const CHUNK = 500;
-      for(let i=0;i<eventos.length;i+=CHUNK){
-        const slice = eventos.slice(i, i+CHUNK).map(x=>{ const c={...x}; delete c.id; return c; });
-        const { error } = await supabase.from('eventos').insert(slice);
-        if(error) throw new Error(`Eventos chunk ${i}: `+error.message);
-      }
+      await insertChunks('eventos', eventos, opts);
     }
     return true;
   };
@@ -3852,16 +3860,21 @@ function ImportarRecursos({ data, toast, onReplace, isCloud }){
     }
   };
 
+  // Progreso de subida (para que el usuario vea avance en móvil)
+  const [progress, setProgress] = useState(null);  // { done, total } o null
+  const onProgress = (done, total) => setProgress({ done, total });
+
   const aplicar = async () => {
     if(!preview) return;
     if(!window.confirm(`Se ${reemplazar?'REEMPLAZARÁ':'AGREGARÁ a'} la lista de eventos con ${preview.sesiones} sesiones. ¿Continuar?`)) return;
     const salasNuevas = preview.salas.filter(s => !data.salas.some(x=>x.codigo===s.codigo));
     const eventosFinal = reemplazar ? preview.eventos : [...(data.eventos||[]), ...preview.eventos];
+    setProgress({ done:0, total:eventosFinal.length });
     try {
-      await onReplace(eventosFinal, salasNuevas);
+      await onReplace(eventosFinal, salasNuevas, { onProgress });
       toast(`LISTA DE RECURSOS importada: ${preview.sesiones} sesiones cargadas.`);
       setPreview(null); setArchivo(null);
-    } catch(e){}
+    } catch(e){} finally { setProgress(null); }
   };
 
   // Carga el snapshot empaquetado en /data/eventos.json (el archivo que
@@ -3875,11 +3888,12 @@ function ImportarRecursos({ data, toast, onReplace, isCloud }){
       const r = await fetch('./data/eventos.json');
       if(!r.ok) throw new Error(`HTTP ${r.status}`);
       const eventos = await r.json();
-      await onReplace(eventos, []);
+      setProgress({ done:0, total:eventos.length });
+      await onReplace(eventos, [], { onProgress });
       toast(`Snapshot cargado: ${eventos.length.toLocaleString('es-CL')} sesiones.`);
     } catch(e){
       toast('Error al cargar snapshot: '+e.message);
-    } finally { setSeedingRepo(false); }
+    } finally { setSeedingRepo(false); setProgress(null); }
   };
 
   return (
@@ -3910,11 +3924,29 @@ function ImportarRecursos({ data, toast, onReplace, isCloud }){
                 Subimos al repo el archivo <code>recursos_2104.xlsx</code> pre-parseado (71.833 sesiones). Útil si estás en el celular y no puedes adjuntar Excel.
               </div>
             </div>
-            <button className="btn btn-primary" onClick={cargarDesdeRepo} disabled={seedingRepo}>
-              {seedingRepo ? 'Cargando…' : 'Cargar snapshot al portal'}
+            <button className="btn btn-primary" onClick={cargarDesdeRepo} disabled={seedingRepo || !!progress}>
+              {seedingRepo || progress ? 'Cargando…' : 'Cargar snapshot al portal'}
             </button>
           </div>
         </div>
+
+        {/* Barra de progreso de la subida (chunks reintentables) */}
+        {progress && (
+          <div style={{marginTop:14,padding:14,background:'#FBFCFD',borderRadius:8,border:'1px solid var(--border-soft)'}}>
+            <div className="row between" style={{marginBottom:8}}>
+              <b style={{fontSize:13}}>Subiendo a la base de datos…</b>
+              <span style={{fontWeight:700,fontSize:13,color:'var(--primary-2)'}}>
+                {progress.done.toLocaleString('es-CL')} / {progress.total.toLocaleString('es-CL')} ({Math.round(progress.done/progress.total*100)}%)
+              </span>
+            </div>
+            <div style={{height:12,background:'#EEF2F7',borderRadius:6,overflow:'hidden'}}>
+              <div style={{height:'100%',width:`${Math.round(progress.done/progress.total*100)}%`,background:'linear-gradient(90deg,var(--primary),var(--primary-2))',transition:'width .3s'}}/>
+            </div>
+            <div className="muted" style={{fontSize:11,marginTop:6}}>
+              Chunks de 200 filas con 3 reintentos cada uno. No cierres la pestaña. Si la red falla, el chunk se reintenta automáticamente.
+            </div>
+          </div>
+        )}
 
         <div className="login-hint" style={{marginTop:14}}>
           <b>Coexistencia con SABANA:</b> esta lista <b>no</b> reemplaza la programación SABANA — se complementan. Las sesiones por fecha (LISTA DE RECURSOS) se cruzan con la metadata semanal (SABANA: escuela, asignatura, docente, jornada) por código de sección.
@@ -4382,9 +4414,9 @@ function App(){
     } catch(e){ setToast('Error al eliminar usuario: '+e.message); throw e; }
   };
 
-  const replaceProgramacionOp = async (prog, salasNuevas) => {
+  const replaceProgramacionOp = async (prog, salasNuevas, opts) => {
     try {
-      await db.replaceProgramacion(prog, salasNuevas);
+      await db.replaceProgramacion(prog, salasNuevas, opts);
       // actualizar estado local
       setData(d => {
         const mapSalas = new Map(d.salas.map(s => [s.codigo, s]));
@@ -4400,9 +4432,9 @@ function App(){
     } catch(e){ setToast('Error al importar SABANA: '+e.message); throw e; }
   };
 
-  const replaceEventosOp = async (eventos, salasNuevas) => {
+  const replaceEventosOp = async (eventos, salasNuevas, opts) => {
     try {
-      await db.replaceEventos(eventos, salasNuevas);
+      await db.replaceEventos(eventos, salasNuevas, opts);
       setData(d => {
         const mapSalas = new Map(d.salas.map(s => [s.codigo, s]));
         for(const ns of (salasNuevas||[])){
@@ -4417,9 +4449,9 @@ function App(){
     } catch(e){ setToast('Error al importar LISTA DE RECURSOS: '+e.message); throw e; }
   };
 
-  const replaceJefesOp = async (jefes) => {
+  const replaceJefesOp = async (jefes, opts) => {
     try {
-      await db.replaceJefes(jefes);
+      await db.replaceJefes(jefes, opts);
       setData(d => ({ ...d, docente_jefes: jefes }));
     } catch(e){ setToast('Error al cargar jefaturas: '+e.message); throw e; }
   };
