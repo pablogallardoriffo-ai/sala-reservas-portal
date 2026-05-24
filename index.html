@@ -679,6 +679,66 @@ const moduleInTimeRange = (modNum, hi, hf, modulos) => {
   return toMin(m.inicio) < toMin(hf) && toMin(hi) < toMin(m.fin);
 };
 
+/* ========= CONSOLIDACIÓN DE FUENTES =========
+   Cruza eventos (LISTA DE RECURSOS, por fecha) con programación (SABANA viejo,
+   por patrón semanal) usando el código de sección. Cada evento queda enriquecido
+   con escuela / asignatura / jornada / docente / inscritos / plazas si el SABANA
+   tiene esa sección. */
+const SEC_CODE_RE = /([A-Z]{3,5}\d{3,5}-\d{3})/;
+const secCodeFrom = (s) => (s||'').toString().toUpperCase().match(SEC_CODE_RE)?.[1] || null;
+const buildSabanaIndex = (programacion) => {
+  const idx = new Map();
+  for(const p of programacion||[]){
+    const code = secCodeFrom(p.sc);
+    if(!code) continue;
+    if(!idx.has(code)) idx.set(code, p);
+  }
+  return idx;
+};
+const enrichEvento = (ev, sabanaIdx) => {
+  const meta = sabanaIdx.get(secCodeFrom(ev.sc));
+  if(meta) return { ...ev, a:meta.a, es:meta.es, j:meta.j, d:meta.d, i:meta.i, p:meta.p };
+  // Sin SABANA: provee fallbacks útiles para la UI (que normalmente lee p.a/p.d).
+  return { ...ev, a: ev.de || ev.sc || '', d:'', es:'', j:'', i:null, p:null };
+};
+// Día de la semana (0=Lun ... 6=Dom) para un ISO YYYY-MM-DD.
+const dowFromIso = (iso) => {
+  const d = new Date(iso + 'T00:00:00');
+  return d.getDay()===0 ? 6 : d.getDay()-1;
+};
+
+// ¿Hay eventos (LISTA DE RECURSOS) cargados? — define la fuente de verdad.
+const hasEventos = (data) => !!(data?.eventos && data.eventos.length);
+
+// Sesiones académicas en una fecha (ISO YYYY-MM-DD), opcionalmente filtradas
+// por sala. Prefiere `eventos` por fecha exacta; cae al patrón semanal del
+// SABANA cuando aún no se ha importado LISTA DE RECURSOS. El segundo parámetro
+// opcional `sabanaIdx` permite reutilizar un índice ya construido.
+const sesionesEnFecha = (data, iso, sala, sabanaIdx) => {
+  if(hasEventos(data)){
+    const idx = sabanaIdx || buildSabanaIndex(data.programacion);
+    return data.eventos
+      .filter(e => e.fi === iso && (!sala || e.s === sala))
+      .map(e => enrichEvento(e, idx));
+  }
+  const dow = dowFromIso(iso);
+  return (data.programacion||[]).filter(p =>
+    (!sala || p.s === sala) && p.dw && p.dw[dow]==='1'
+  );
+};
+
+// Lista unificada de sesiones (todas las clases). Si hay eventos, los
+// enriquece con la metadata semanal del SABANA (escuela, asignatura,
+// docente, jornada, inscritos, plazas) cruzando por código de sección.
+// Si no hay eventos, retorna programacion tal cual.
+const sesionesConsolidadas = (data) => {
+  if(hasEventos(data)){
+    const idx = buildSabanaIndex(data.programacion);
+    return data.eventos.map(e => enrichEvento(e, idx));
+  }
+  return (data.programacion||[]).map(p => ({...p}));
+};
+
 const useToast = () => {
   const [msg, setMsg] = useState(null);
   useEffect(()=>{ if(msg){ const t=setTimeout(()=>setMsg(null),2500); return ()=>clearTimeout(t);} },[msg]);
@@ -694,19 +754,21 @@ function createDb({ mode, supabase }){
   /* ----- CARGA INICIAL ----- */
   const loadAll = async () => {
     if(isCloud){
-      const [salas, modulos, prog, reservas, users] = await Promise.all([
+      const [salas, modulos, prog, eventos, reservas, users] = await Promise.all([
         supabase.from('salas').select('*').order('codigo'),
         supabase.from('modulos').select('*').order('num'),
         supabase.from('programacion').select('*'),
+        supabase.from('eventos').select('*'),
         supabase.from('reservas').select('*').order('id', { ascending:false }).limit(2000),
         supabase.from('app_users').select('*').order('id'),
       ]);
-      const anyErr = [salas, modulos, prog, reservas, users].find(r=>r.error);
+      const anyErr = [salas, modulos, prog, eventos, reservas, users].find(r=>r.error);
       if(anyErr) throw new Error(anyErr.error.message);
       return {
         salas: salas.data || [],
         modulos: modulos.data || [],
         programacion: prog.data || [],
+        eventos: eventos.data || [],
         reservas: reservas.data || [],
         users: users.data || [],
       };
@@ -733,6 +795,7 @@ function createDb({ mode, supabase }){
     return {
       salas: salasMerged,
       programacion: p,
+      eventos: st.eventos || [],
       reservas: [...custom, ...rWithStates],
       modulos: m,
       users: st.users || DEFAULT_USERS,
@@ -848,6 +911,25 @@ function createDb({ mode, supabase }){
     return true;
   };
 
+  /* ----- LISTA DE RECURSOS bulk (eventos por fecha) ----- */
+  const replaceEventos = async (eventos, salasNuevas) => {
+    if(isCloud){
+      if(salasNuevas?.length){
+        const { error: e1 } = await supabase.from('salas').upsert(salasNuevas, { onConflict:'codigo', ignoreDuplicates:true });
+        if(e1) throw new Error('Error al upsert salas: '+e1.message);
+      }
+      const { error: eDel } = await supabase.from('eventos').delete().gte('id', 0);
+      if(eDel) throw new Error('Error al limpiar eventos: '+eDel.message);
+      const CHUNK = 500;
+      for(let i=0;i<eventos.length;i+=CHUNK){
+        const slice = eventos.slice(i, i+CHUNK).map(x=>{ const c={...x}; delete c.id; return c; });
+        const { error } = await supabase.from('eventos').insert(slice);
+        if(error) throw new Error(`Eventos chunk ${i}: `+error.message);
+      }
+    }
+    return true;
+  };
+
   /* ----- BULK INITIAL SEED (from /data/*.json) ----- */
   const seedFromBundle = async () => {
     if(!isCloud) throw new Error('Seed solo disponible en modo cloud.');
@@ -901,7 +983,7 @@ function createDb({ mode, supabase }){
   /* ----- ESTADÍSTICAS DE USO (cloud) ----- */
   const getStats = async () => {
     if(!isCloud) return null;
-    const tables = ['salas','modulos','programacion','reservas','app_users'];
+    const tables = ['salas','modulos','programacion','eventos','reservas','app_users'];
     const results = await Promise.all(tables.map(t =>
       supabase.from(t).select('*', { count:'exact', head:true })
     ));
@@ -916,7 +998,7 @@ function createDb({ mode, supabase }){
     createReserva, updateReservaEstado,
     createSala, updateSala, deleteSala,
     createUser, updateUser, deleteUser,
-    replaceProgramacion, seedFromBundle,
+    replaceProgramacion, replaceEventos, seedFromBundle,
     subscribe, getStats,
   };
 }
@@ -1108,6 +1190,7 @@ function Shell({ user, mode, onReconfigure, onLogout, view, setView, children, t
       ['nueva',     'Solicitar reserva',  I.nueva,     ['admin','reservador','usuario']],
       ['reservas',  'Reservas',           I.reservas,  ['admin','reservador','usuario']],
       ['importar',  'Importar SABANA',    I.upload,    ['admin']],
+      ['recursos',  'Importar LISTA DE RECURSOS', I.upload, ['admin']],
       ['usuarios',  'Usuarios',           I.users,     ['admin']],
       ['reportes',  'Reportes',           I.reports,   ['admin','reservador']],
     ];
@@ -1191,7 +1274,7 @@ function Dashboard({ data, reservas, user, db }){
   const bdUso = useMemo(()=>{
     if(!dbStats) return null;
     // Estimación de bytes por fila (incluye padding, indices, overhead Postgres)
-    const SIZE_PER_ROW = { salas:200, modulos:80, programacion:280, reservas:400, app_users:220 };
+    const SIZE_PER_ROW = { salas:200, modulos:80, programacion:280, eventos:180, reservas:400, app_users:220 };
     const FREE_LIMIT_BYTES = 500 * 1024 * 1024; // 500 MB free tier
     const FREE_EGRESS_GB   = 5;
     const FREE_REALTIME_MSG_M = 2;
@@ -1225,7 +1308,7 @@ function Dashboard({ data, reservas, user, db }){
 
   const stats = useMemo(()=>{
     const totalSalas = data.salas.length;
-    const clasesHoy  = data.programacion.filter(p => p.dw[dow]==='1').length;
+    const clasesHoy  = sesionesEnFecha(data, todayIso).length;
     const reservasHoy = reservas.filter(r => r.fi===todayIso).length;
     const pendientes  = reservas.filter(r => r.es==='pendiente').length;
     return { totalSalas, clasesHoy, reservasHoy, pendientes };
@@ -1246,7 +1329,9 @@ function Dashboard({ data, reservas, user, db }){
 
   const ocupacionPorEscuela = useMemo(()=>{
     const m = {};
-    data.programacion.forEach(p => {
+    // Si hay eventos, los enriquecemos para obtener la escuela desde SABANA.
+    const fuente = sesionesConsolidadas(data);
+    fuente.forEach(p => {
       const k = ESCUELAS_FULL[p.es] || (p.es || 'Otros');
       m[k] = (m[k]||0)+1;
     });
@@ -1330,7 +1415,7 @@ function Dashboard({ data, reservas, user, db }){
         <div className="kpi kpi-green">
           <span className="label">Clases hoy ({DIA_NOMBRES[dow]})</span>
           <span className="value">{stats.clasesHoy}</span>
-          <span className="delta">Desde SABANA académica</span>
+          <span className="delta">{hasEventos(data) ? 'LISTA DE RECURSOS (fecha exacta)' : 'SABANA (patrón semanal)'}</span>
           <div className="icon">{I.prog}</div>
         </div>
         <div className="kpi kpi-amber">
@@ -1382,7 +1467,7 @@ function Dashboard({ data, reservas, user, db }){
               <div className="row between" style={{marginTop:6,fontSize:11}}>
                 <span className="muted">{fmtBytes(bdUso.totalBytes)} de {fmtBytes(bdUso.FREE_LIMIT_BYTES)}</span>
                 <span className="muted">
-                  Filas: {bdUso.rows.salas} salas · {bdUso.rows.programacion.toLocaleString('es-CL')} clases · {bdUso.rows.reservas.toLocaleString('es-CL')} reservas · {bdUso.rows.app_users} usuarios
+                  Filas: {bdUso.rows.salas} salas · {bdUso.rows.programacion.toLocaleString('es-CL')} SABANA · {(bdUso.rows.eventos||0).toLocaleString('es-CL')} eventos · {bdUso.rows.reservas.toLocaleString('es-CL')} reservas · {bdUso.rows.app_users} usuarios
                 </span>
               </div>
               {pct >= 80 && (
@@ -1589,7 +1674,7 @@ function Dashboard({ data, reservas, user, db }){
       <div className="grid grid-2">
         <div className="card">
           <div className="card-header">
-            <div><h3>Ocupación por escuela</h3><div className="sub">Sesiones programadas en la SABANA</div></div>
+            <div><h3>Ocupación por escuela</h3><div className="sub">{hasEventos(data) ? 'LISTA DE RECURSOS + SABANA (escuela)' : 'Sesiones programadas en la SABANA'}</div></div>
           </div>
           <div className="stack" style={{gap:10}}>
             {ocupacionPorEscuela.map(([k,v]) => (
@@ -1648,12 +1733,13 @@ function Horario({ data, reservas, onGoNueva }){
   const monday = useMemo(()=> getMonday(fecha), [fecha]);
   const week = useMemo(()=> [0,1,2,3,4,5,6].map(i => addDays(monday, i)), [monday]);
 
+  const sabanaIdx = useMemo(()=> buildSabanaIndex(data.programacion), [data.programacion]);
+
   const grid = useMemo(()=>{
     return data.modulos.map(mod => {
       return week.map((d, dw) => {
         const dIso = isoDate(d);
-        const acads = data.programacion.filter(p =>
-          p.s === sala && p.dw[dw] === '1' &&
+        const acads = sesionesEnFecha(data, dIso, sala, sabanaIdx).filter(p =>
           moduleInTimeRange(mod.num, p.hi, p.hf, data.modulos)
         );
         const ress = reservas.filter(r =>
@@ -1866,24 +1952,31 @@ function Salas({ data, user, toast, onCreate, onUpdate, onDelete }){
   );
 }
 
-/* ========= PROGRAMACIÓN SABANA ========= */
+/* ========= PROGRAMACIÓN ACADÉMICA (SABANA + LISTA DE RECURSOS) ========= */
 function Programacion({ data }){
   const [sala, setSala] = useState('');
   const [escuela, setEscuela] = useState('');
   const [jornada, setJornada] = useState('');
   const [dia, setDia] = useState('');
 
+  const sesiones = useMemo(()=> sesionesConsolidadas(data), [data]);
+  const usaEventos = hasEventos(data);
+
+  // Una sesión "matchea" un día de semana si es evento con esa fecha, o si es
+  // patrón semanal con ese bit en 1.
+  const matchDia = (p, d) => p.fi ? dowFromIso(p.fi) === d : (p.dw && p.dw[d] === '1');
+
   const filtered = useMemo(()=>{
-    return data.programacion.filter(p =>
+    return sesiones.filter(p =>
       (!sala || p.s===sala) &&
       (!escuela || p.es===escuela) &&
       (!jornada || p.j===jornada) &&
-      (dia==='' || p.dw[Number(dia)]==='1')
+      (dia==='' || matchDia(p, Number(dia)))
     );
-  },[data, sala, escuela, jornada, dia]);
+  },[sesiones, sala, escuela, jornada, dia]);
 
-  const escuelas = useMemo(()=> [...new Set(data.programacion.map(p=>p.es).filter(Boolean))].sort(), [data]);
-  const jornadas = useMemo(()=> [...new Set(data.programacion.map(p=>p.j).filter(Boolean))].sort(), [data]);
+  const escuelas = useMemo(()=> [...new Set(sesiones.map(p=>p.es).filter(Boolean))].sort(), [sesiones]);
+  const jornadas = useMemo(()=> [...new Set(sesiones.map(p=>p.j).filter(Boolean))].sort(), [sesiones]);
 
   // Si hay sala seleccionada, mostrar grilla semanal
   const showWeek = !!sala;
@@ -1899,24 +1992,29 @@ function Programacion({ data }){
     const m = {};
     filtered.forEach(p=>{
       const slot = p.hi+'|'+p.hf;
-      for(let d=0;d<7;d++){
-        if(p.dw[d]==='1'){
-          const k = `${slot}__${d}`;
-          (m[k] ||= []).push(p);
+      if(p.fi){
+        const d = dowFromIso(p.fi);
+        (m[`${slot}__${d}`] ||= []).push(p);
+      } else if(p.dw){
+        for(let d=0;d<7;d++){
+          if(p.dw[d]==='1'){
+            (m[`${slot}__${d}`] ||= []).push(p);
+          }
         }
       }
     });
     return m;
   },[filtered, showWeek]);
 
-  // Conteo de clases por día de la semana (verifica el mapeo SABANA → dw)
+  // Conteo de clases por día de la semana
   const diaCount = useMemo(()=>{
     const c = [0,0,0,0,0,0,0];
-    data.programacion.forEach(p => {
-      for(let i=0;i<7;i++) if(p.dw && p.dw[i]==='1') c[i]++;
+    sesiones.forEach(p => {
+      if(p.fi) c[dowFromIso(p.fi)]++;
+      else if(p.dw) for(let i=0;i<7;i++) if(p.dw[i]==='1') c[i]++;
     });
     return c;
-  },[data.programacion]);
+  },[sesiones]);
   const maxDiaCount = Math.max(1, ...diaCount);
   const [verifOpen, setVerifOpen] = useState(false);
 
@@ -1938,10 +2036,17 @@ function Programacion({ data }){
         </div>
         {verifOpen && (
           <div style={{marginTop:14,paddingTop:14,borderTop:'1px solid var(--border-soft)',fontSize:13,lineHeight:1.55,color:'var(--text-muted)'}}>
-            <p>Cada fila de la SABANA tiene 7 columnas (<b>Lun. · Martes · Miér. · Jueves · Viernes · Sábado · Domingo</b>) marcadas con <b>X</b> en los días que se imparte la clase.
-            Al importar, se convierte a 7 bits <code>dw</code> donde <code>dw[0]=Lun</code> y <code>dw[6]=Dom</code>.</p>
-            <p style={{marginTop:8}}>Al elegir una fecha en la pestaña <b>Horario semanal</b>, se calcula su día de semana y se buscan todas las clases con ese bit en 1, dentro del rango de fecha del semestre y con el horario activo en el módulo consultado.</p>
-            <p style={{marginTop:8}}>Las barras arriba muestran cuántas clases hay registradas por día. <b>Total clases en SABANA: {data.programacion.length.toLocaleString('es-CL')}</b>.</p>
+            {usaEventos ? (
+              <>
+                <p>Fuente: <b>LISTA DE RECURSOS</b> ({(data.eventos||[]).length.toLocaleString('es-CL')} sesiones por fecha) enriquecida con metadata del SABANA ({data.programacion.length.toLocaleString('es-CL')} filas con escuela/asignatura/docente). Cada sesión tiene fecha exacta y horario.</p>
+                <p style={{marginTop:8}}>El día de semana se deriva de la fecha de cada evento. Las barras muestran cuántas sesiones reales caen en cada día.</p>
+              </>
+            ) : (
+              <>
+                <p>Fuente: <b>SABANA</b> ({data.programacion.length.toLocaleString('es-CL')} filas, patrón semanal). Cada fila marca con <b>X</b> los días en que se imparte la clase (Lun…Dom), convertidos a 7 bits <code>dw</code>.</p>
+                <p style={{marginTop:8}}>Al elegir una fecha en <b>Horario semanal</b>, se calcula su día de semana y se buscan todas las clases con ese bit en 1. Importa una <b>LISTA DE RECURSOS</b> para tener fechas exactas en vez de patrones.</p>
+              </>
+            )}
             <div style={{marginTop:10,padding:10,background:'#FBFCFD',borderRadius:8,border:'1px solid var(--border-soft)'}}>
               <div className="row" style={{gap:14,flexWrap:'wrap'}}>
                 {DIA_NOMBRES.map((nm,i) => (
@@ -2031,18 +2136,21 @@ function Programacion({ data }){
           <div className="tbl-scroll">
             <table className="tbl">
               <thead><tr>
-                <th>Sala</th><th>Asignatura</th><th>Sección</th><th>Docente</th><th>Días</th><th>Horario</th><th>Inscritos</th>
+                <th>Sala</th><th>Asignatura</th><th>Sección</th><th>Docente</th>
+                <th>{usaEventos ? 'Fecha' : 'Días'}</th><th>Horario</th><th>Inscritos</th>
               </tr></thead>
               <tbody>
                 {filtered.slice(0,400).map((p,i) => (
                   <tr key={i}>
                     <td><b style={{color:'var(--primary)'}}>{p.s}</b></td>
-                    <td style={{maxWidth:260}}>{p.a}</td>
+                    <td style={{maxWidth:260}}>{p.a || p.de || ''}</td>
                     <td className="muted">{p.sc}</td>
-                    <td>{p.d}</td>
-                    <td>{[...p.dw].map((b,j)=>b==='1'?DIA_CORTO[j]:null).filter(Boolean).join(' · ')}</td>
+                    <td>{p.d || ''}</td>
+                    <td>{p.fi
+                      ? `${DIA_CORTO[dowFromIso(p.fi)]} ${fmtFecha(p.fi)}`
+                      : (p.dw ? [...p.dw].map((b,j)=>b==='1'?DIA_CORTO[j]:null).filter(Boolean).join(' · ') : '')}</td>
                     <td>{p.hi}–{p.hf}</td>
-                    <td>{p.i}/{(p.i||0)+(p.p||0)}</td>
+                    <td>{p.i!=null ? `${p.i}/${(p.i||0)+(p.p||0)}` : '—'}</td>
                   </tr>
                 ))}
               </tbody>
@@ -2278,8 +2386,7 @@ function BuscarLibres({ data, reservas, onGoNueva }){
       .filter(s => !tipo || s.tipo===tipo)
       .filter(s => !capN || (s.capacidad||0) >= capN)
       .map(s => {
-        const acadConflict = data.programacion.some(p =>
-          p.s===s.codigo && p.dw[dow]==='1' &&
+        const acadConflict = sesionesEnFecha(data, fecha, s.codigo).some(p =>
           rangeOverlapsModules(p.hi, p.hf, miN, mfN, data.modulos)
         );
         if(acadConflict) return null;
@@ -2400,8 +2507,7 @@ function NuevaReserva({ data, reservas, user, toast, goReservas, prefill, onCrea
     for(const s of data.salas){
       if(filtros.tipo && s.tipo!==filtros.tipo) continue;
       if(capN && (s.capacidad||0) < capN) continue;
-      const acad = data.programacion.find(p =>
-        p.s===s.codigo && p.dw[dow]==='1' &&
+      const acad = sesionesEnFecha(data, f.fi, s.codigo).find(p =>
         rangeOverlapsModules(p.hi, p.hf, miN, mfN, data.modulos)
       );
       const res = reservas.find(r =>
@@ -2757,7 +2863,10 @@ function Usuarios({ users, toast, onCreate, onUpdate, onDelete }){
 function Reportes({ data, reservas }){
   const topSalas = useMemo(()=>{
     const m = {};
-    data.programacion.forEach(p => { m[p.s] = (m[p.s]||0)+1; });
+    // Prefiere eventos (sesiones por fecha exacta); si no hay, cuenta patrones
+    // semanales de programacion.
+    const fuente = hasEventos(data) ? data.eventos : data.programacion;
+    fuente.forEach(p => { m[p.s] = (m[p.s]||0)+1; });
     reservas.forEach(r => { m[r.r] = (m[r.r]||0)+0.5; });
     return Object.entries(m).sort((a,b)=>b[1]-a[1]).slice(0,15);
   },[data, reservas]);
@@ -2773,7 +2882,7 @@ function Reportes({ data, reservas }){
   return (
     <div className="grid grid-2">
       <div className="card">
-        <div className="card-header"><div><h3>Salas más utilizadas</h3><div className="sub">SABANA + reservas</div></div></div>
+        <div className="card-header"><div><h3>Salas más utilizadas</h3><div className="sub">{hasEventos(data) ? 'LISTA DE RECURSOS' : 'SABANA'} + reservas</div></div></div>
         <div className="stack" style={{gap:8}}>
           {topSalas.map(([k,v])=>(
             <div key={k}>
@@ -3051,6 +3160,212 @@ function ImportarSabana({ data, toast, onReplace, onSeed, isCloud }){
   );
 }
 
+/* ========= IMPORTAR LISTA DE RECURSOS =========
+   Lee un Excel de "recursos por eventos": una fila por clase real con fecha
+   exacta. Columnas:
+   A=sección, B=tipo recurso, D=código sala, E=denom sala, F=fecha (F=G),
+   H=hora inicio, I=hora fin, K=denom evento, N=código evento, R='G' (sala). */
+function ImportarRecursos({ data, toast, onReplace, isCloud }){
+  const [parsing, setParsing] = useState(false);
+  const [preview, setPreview] = useState(null);
+  const [archivo, setArchivo] = useState(null);
+  const [reemplazar, setReemplazar] = useState(true);
+
+  const fmtHora = (v) => {
+    if(v==null) return '';
+    if(typeof v==='string') return v.slice(0,5);
+    if(v instanceof Date){
+      const h=String(v.getHours()).padStart(2,'0');
+      const m=String(v.getMinutes()).padStart(2,'0');
+      return `${h}:${m}`;
+    }
+    if(typeof v==='number'){
+      const totalMin = Math.round(v*24*60);
+      const h=String(Math.floor(totalMin/60)).padStart(2,'0');
+      const m=String(totalMin%60).padStart(2,'0');
+      return `${h}:${m}`;
+    }
+    return String(v).slice(0,5);
+  };
+  const fmtIso = (v) => {
+    if(!v) return '';
+    if(v instanceof Date) return isoDate(v);
+    if(typeof v==='string') return v.slice(0,10);
+    return '';
+  };
+  const tipoFromDen = (den) => {
+    const d = (den||'').toUpperCase();
+    if(d.includes('LABORATORIO') || d.includes('LAB')) return 'Laboratorio';
+    if(d.includes('TALLER')) return 'Taller';
+    if(d.includes('AUDIT')) return 'Auditorio';
+    if(d.includes('GIMNASIO') || d.includes('GIM')) return 'Gimnasio';
+    if(d.includes('PISC')) return 'Piscina';
+    if(d.includes('CANCHA') || d.includes('COMPLEJO') || d.includes('FUT')) return 'Cancha';
+    if(d.includes('ESTUDIO')) return 'Estudio';
+    if(d.includes('REUNIONES') || d.includes('NEGOCIOS')) return 'Reunion';
+    return 'Sala';
+  };
+
+  const onFile = async (e) => {
+    const f = e.target.files?.[0];
+    if(!f) return;
+    setArchivo(f); setParsing(true); setPreview(null);
+    try {
+      const ab = await f.arrayBuffer();
+      const wb = XLSX.read(ab, { type:'array', cellDates:true });
+      const sheet = wb.Sheets[wb.SheetNames[0]];
+      const rows = XLSX.utils.sheet_to_json(sheet, { header:1, defval:null, blankrows:false });
+      if(rows.length < 2) throw new Error('La hoja está vacía o no tiene encabezados.');
+
+      // La primera fila es header. Las restantes son datos.
+      const dataRows = rows.slice(1);
+
+      const nuevasSalas = new Map();
+      const nuevosEventos = [];
+      const seccionesSet = new Set();
+      const fechas = new Set();
+      let descartadasNoG = 0, descartadasIncompletas = 0;
+
+      for(const row of dataRows){
+        if(!row) continue;
+        const tipoRec = row[17]; // col R
+        if(tipoRec !== 'G'){ descartadasNoG++; continue; }
+        const aula = row[3];    // col D
+        const fechaCl = row[5]; // col F
+        const hInic = row[7];   // col H
+        const hFin  = row[8];   // col I
+        if(!aula || !fechaCl || !hInic || !hFin){ descartadasIncompletas++; continue; }
+        const fi = fmtIso(fechaCl);
+        const hi = fmtHora(hInic);
+        const hf = fmtHora(hFin);
+        if(!fi || !hi || !hf){ descartadasIncompletas++; continue; }
+
+        const den = row[4]; // col E (denom sala)
+        if(!nuevasSalas.has(aula)){
+          nuevasSalas.set(aula, {
+            codigo: String(aula),
+            nombre: den ? String(den) : String(aula),
+            capacidad: 0,
+            tipo: tipoFromDen(den),
+            responsable: 'Por asignar',
+          });
+        }
+        const sc = row[0] ? String(row[0]) : '';
+        if(sc) seccionesSet.add(sc);
+        fechas.add(fi);
+        nuevosEventos.push({
+          s:  String(aula),
+          sc,
+          tr: row[1] ? String(row[1]) : '',
+          de: row[10] ? String(row[10]) : '',
+          ev: row[13]!=null ? String(row[13]) : '',
+          fi, hi, hf,
+        });
+      }
+
+      if(!nuevosEventos.length) throw new Error('No se encontraron filas válidas con tipo de recurso "G" (sala).');
+
+      // Rango de fechas
+      const fechasArr = [...fechas].sort();
+      const rango = fechasArr.length
+        ? { desde: fechasArr[0], hasta: fechasArr[fechasArr.length-1] }
+        : null;
+
+      setPreview({
+        nombre: f.name,
+        sesiones: nuevosEventos.length,
+        salasUnicas: nuevasSalas.size,
+        secciones: seccionesSet.size,
+        fechasUnicas: fechas.size,
+        descartadasNoG, descartadasIncompletas,
+        rango,
+        salas: [...nuevasSalas.values()],
+        eventos: nuevosEventos,
+      });
+    } catch(err){
+      console.error(err);
+      toast('Error al leer el archivo: '+err.message);
+    } finally {
+      setParsing(false);
+    }
+  };
+
+  const aplicar = async () => {
+    if(!preview) return;
+    if(!window.confirm(`Se ${reemplazar?'REEMPLAZARÁ':'AGREGARÁ a'} la lista de eventos con ${preview.sesiones} sesiones. ¿Continuar?`)) return;
+    const salasNuevas = preview.salas.filter(s => !data.salas.some(x=>x.codigo===s.codigo));
+    const eventosFinal = reemplazar ? preview.eventos : [...(data.eventos||[]), ...preview.eventos];
+    try {
+      await onReplace(eventosFinal, salasNuevas);
+      toast(`LISTA DE RECURSOS importada: ${preview.sesiones} sesiones cargadas.`);
+      setPreview(null); setArchivo(null);
+    } catch(e){}
+  };
+
+  return (
+    <div className="stack">
+      <div className="card">
+        <div className="card-header">
+          <div>
+            <h3>Importar LISTA DE RECURSOS desde Excel</h3>
+            <div className="sub">Archivo .xlsx/.xls con una fila por sesión real. Se leen las columnas: <b>A</b> sección · <b>B</b> tipo recurso · <b>D</b> sala · <b>E</b> denom. sala · <b>F</b> fecha · <b>H/I</b> hora inicio/fin · <b>K</b> denom. evento · <b>N</b> código evento. Se filtran solo filas con <b>R='G'</b> (recurso=sala).</div>
+          </div>
+          {data._recursosInfo && <span className="chip success">Última carga: {data._recursosInfo.archivo || `${data._recursosInfo.sesiones} sesiones`}</span>}
+        </div>
+
+        <div className="upload-zone" onClick={()=>document.getElementById('recursos-file').click()}>
+          {I.upload}
+          <h4>Selecciona el archivo Excel</h4>
+          <p className="muted">Formato: "recursos por eventos" exportado del sistema académico</p>
+          <input id="recursos-file" type="file" accept=".xlsx,.xls" style={{display:'none'}} onChange={onFile}/>
+          {parsing && <div style={{marginTop:10}}>Procesando…</div>}
+          {archivo && !parsing && <div style={{marginTop:10,fontSize:12}}>📄 {archivo.name}</div>}
+        </div>
+
+        <div className="login-hint" style={{marginTop:14}}>
+          <b>Coexistencia con SABANA:</b> esta lista <b>no</b> reemplaza la programación SABANA — se complementan. Las sesiones por fecha (LISTA DE RECURSOS) se cruzan con la metadata semanal (SABANA: escuela, asignatura, docente, jornada) por código de sección.
+        </div>
+      </div>
+
+      {preview && (
+        <div className="card">
+          <div className="card-header">
+            <div><h3>Previsualización</h3><div className="sub">{preview.nombre}</div></div>
+          </div>
+
+          <div className="grid grid-4" style={{marginBottom:14}}>
+            <div className="kpi kpi-blue"><span className="label">Sesiones</span><span className="value">{preview.sesiones.toLocaleString('es-CL')}</span><div className="icon">📅</div></div>
+            <div className="kpi kpi-green"><span className="label">Salas únicas</span><span className="value">{preview.salasUnicas}</span><div className="icon">🏫</div></div>
+            <div className="kpi kpi-amber"><span className="label">Secciones</span><span className="value">{preview.secciones}</span><div className="icon">📚</div></div>
+            <div className="kpi kpi-blue"><span className="label">Fechas distintas</span><span className="value">{preview.fechasUnicas}</span><div className="icon">🗓</div></div>
+          </div>
+
+          {preview.rango && (
+            <div className="chip info" style={{marginBottom:10}}>Rango: {fmtFecha(preview.rango.desde)} → {fmtFecha(preview.rango.hasta)}</div>
+          )}
+          {(preview.descartadasNoG>0 || preview.descartadasIncompletas>0) && (
+            <div className="chip warn" style={{marginBottom:10,marginLeft:8}}>
+              Descartadas: {preview.descartadasNoG} no-sala (R≠G), {preview.descartadasIncompletas} incompletas
+            </div>
+          )}
+
+          <div className="field">
+            <label className="row" style={{gap:8,cursor:'pointer'}}>
+              <input type="checkbox" checked={reemplazar} onChange={e=>setReemplazar(e.target.checked)}/>
+              <span>Reemplazar la lista existente ({(data.eventos||[]).length.toLocaleString('es-CL')} sesiones) por la nueva</span>
+            </label>
+          </div>
+
+          <div className="row" style={{justifyContent:'flex-end',marginTop:12,gap:10}}>
+            <button className="btn btn-ghost" onClick={()=>{setPreview(null);setArchivo(null)}}>Cancelar</button>
+            <button className="btn btn-primary" onClick={aplicar}>{I.check}Aplicar importación</button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function Modal({ title, children, onClose, onSave, saveLabel='Guardar' }){
   return (
     <div className="modal-back" onClick={onClose}>
@@ -3150,21 +3465,37 @@ function App(){
       const { data: fresh } = await supabase.from('app_users').select('*').order('id');
       if(fresh) setUsers(fresh);
     });
-    return () => { unsubR(); unsubS(); unsubU(); };
+    const unsubE = db.subscribe('eventos', async () => {
+      const { data: fresh } = await supabase.from('eventos').select('*');
+      if(fresh) setData(d => d ? {...d, eventos:fresh} : d);
+    });
+    return () => { unsubR(); unsubS(); unsubU(); unsubE(); };
   }, [db, supabase]);
 
   // Persistencia en modo local (sesión + overrides)
   useEffect(()=>{
     if(!data || !mode) return;
     if(mode==='local'){
-      saveStore({
+      // En modo local los eventos pueden ser ~70K filas (>10MB JSON) y
+      // sobrepasar el cuota de localStorage. Si no caben, se persiste sin ellos
+      // (siguen vivos en memoria hasta que se recargue).
+      const payload = {
         user, users,
         customReservas: reservas.filter(r=>r.creado_por),
         reservaEstados: reservas.filter(r=>r.decidido_por).map(r=>({id:r.id,es:r.es,decidido_por:r.decidido_por,decidido_en:r.decidido_en})),
         customSalas: data._customSalas || [],
         deletedSalas: data._deletedSalas || [],
         salaOverrides: data._salaOverrides || {},
-      });
+        eventos: data.eventos || [],
+      };
+      try {
+        saveStore(payload);
+      } catch(err){
+        if(err?.name === 'QuotaExceededError' || /quota/i.test(err?.message||'')){
+          console.warn('localStorage lleno; persistiendo sin eventos.');
+          try { saveStore({ ...payload, eventos: [] }); } catch(_){}
+        } else { throw err; }
+      }
     } else {
       // En cloud solo persistimos el user logueado
       saveStore({ user });
@@ -3272,11 +3603,28 @@ function App(){
     } catch(e){ setToast('Error al importar SABANA: '+e.message); throw e; }
   };
 
+  const replaceEventosOp = async (eventos, salasNuevas) => {
+    try {
+      await db.replaceEventos(eventos, salasNuevas);
+      setData(d => {
+        const mapSalas = new Map(d.salas.map(s => [s.codigo, s]));
+        for(const ns of (salasNuevas||[])){
+          if(!mapSalas.has(ns.codigo)) mapSalas.set(ns.codigo, ns);
+        }
+        return { ...d,
+          salas: [...mapSalas.values()].sort((a,b)=>a.codigo.localeCompare(b.codigo)),
+          eventos,
+          _recursosInfo: { sesiones: eventos.length, importadoEn: new Date().toISOString() },
+        };
+      });
+    } catch(e){ setToast('Error al importar LISTA DE RECURSOS: '+e.message); throw e; }
+  };
+
   const seedFromBundle = async () => {
     try {
       const counts = await db.seedFromBundle();
       const out = await db.loadAll();
-      setData({ salas:out.salas, programacion:out.programacion, modulos:out.modulos });
+      setData({ salas:out.salas, programacion:out.programacion, eventos:out.eventos||[], modulos:out.modulos });
       setReservas(out.reservas);
       setUsers(out.users);
       setToast(`Carga inicial: ${counts.salas} salas, ${counts.programacion} sesiones, ${counts.reservas} reservas.`);
@@ -3314,6 +3662,7 @@ function App(){
     reservas:['Reservas','Gestión y búsqueda de disponibilidad'],
     nueva:['Solicitar reserva','Nueva solicitud'],
     importar:['Importar SABANA','Cargar programación académica desde Excel'],
+    recursos:['Importar LISTA DE RECURSOS','Cargar sesiones por fecha desde Excel'],
     usuarios:['Usuarios','Administración de cuentas'],
     reportes:['Reportes','Ocupación y métricas'],
   };
@@ -3329,6 +3678,7 @@ function App(){
         {view==='reservas'  && <Reservas reservas={reservas} data={data} user={user} toast={setToast} onGoNueva={goNueva} onUpdateEstado={updateReservaEstado}/>}
         {view==='nueva'     && <NuevaReserva data={data} reservas={reservas} user={user} toast={setToast} goReservas={()=>setView('reservas')} prefill={prefillNueva} onCreate={createReserva}/>}
         {view==='importar'  && <ImportarSabana data={data} toast={setToast} onReplace={replaceProgramacionOp} onSeed={seedFromBundle} isCloud={db.isCloud}/>}
+        {view==='recursos'  && <ImportarRecursos data={data} toast={setToast} onReplace={replaceEventosOp} isCloud={db.isCloud}/>}
         {view==='usuarios'  && <Usuarios users={users} toast={setToast} onCreate={createUser} onUpdate={updateUser} onDelete={deleteUser}/>}
         {view==='reportes'  && <Reportes data={data} reservas={reservas}/>}
       </Shell>

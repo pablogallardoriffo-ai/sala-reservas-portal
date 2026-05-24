@@ -51,6 +51,22 @@ CREATE TABLE IF NOT EXISTS programacion (
 );
 CREATE INDEX IF NOT EXISTS idx_prog_s ON programacion(s);
 
+-- EVENTOS (LISTA DE RECURSOS) — una fila por clase real con fecha exacta
+-- Complementa el patrón semanal de `programacion` con sesiones por fecha.
+CREATE TABLE IF NOT EXISTS eventos (
+  id   BIGSERIAL PRIMARY KEY,
+  s    TEXT,           -- sala (código, col D del Excel)
+  sc   TEXT,           -- sección (col A, ej. "RMC1102-001")
+  tr   TEXT,           -- tipo de recurso descriptivo (col B)
+  de   TEXT,           -- denominación del evento (col K)
+  ev   TEXT,           -- código de evento (col N)
+  fi   DATE,           -- fecha de la clase (col F = G)
+  hi   TEXT,           -- hora inicio HH:MM (col H)
+  hf   TEXT            -- hora fin    HH:MM (col I)
+);
+CREATE INDEX IF NOT EXISTS idx_eventos_fi_s ON eventos(fi, s);
+CREATE INDEX IF NOT EXISTS idx_eventos_sc   ON eventos(sc);
+
 -- RESERVAS
 CREATE TABLE IF NOT EXISTS reservas (
   id            BIGSERIAL PRIMARY KEY,
@@ -102,18 +118,21 @@ ALTER TABLE app_users    ENABLE ROW LEVEL SECURITY;
 ALTER TABLE salas        ENABLE ROW LEVEL SECURITY;
 ALTER TABLE modulos      ENABLE ROW LEVEL SECURITY;
 ALTER TABLE programacion ENABLE ROW LEVEL SECURITY;
+ALTER TABLE eventos      ENABLE ROW LEVEL SECURITY;
 ALTER TABLE reservas     ENABLE ROW LEVEL SECURITY;
 
 DROP POLICY IF EXISTS allow_all ON app_users;
 DROP POLICY IF EXISTS allow_all ON salas;
 DROP POLICY IF EXISTS allow_all ON modulos;
 DROP POLICY IF EXISTS allow_all ON programacion;
+DROP POLICY IF EXISTS allow_all ON eventos;
 DROP POLICY IF EXISTS allow_all ON reservas;
 
 CREATE POLICY allow_all ON app_users    FOR ALL USING (true) WITH CHECK (true);
 CREATE POLICY allow_all ON salas        FOR ALL USING (true) WITH CHECK (true);
 CREATE POLICY allow_all ON modulos      FOR ALL USING (true) WITH CHECK (true);
 CREATE POLICY allow_all ON programacion FOR ALL USING (true) WITH CHECK (true);
+CREATE POLICY allow_all ON eventos      FOR ALL USING (true) WITH CHECK (true);
 CREATE POLICY allow_all ON reservas     FOR ALL USING (true) WITH CHECK (true);
 
 -- ============================================================
