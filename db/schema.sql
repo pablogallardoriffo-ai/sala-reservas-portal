@@ -78,6 +78,15 @@ CREATE TABLE IF NOT EXISTS docente_jefes (
 );
 CREATE INDEX IF NOT EXISTS idx_dj_docente ON docente_jefes(docente);
 
+-- REGISTRO DE IMPORTACIONES — última vez que se subió cada tipo de archivo
+CREATE TABLE IF NOT EXISTS import_log (
+  tipo         TEXT PRIMARY KEY,    -- 'sabana' | 'recursos' | 'jefes'
+  importado_en TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  filas        INT NOT NULL DEFAULT 0,
+  archivo      TEXT,
+  importado_por TEXT
+);
+
 -- RESERVAS
 CREATE TABLE IF NOT EXISTS reservas (
   id            BIGSERIAL PRIMARY KEY,
@@ -131,6 +140,7 @@ ALTER TABLE modulos       ENABLE ROW LEVEL SECURITY;
 ALTER TABLE programacion  ENABLE ROW LEVEL SECURITY;
 ALTER TABLE eventos       ENABLE ROW LEVEL SECURITY;
 ALTER TABLE docente_jefes ENABLE ROW LEVEL SECURITY;
+ALTER TABLE import_log    ENABLE ROW LEVEL SECURITY;
 ALTER TABLE reservas      ENABLE ROW LEVEL SECURITY;
 
 DROP POLICY IF EXISTS allow_all ON app_users;
@@ -139,6 +149,7 @@ DROP POLICY IF EXISTS allow_all ON modulos;
 DROP POLICY IF EXISTS allow_all ON programacion;
 DROP POLICY IF EXISTS allow_all ON eventos;
 DROP POLICY IF EXISTS allow_all ON docente_jefes;
+DROP POLICY IF EXISTS allow_all ON import_log;
 DROP POLICY IF EXISTS allow_all ON reservas;
 
 CREATE POLICY allow_all ON app_users     FOR ALL USING (true) WITH CHECK (true);
@@ -147,6 +158,7 @@ CREATE POLICY allow_all ON modulos       FOR ALL USING (true) WITH CHECK (true);
 CREATE POLICY allow_all ON programacion  FOR ALL USING (true) WITH CHECK (true);
 CREATE POLICY allow_all ON eventos       FOR ALL USING (true) WITH CHECK (true);
 CREATE POLICY allow_all ON docente_jefes FOR ALL USING (true) WITH CHECK (true);
+CREATE POLICY allow_all ON import_log    FOR ALL USING (true) WITH CHECK (true);
 CREATE POLICY allow_all ON reservas      FOR ALL USING (true) WITH CHECK (true);
 
 -- ============================================================

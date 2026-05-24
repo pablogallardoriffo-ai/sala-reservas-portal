@@ -792,7 +792,7 @@ function createDb({ mode, supabase }){
     if(isCloud){
       // Tablas chicas: una sola query. Tablas grandes (programacion, eventos,
       // reservas): paginadas con fetchAll para superar el cap de 1.000 filas.
-      const [salasR, modulosR, usersR, prog, eventos, reservas, jefes] = await Promise.all([
+      const [salasR, modulosR, usersR, prog, eventos, reservas, jefes, importLog] = await Promise.all([
         supabase.from('salas').select('*').order('codigo'),
         supabase.from('modulos').select('*').order('num'),
         supabase.from('app_users').select('*').order('id'),
@@ -800,6 +800,7 @@ function createDb({ mode, supabase }){
         fetchAll('eventos'),
         fetchAll('reservas', { order:'id' }),
         fetchAll('docente_jefes'),
+        fetchAll('import_log'),
       ]);
       const anyErr = [salasR, modulosR, usersR].find(r=>r.error);
       if(anyErr) throw new Error(anyErr.error.message);
@@ -808,9 +809,10 @@ function createDb({ mode, supabase }){
         modulos: modulosR.data || [],
         programacion: prog,
         eventos: eventos,
-        reservas: reservas.slice().reverse(),  // más recientes primero
+        reservas: reservas.slice().reverse(),
         users: usersR.data || [],
         docente_jefes: jefes,
+        import_log: importLog,
       };
     }
     // Modo local: JSON estático + overrides en localStorage
@@ -840,6 +842,7 @@ function createDb({ mode, supabase }){
       modulos: m,
       users: st.users || DEFAULT_USERS,
       docente_jefes: st.docente_jefes || [],
+      import_log: st.import_log || [],
       _local: { customSalas, deletedSalas:[...deletedSalas], salaOverrides:overrides },
     };
   };
@@ -973,6 +976,17 @@ function createDb({ mode, supabase }){
     return count || 0;
   };
 
+  // Registra una entrada en import_log (upsert por tipo). Llamado después
+  // de cada subida masiva exitosa. archivo y importado_por son opcionales.
+  const logImport = async (tipo, filas, archivo, importado_por) => {
+    if(!isCloud) return;
+    const row = { tipo, filas, importado_en: new Date().toISOString() };
+    if(archivo != null) row.archivo = archivo;
+    if(importado_por != null) row.importado_por = importado_por;
+    const { error } = await supabase.from('import_log').upsert(row, { onConflict:'tipo' });
+    if(error) console.warn('import_log:', error.message);  // no es crítico
+  };
+
   const replaceProgramacion = async (prog, salasNuevas, opts = {}) => {
     if(isCloud){
       if(salasNuevas?.length){
@@ -982,16 +996,42 @@ function createDb({ mode, supabase }){
       const { error: eDel } = await supabase.from('programacion').delete().gte('id', 0);
       if(eDel) throw new Error('Error al limpiar programación: '+eDel.message);
       await insertChunks('programacion', prog, opts);
+      await logImport('sabana', prog.length, opts.archivo, opts.importado_por);
     }
     return true;
   };
 
-  /* ----- JEFATURAS DOCENTES bulk ----- */
+  /* ----- JEFATURAS DOCENTES bulk + CRUD individual ----- */
   const replaceJefes = async (jefes, opts = {}) => {
     if(isCloud){
       const { error: eDel } = await supabase.from('docente_jefes').delete().gte('id', 0);
       if(eDel) throw new Error('Error al limpiar jefaturas: '+eDel.message);
       await insertChunks('docente_jefes', jefes, opts);
+      await logImport('jefes', jefes.length, opts.archivo, opts.importado_por);
+    }
+    return true;
+  };
+  const createJefe = async (jefe) => {
+    if(isCloud){
+      const payload = {...jefe}; delete payload.id;
+      const { data, error } = await supabase.from('docente_jefes').insert(payload).select().single();
+      if(error) throw new Error(error.message);
+      return data;
+    }
+    return { ...jefe, id: Date.now() };
+  };
+  const updateJefe = async (id, patch) => {
+    if(isCloud){
+      const { data, error } = await supabase.from('docente_jefes').update(patch).eq('id', id).select().single();
+      if(error) throw new Error(error.message);
+      return data;
+    }
+    return { id, ...patch };
+  };
+  const deleteJefe = async (id) => {
+    if(isCloud){
+      const { error } = await supabase.from('docente_jefes').delete().eq('id', id);
+      if(error) throw new Error(error.message);
     }
     return true;
   };
@@ -1015,6 +1055,7 @@ function createDb({ mode, supabase }){
         if(eDel) throw new Error('Error al limpiar eventos: '+eDel.message);
       }
       await insertChunks('eventos', eventos, { ...opts, startFrom });
+      await logImport('recursos', eventos.length, opts.archivo, opts.importado_por);
     }
     return true;
   };
@@ -1088,6 +1129,7 @@ function createDb({ mode, supabase }){
     createSala, updateSala, deleteSala,
     createUser, updateUser, deleteUser,
     replaceProgramacion, replaceEventos, replaceJefes, seedFromBundle,
+    createJefe, updateJefe, deleteJefe, logImport,
     subscribe, getStats, fetchAll,
   };
 }
@@ -4093,10 +4135,14 @@ function ImportarRecursos({ data, toast, onReplace, isCloud }){
    Excel masivo con mapeo docente → jefe directo. Auto-detecta columnas
    por encabezado (Docente, Jefe, Correo, Escuela). Reemplaza la tabla
    docente_jefes con la nueva carga. */
-function ImportarJefes({ data, toast, onReplace }){
+function ImportarJefes({ data, toast, onReplace, onCreate, onUpdate, onDelete }){
   const [parsing, setParsing] = useState(false);
   const [preview, setPreview] = useState(null);
   const [archivo, setArchivo] = useState(null);
+  const [modal, setModal] = useState(null);  // 'add' | 'edit'
+  const [edit, setEdit] = useState({ id:null, docente:'', jefe:'', jefe_correo:'', escuela:'' });
+  const [q, setQ] = useState('');
+  const [busy, setBusy] = useState(false);
 
   const findCol = (headers, candidatos) => {
     const norm = (s) => (s||'').toString().toLowerCase().replace(/\s+/g,'').replace(/\./g,'');
@@ -4202,6 +4248,53 @@ function ImportarJefes({ data, toast, onReplace }){
     } catch(e){}
   };
 
+  // CRUD individual
+  const startAdd = () => {
+    setEdit({ id:null, docente:'', jefe:'', jefe_correo:'', escuela:'' });
+    setModal('add');
+  };
+  const startEdit = (j) => {
+    setEdit({ id:j.id, docente:j.docente||'', jefe:j.jefe||'', jefe_correo:j.jefe_correo||'', escuela:j.escuela||'' });
+    setModal('edit');
+  };
+  const saveJefe = async () => {
+    const { docente, jefe } = edit;
+    if(!docente.trim() || !jefe.trim()){ toast('Docente y Jefe son obligatorios.'); return; }
+    setBusy(true);
+    try {
+      const payload = {
+        docente: edit.docente.trim(),
+        jefe: edit.jefe.trim(),
+        jefe_correo: edit.jefe_correo.trim() || null,
+        escuela: (edit.escuela||'').trim().slice(0,3) || null,
+      };
+      if(modal === 'add'){
+        await onCreate(payload);
+        toast('Jefatura agregada.');
+      } else {
+        await onUpdate(edit.id, payload);
+        toast('Jefatura actualizada.');
+      }
+      setModal(null);
+    } catch(e){} finally { setBusy(false); }
+  };
+  const eliminar = async (j) => {
+    if(!window.confirm(`¿Eliminar la jefatura de "${j.docente}"?`)) return;
+    try { await onDelete(j.id); toast('Jefatura eliminada.'); } catch(e){}
+  };
+
+  // Lista filtrada
+  const jefesFiltrados = useMemo(()=>{
+    if(!q) return data.docente_jefes||[];
+    const qn = q.toLowerCase();
+    return (data.docente_jefes||[]).filter(j =>
+      (j.docente||'').toLowerCase().includes(qn) ||
+      (j.jefe||'').toLowerCase().includes(qn) ||
+      (j.jefe_correo||'').toLowerCase().includes(qn) ||
+      (j.escuela||'').toLowerCase().includes(qn)
+    );
+  }, [data.docente_jefes, q]);
+
   return (
     <div className="stack">
       <div className="card">
@@ -4262,24 +4355,76 @@ function ImportarJefes({ data, toast, onReplace }){
         </div>
       )}
 
-      {/* Lista actual */}
-      {(data.docente_jefes||[]).length>0 && !preview && (
+      {/* Lista actual con CRUD individual */}
+      {!preview && (
         <div className="card">
           <div className="card-header">
-            <div><h3>Jefaturas cargadas actualmente</h3><div className="sub">{(data.docente_jefes||[]).length} registros</div></div>
+            <div>
+              <h3>Jefaturas en BD</h3>
+              <div className="sub">{(data.docente_jefes||[]).length} registros · puedes agregar, editar o eliminar manualmente</div>
+            </div>
+            <button className="btn btn-primary" onClick={startAdd}>{I.plus}Agregar jefatura</button>
           </div>
-          <div className="tbl-scroll" style={{maxHeight:400}}>
-            <table className="tbl">
-              <thead><tr><th>Docente</th><th>Jefe</th><th>Correo</th><th>Escuela</th></tr></thead>
-              <tbody>
-                {(data.docente_jefes||[]).slice(0,200).map((j,i) => (
-                  <tr key={i}><td>{j.docente}</td><td><b>{j.jefe}</b></td><td className="muted">{j.jefe_correo||'—'}</td><td>{j.escuela||'—'}</td></tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-          {(data.docente_jefes||[]).length>200 && <div className="muted" style={{padding:10,textAlign:'center',fontSize:12}}>Mostrando 200 de {(data.docente_jefes||[]).length}.</div>}
+
+          {(data.docente_jefes||[]).length === 0 ? (
+            <div className="empty"><span className="emoji">⭐</span>Aún no hay jefaturas cargadas. Sube un Excel arriba o agrega una manualmente.</div>
+          ) : (
+            <>
+              <div className="filters" style={{marginBottom:8}}>
+                <div className="field" style={{flex:'1 1 320px'}}>
+                  <label>Buscar</label>
+                  <input value={q} onChange={e=>setQ(e.target.value)} placeholder="Docente, jefe, correo, escuela…"/>
+                </div>
+                <div style={{alignSelf:'flex-end'}} className="chip info">
+                  {jefesFiltrados.length} / {(data.docente_jefes||[]).length}
+                </div>
+              </div>
+
+              <div className="tbl-scroll" style={{maxHeight:500}}>
+                <table className="tbl">
+                  <thead><tr><th>Docente</th><th>Jefe</th><th>Correo</th><th>Escuela</th><th style={{width:100,textAlign:'right'}}>Acciones</th></tr></thead>
+                  <tbody>
+                    {jefesFiltrados.slice(0,300).map(j => (
+                      <tr key={j.id}>
+                        <td>{j.docente}</td>
+                        <td><b>{j.jefe}</b></td>
+                        <td className="muted">{j.jefe_correo||'—'}</td>
+                        <td>{j.escuela||'—'}</td>
+                        <td style={{textAlign:'right'}} className="nowrap">
+                          <button className="btn-icon" title="Editar" onClick={()=>startEdit(j)}>{I.edit}</button>
+                          <button className="btn-icon" title="Eliminar" onClick={()=>eliminar(j)}>{I.trash}</button>
+                        </td>
+                      </tr>
+                    ))}
+                    {jefesFiltrados.length === 0 && <tr><td colSpan="5"><div className="empty"><span className="emoji">🔍</span>Sin resultados con "{q}".</div></td></tr>}
+                  </tbody>
+                </table>
+              </div>
+              {jefesFiltrados.length>300 && <div className="muted" style={{padding:10,textAlign:'center',fontSize:12}}>Mostrando primeras 300 de {jefesFiltrados.length}. Refina la búsqueda.</div>}
+            </>
+          )}
         </div>
+      )}
+
+      {modal && (
+        <Modal
+          title={modal==='add' ? 'Agregar jefatura' : `Editar jefatura · ${edit.docente}`}
+          onClose={()=>setModal(null)}
+          onSave={saveJefe}
+          saveLabel={busy ? 'Guardando…' : 'Guardar'}>
+          <div className="field"><label>Docente *</label><input value={edit.docente} onChange={e=>setEdit({...edit,docente:e.target.value})} placeholder="Nombre completo (debe matchear con SABANA)"/></div>
+          <div className="field"><label>Jefe directo *</label><input value={edit.jefe} onChange={e=>setEdit({...edit,jefe:e.target.value})} placeholder="Nombre del jefe"/></div>
+          <div className="col-2">
+            <div className="field"><label>Correo jefe</label><input type="email" value={edit.jefe_correo} onChange={e=>setEdit({...edit,jefe_correo:e.target.value})} placeholder="jefe@duoc.cl"/></div>
+            <div className="field">
+              <label>Escuela</label>
+              <select value={edit.escuela} onChange={e=>setEdit({...edit,escuela:e.target.value})}>
+                <option value="">— Sin asignar —</option>
+                {Object.entries(ESCUELAS_FULL).map(([k,v]) => <option key={k} value={k}>{v} ({k})</option>)}
+              </select>
+            </div>
+          </div>
+        </Modal>
       )}
     </div>
   );
@@ -4288,42 +4433,76 @@ function ImportarJefes({ data, toast, onReplace }){
 /* ========= IMPORTAR DATOS (wrapper unificado) =========
    Una sola pestaña con 3 tabs internos: SABANA, LISTA DE RECURSOS y
    Jefaturas. Cada tab monta el componente importador correspondiente. */
-function ImportarDatos({ data, toast, db, onReplaceSabana, onReplaceEventos, onReplaceJefes, onSeed }){
-  const [tab, setTab] = useState('recursos');  // arrancamos en el más usado
+function ImportarDatos({ data, toast, db, onReplaceSabana, onReplaceEventos, onReplaceJefes, onCreateJefe, onUpdateJefe, onDeleteJefe, onSeed }){
+  const [tab, setTab] = useState('recursos');
+
+  // Lookup rápido del último import por tipo
+  const logByTipo = useMemo(()=>{
+    const m = {};
+    for(const e of (data.import_log||[])) m[e.tipo] = e;
+    return m;
+  }, [data.import_log]);
+
+  const fmtFechaHora = (iso) => {
+    if(!iso) return '—';
+    try {
+      const d = new Date(iso);
+      return d.toLocaleDateString('es-CL', { day:'2-digit', month:'short', year:'numeric' }) +
+             ' · ' + d.toLocaleTimeString('es-CL', { hour:'2-digit', minute:'2-digit' });
+    } catch(e){ return iso; }
+  };
 
   const tabs = [
-    { key:'sabana',   label:'📘 SABANA',            sub:'Programación académica (patrón semanal)', count:(data.programacion||[]).length },
-    { key:'recursos', label:'📅 LISTA DE RECURSOS', sub:'Sesiones por fecha (eventos)',           count:(data.eventos||[]).length },
-    { key:'jefes',    label:'⭐ Jefaturas',          sub:'Docente → jefe directo',                 count:(data.docente_jefes||[]).length },
+    { key:'sabana',   label:'📘 SABANA',            sub:'Programación académica (patrón semanal)', count:(data.programacion||[]).length, logKey:'sabana' },
+    { key:'recursos', label:'📅 LISTA DE RECURSOS', sub:'Sesiones por fecha (eventos)',           count:(data.eventos||[]).length,     logKey:'recursos' },
+    { key:'jefes',    label:'⭐ Jefaturas',          sub:'Docente → jefe directo',                 count:(data.docente_jefes||[]).length, logKey:'jefes' },
   ];
 
   return (
     <div className="stack">
-      {/* Tabs grandes */}
+      {/* Tabs grandes con badge de fecha */}
       <div className="card" style={{padding:0,overflow:'hidden'}}>
-        <div className="row" style={{borderBottom:'1px solid var(--border-soft)'}}>
-          {tabs.map(t => (
-            <button key={t.key} onClick={()=>setTab(t.key)}
-              style={{
-                flex:1,padding:'14px 16px',background:tab===t.key?'#fff':'#FBFCFD',
-                borderRight:'1px solid var(--border-soft)',border:'none',cursor:'pointer',
-                borderBottom: tab===t.key?'3px solid var(--primary-2)':'3px solid transparent',
-                textAlign:'left'
-              }}>
-              <div style={{fontSize:14,fontWeight:700,color: tab===t.key?'var(--primary)':'var(--text)'}}>{t.label}</div>
-              <div style={{fontSize:11,color:'var(--text-muted)',marginTop:2}}>{t.sub}</div>
-              <div style={{fontSize:11,color:'var(--text-muted)',marginTop:4}}>
-                BD: <b style={{color: t.count>0 ? 'var(--success)' : 'var(--text-muted)'}}>{t.count.toLocaleString('es-CL')}</b> {t.count===1?'fila':'filas'}
-              </div>
-            </button>
-          ))}
+        <div className="row" style={{borderBottom:'1px solid var(--border-soft)',flexWrap:'wrap'}}>
+          {tabs.map(t => {
+            const log = logByTipo[t.logKey];
+            const cargado = !!log || t.count > 0;
+            return (
+              <button key={t.key} onClick={()=>setTab(t.key)}
+                style={{
+                  flex:'1 1 240px',padding:'14px 16px',background:tab===t.key?'#fff':'#FBFCFD',
+                  borderRight:'1px solid var(--border-soft)',border:'none',cursor:'pointer',
+                  borderBottom: tab===t.key?'3px solid var(--primary-2)':'3px solid transparent',
+                  textAlign:'left'
+                }}>
+                <div style={{fontSize:14,fontWeight:700,color: tab===t.key?'var(--primary)':'var(--text)'}}>{t.label}</div>
+                <div style={{fontSize:11,color:'var(--text-muted)',marginTop:2}}>{t.sub}</div>
+                <div style={{marginTop:6,display:'flex',alignItems:'center',gap:6,flexWrap:'wrap'}}>
+                  {cargado ? (
+                    <>
+                      <span className="chip success" style={{fontSize:10,padding:'2px 7px'}}>✓ Cargado</span>
+                      <span style={{fontSize:10,color:'var(--text-muted)'}}>
+                        <b style={{color:'var(--text)'}}>{t.count.toLocaleString('es-CL')}</b> {t.count===1?'fila':'filas'}
+                      </span>
+                    </>
+                  ) : (
+                    <span className="chip warn" style={{fontSize:10,padding:'2px 7px'}}>⚠ Sin subir</span>
+                  )}
+                </div>
+                {log && (
+                  <div style={{fontSize:10,color:'var(--text-muted)',marginTop:4}}>
+                    Última subida: <b style={{color:'var(--text)'}}>{fmtFechaHora(log.importado_en)}</b>{log.importado_por && <> · por <b>{log.importado_por}</b></>}
+                  </div>
+                )}
+              </button>
+            );
+          })}
         </div>
       </div>
 
       {/* Contenido del tab */}
       {tab==='sabana'   && <ImportarSabana   data={data} toast={toast} onReplace={onReplaceSabana} onSeed={onSeed} isCloud={db.isCloud}/>}
       {tab==='recursos' && <ImportarRecursos data={data} toast={toast} onReplace={onReplaceEventos} isCloud={db.isCloud}/>}
-      {tab==='jefes'    && <ImportarJefes    data={data} toast={toast} onReplace={onReplaceJefes}/>}
+      {tab==='jefes'    && <ImportarJefes    data={data} toast={toast} onReplace={onReplaceJefes} onCreate={onCreateJefe} onUpdate={onUpdateJefe} onDelete={onDeleteJefe}/>}
     </div>
   );
 }
@@ -4437,7 +4616,11 @@ function App(){
       const fresh = await db.fetchAll('docente_jefes');
       if(fresh) setData(d => d ? {...d, docente_jefes:fresh} : d);
     });
-    return () => { unsubR(); unsubS(); unsubU(); unsubE(); unsubJ(); };
+    const unsubIL = db.subscribe('import_log', async () => {
+      const fresh = await db.fetchAll('import_log');
+      if(fresh) setData(d => d ? {...d, import_log:fresh} : d);
+    });
+    return () => { unsubR(); unsubS(); unsubU(); unsubE(); unsubJ(); unsubIL(); };
   }, [db, supabase]);
 
   // Persistencia en modo local (sesión + overrides)
@@ -4456,6 +4639,7 @@ function App(){
         salaOverrides: data._salaOverrides || {},
         eventos: data.eventos || [],
         docente_jefes: data.docente_jefes || [],
+        import_log: data.import_log || [],
       };
       try {
         saveStore(payload);
@@ -4556,17 +4740,20 @@ function App(){
 
   const replaceProgramacionOp = async (prog, salasNuevas, opts) => {
     try {
-      await db.replaceProgramacion(prog, salasNuevas, opts);
-      // actualizar estado local
+      await db.replaceProgramacion(prog, salasNuevas, { ...opts, importado_por: user?.username });
       setData(d => {
         const mapSalas = new Map(d.salas.map(s => [s.codigo, s]));
         for(const ns of (salasNuevas||[])){
           if(!mapSalas.has(ns.codigo)) mapSalas.set(ns.codigo, ns);
         }
+        const nuevoLog = [
+          { tipo:'sabana', filas:prog.length, importado_en:new Date().toISOString(), importado_por:user?.username },
+          ...((d.import_log||[]).filter(x=>x.tipo!=='sabana'))
+        ];
         return { ...d,
           salas: [...mapSalas.values()].sort((a,b)=>a.codigo.localeCompare(b.codigo)),
           programacion: prog,
-          _sabanaInfo: { sesiones: prog.length, importadoEn: new Date().toISOString() },
+          import_log: nuevoLog,
         };
       });
     } catch(e){ setToast('Error al importar SABANA: '+e.message); throw e; }
@@ -4574,16 +4761,20 @@ function App(){
 
   const replaceEventosOp = async (eventos, salasNuevas, opts) => {
     try {
-      await db.replaceEventos(eventos, salasNuevas, opts);
+      await db.replaceEventos(eventos, salasNuevas, { ...opts, importado_por: user?.username });
       setData(d => {
         const mapSalas = new Map(d.salas.map(s => [s.codigo, s]));
         for(const ns of (salasNuevas||[])){
           if(!mapSalas.has(ns.codigo)) mapSalas.set(ns.codigo, ns);
         }
+        const nuevoLog = [
+          { tipo:'recursos', filas:eventos.length, importado_en:new Date().toISOString(), importado_por:user?.username },
+          ...((d.import_log||[]).filter(x=>x.tipo!=='recursos'))
+        ];
         return { ...d,
           salas: [...mapSalas.values()].sort((a,b)=>a.codigo.localeCompare(b.codigo)),
           eventos,
-          _recursosInfo: { sesiones: eventos.length, importadoEn: new Date().toISOString() },
+          import_log: nuevoLog,
         };
       });
     } catch(e){ setToast('Error al importar LISTA DE RECURSOS: '+e.message); throw e; }
@@ -4591,9 +4782,38 @@ function App(){
 
   const replaceJefesOp = async (jefes, opts) => {
     try {
-      await db.replaceJefes(jefes, opts);
-      setData(d => ({ ...d, docente_jefes: jefes }));
+      // pasar el usuario para que quede registrado en import_log
+      await db.replaceJefes(jefes, { ...opts, importado_por: user?.username });
+      setData(d => {
+        const nuevoLog = [
+          { tipo:'jefes', filas:jefes.length, importado_en:new Date().toISOString(), importado_por:user?.username },
+          ...((d.import_log||[]).filter(x=>x.tipo!=='jefes'))
+        ];
+        return { ...d, docente_jefes: jefes, import_log: nuevoLog };
+      });
     } catch(e){ setToast('Error al cargar jefaturas: '+e.message); throw e; }
+  };
+
+  // CRUD individual de jefaturas
+  const createJefeOp = async (jefe) => {
+    try {
+      const saved = await db.createJefe(jefe);
+      setData(d => ({ ...d, docente_jefes: [...(d.docente_jefes||[]), saved] }));
+      return saved;
+    } catch(e){ setToast('Error al crear jefatura: '+e.message); throw e; }
+  };
+  const updateJefeOp = async (id, patch) => {
+    try {
+      const saved = await db.updateJefe(id, patch);
+      setData(d => ({ ...d, docente_jefes: (d.docente_jefes||[]).map(j => j.id===id ? {...j, ...saved} : j) }));
+      return saved;
+    } catch(e){ setToast('Error al actualizar jefatura: '+e.message); throw e; }
+  };
+  const deleteJefeOp = async (id) => {
+    try {
+      await db.deleteJefe(id);
+      setData(d => ({ ...d, docente_jefes: (d.docente_jefes||[]).filter(j => j.id!==id) }));
+    } catch(e){ setToast('Error al eliminar jefatura: '+e.message); throw e; }
   };
 
   const seedFromBundle = async () => {
@@ -4658,6 +4878,9 @@ function App(){
           onReplaceSabana={replaceProgramacionOp}
           onReplaceEventos={replaceEventosOp}
           onReplaceJefes={replaceJefesOp}
+          onCreateJefe={createJefeOp}
+          onUpdateJefe={updateJefeOp}
+          onDeleteJefe={deleteJefeOp}
           onSeed={seedFromBundle}/>}
         {view==='docente'   && <HorarioDocente data={data}/>}
         {view==='usuarios'  && <Usuarios users={users} toast={setToast} onCreate={createUser} onUpdate={updateUser} onDelete={deleteUser}/>}
