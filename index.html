@@ -1330,7 +1330,6 @@ function Shell({ user, mode, onReconfigure, onLogout, view, setView, children, t
       ['mapa',      'Mapa de calor',      I.heatmap,   ['admin','reservador','usuario']],
       ['docente',   'Horario docente',    I.users,     ['admin','reservador','usuario']],
       ['salas',     'Salas',              I.salas,     ['admin','reservador','usuario']],
-      ['prog',      'Programación SABANA',I.prog,      ['admin','reservador','usuario']],
       ['nueva',     'Solicitar reserva',  I.nueva,     ['admin','reservador','usuario']],
       ['reservas',  'Reservas',           I.reservas,  ['admin','reservador','usuario']],
       ['importar',  'Importar datos',     I.upload,    ['admin']],
@@ -2285,61 +2284,13 @@ function Salas({ data, user, toast, onCreate, onUpdate, onDelete }){
   );
 }
 
-/* ========= PROGRAMACIÓN ACADÉMICA (SABANA + LISTA DE RECURSOS) ========= */
-function Programacion({ data }){
-  const [sala, setSala] = useState('');
-  const [escuela, setEscuela] = useState('');
-  const [jornada, setJornada] = useState('');
-  const [dia, setDia] = useState('');
-
+/* ========= VERIFICADOR SABANA =========
+   Panel que valida la importación SABANA / LISTA DE RECURSOS mostrando
+   conteo de clases por día de la semana. Se usa dentro de
+   "Importar datos → SABANA" como sanity check post-importación. */
+function VerificadorSabana({ data }){
   const sesiones = useMemo(()=> sesionesConsolidadas(data), [data]);
   const usaEventos = hasEventos(data);
-
-  // Una sesión "matchea" un día de semana si es evento con esa fecha, o si es
-  // patrón semanal con ese bit en 1.
-  const matchDia = (p, d) => p.fi ? dowFromIso(p.fi) === d : (p.dw && p.dw[d] === '1');
-
-  const filtered = useMemo(()=>{
-    return sesiones.filter(p =>
-      (!sala || p.s===sala) &&
-      (!escuela || p.es===escuela) &&
-      (!jornada || p.j===jornada) &&
-      (dia==='' || matchDia(p, Number(dia)))
-    );
-  },[sesiones, sala, escuela, jornada, dia]);
-
-  const escuelas = useMemo(()=> [...new Set(sesiones.map(p=>p.es).filter(Boolean))].sort(), [sesiones]);
-  const jornadas = useMemo(()=> [...new Set(sesiones.map(p=>p.j).filter(Boolean))].sort(), [sesiones]);
-
-  // Si hay sala seleccionada, mostrar grilla semanal
-  const showWeek = !!sala;
-  const modulosUsados = useMemo(()=>{
-    if(!showWeek) return [];
-    const set = new Set();
-    filtered.forEach(p=> set.add(p.hi+'|'+p.hf));
-    return [...set].sort();
-  },[filtered, showWeek]);
-
-  const cellMap = useMemo(()=>{
-    if(!showWeek) return {};
-    const m = {};
-    filtered.forEach(p=>{
-      const slot = p.hi+'|'+p.hf;
-      if(p.fi){
-        const d = dowFromIso(p.fi);
-        (m[`${slot}__${d}`] ||= []).push(p);
-      } else if(p.dw){
-        for(let d=0;d<7;d++){
-          if(p.dw[d]==='1'){
-            (m[`${slot}__${d}`] ||= []).push(p);
-          }
-        }
-      }
-    });
-    return m;
-  },[filtered, showWeek]);
-
-  // Conteo de clases por día de la semana
   const diaCount = useMemo(()=>{
     const c = [0,0,0,0,0,0,0];
     sesiones.forEach(p => {
@@ -2352,144 +2303,46 @@ function Programacion({ data }){
   const [verifOpen, setVerifOpen] = useState(false);
 
   return (
-    <div className="stack">
-      <div className="card" style={{padding:'14px 18px'}}>
-        <div className="row between" style={{cursor:'pointer'}} onClick={()=>setVerifOpen(v=>!v)}>
-          <div>
-            <h3 style={{fontSize:14}}>📘 Cómo se leen las clases desde la SABANA <span style={{color:'var(--text-soft)',fontWeight:500,fontSize:12}}>· Click para {verifOpen?'ocultar':'ver'} detalle</span></h3>
-          </div>
-          <div className="row" style={{gap:6}}>
-            {DIA_CORTO.map((d,i) => (
-              <div key={i} style={{textAlign:'center'}}>
-                <div style={{fontSize:10,color:'var(--text-muted)',fontWeight:700}}>{d}</div>
-                <div style={{fontSize:13,fontWeight:700,color:i>=5?'var(--text-soft)':'var(--primary)'}}>{diaCount[i]}</div>
-              </div>
-            ))}
-          </div>
+    <div className="card" style={{padding:'14px 18px'}}>
+      <div className="row between" style={{cursor:'pointer'}} onClick={()=>setVerifOpen(v=>!v)}>
+        <div>
+          <h3 style={{fontSize:14}}>📘 Verificador · cómo se leen las clases <span style={{color:'var(--text-soft)',fontWeight:500,fontSize:12}}>· Click para {verifOpen?'ocultar':'ver'} detalle</span></h3>
         </div>
-        {verifOpen && (
-          <div style={{marginTop:14,paddingTop:14,borderTop:'1px solid var(--border-soft)',fontSize:13,lineHeight:1.55,color:'var(--text-muted)'}}>
-            {usaEventos ? (
-              <>
-                <p>Fuente: <b>LISTA DE RECURSOS</b> ({(data.eventos||[]).length.toLocaleString('es-CL')} sesiones por fecha) enriquecida con metadata del SABANA ({data.programacion.length.toLocaleString('es-CL')} filas con escuela/asignatura/docente). Cada sesión tiene fecha exacta y horario.</p>
-                <p style={{marginTop:8}}>El día de semana se deriva de la fecha de cada evento. Las barras muestran cuántas sesiones reales caen en cada día.</p>
-              </>
-            ) : (
-              <>
-                <p>Fuente: <b>SABANA</b> ({data.programacion.length.toLocaleString('es-CL')} filas, patrón semanal). Cada fila marca con <b>X</b> los días en que se imparte la clase (Lun…Dom), convertidos a 7 bits <code>dw</code>.</p>
-                <p style={{marginTop:8}}>Al elegir una fecha en <b>Horario semanal</b>, se calcula su día de semana y se buscan todas las clases con ese bit en 1. Importa una <b>LISTA DE RECURSOS</b> para tener fechas exactas en vez de patrones.</p>
-              </>
-            )}
-            <div style={{marginTop:10,padding:10,background:'#FBFCFD',borderRadius:8,border:'1px solid var(--border-soft)'}}>
-              <div className="row" style={{gap:14,flexWrap:'wrap'}}>
-                {DIA_NOMBRES.map((nm,i) => (
-                  <div key={i} style={{flex:1,minWidth:90}}>
-                    <div style={{fontSize:11,color:'var(--text-muted)',fontWeight:700,marginBottom:3}}>{nm}</div>
-                    <div style={{height:6,background:'#EEF2F7',borderRadius:4,overflow:'hidden'}}>
-                      <div style={{height:'100%',width:`${(diaCount[i]/maxDiaCount)*100}%`,background:i>=5?'var(--text-soft)':'var(--primary-2)'}}/>
-                    </div>
-                    <div style={{fontSize:11,marginTop:3}}>{diaCount[i].toLocaleString('es-CL')} clases</div>
-                  </div>
-                ))}
-              </div>
+        <div className="row" style={{gap:6}}>
+          {DIA_CORTO.map((d,i) => (
+            <div key={i} style={{textAlign:'center'}}>
+              <div style={{fontSize:10,color:'var(--text-muted)',fontWeight:700}}>{d}</div>
+              <div style={{fontSize:13,fontWeight:700,color:i>=5?'var(--text-soft)':'var(--primary)'}}>{diaCount[i]}</div>
             </div>
-          </div>
-        )}
+          ))}
+        </div>
       </div>
-
-      <div className="filters">
-        <div className="field">
-          <label>Sala</label>
-          <select value={sala} onChange={e=>setSala(e.target.value)}>
-            <option value="">Todas</option>
-            {data.salas.map(s=> <option key={s.codigo} value={s.codigo}>{s.codigo}</option>)}
-          </select>
-        </div>
-        <div className="field">
-          <label>Escuela</label>
-          <select value={escuela} onChange={e=>setEscuela(e.target.value)}>
-            <option value="">Todas</option>
-            {escuelas.map(e=> <option key={e} value={e}>{ESCUELAS_FULL[e]||e}</option>)}
-          </select>
-        </div>
-        <div className="field">
-          <label>Jornada</label>
-          <select value={jornada} onChange={e=>setJornada(e.target.value)}>
-            <option value="">Todas</option>
-            {jornadas.map(j=> <option key={j} value={j}>{j==='D'?'Diurno':j==='V'?'Vespertino':j}</option>)}
-          </select>
-        </div>
-        <div className="field">
-          <label>Día</label>
-          <select value={dia} onChange={e=>setDia(e.target.value)}>
-            <option value="">Todos</option>
-            {DIA_NOMBRES.map((d,i)=> <option key={i} value={i}>{d}</option>)}
-          </select>
-        </div>
-        <div style={{alignSelf:'flex-end'}} className="chip info">{filtered.length} sesiones</div>
-      </div>
-
-      {showWeek ? (
-        <div className="card">
-          <div className="card-header">
-            <div><h3>Programación semanal · {sala}</h3><div className="sub">{data.salas.find(s=>s.codigo===sala)?.nombre}</div></div>
-            <div className="legend"><span><i className="occ"/>Clase regular</span></div>
-          </div>
-          {modulosUsados.length===0 ? (
-            <div className="empty"><span className="emoji">📅</span>Sin programación para esta sala con los filtros aplicados.</div>
+      {verifOpen && (
+        <div style={{marginTop:14,paddingTop:14,borderTop:'1px solid var(--border-soft)',fontSize:13,lineHeight:1.55,color:'var(--text-muted)'}}>
+          {usaEventos ? (
+            <>
+              <p>Fuente: <b>LISTA DE RECURSOS</b> ({(data.eventos||[]).length.toLocaleString('es-CL')} sesiones por fecha) enriquecida con metadata del SABANA ({data.programacion.length.toLocaleString('es-CL')} filas con escuela/asignatura/docente). Cada sesión tiene fecha exacta y horario.</p>
+              <p style={{marginTop:8}}>El día de semana se deriva de la fecha de cada evento. Las barras muestran cuántas sesiones reales caen en cada día.</p>
+            </>
           ) : (
-            <div className="week-grid">
-              <div className="hdr">Horario</div>
-              {DIA_CORTO.slice(0,6).map(d => <div key={d} className="hdr">{d}</div>)}
-              {modulosUsados.map(slot => {
-                const [hi,hf] = slot.split('|');
-                return (
-                  <React.Fragment key={slot}>
-                    <div className="row-h">{hi}<br/>{hf}</div>
-                    {[0,1,2,3,4,5].map(d => {
-                      const items = cellMap[`${slot}__${d}`] || [];
-                      return (
-                        <div key={d} className="cell">
-                          {items.map((p,i)=>(
-                            <div key={i} className="blk acad" title={`${p.a} · ${p.d}`}>
-                              <b>{p.sc}</b><br/>{(p.a||'').slice(0,30)}
-                            </div>
-                          ))}
-                        </div>
-                      );
-                    })}
-                  </React.Fragment>
-                );
-              })}
-            </div>
+            <>
+              <p>Fuente: <b>SABANA</b> ({data.programacion.length.toLocaleString('es-CL')} filas, patrón semanal). Cada fila marca con <b>X</b> los días en que se imparte la clase (Lun…Dom), convertidos a 7 bits <code>dw</code>.</p>
+              <p style={{marginTop:8}}>Al elegir una fecha en <b>Horario semanal</b>, se calcula su día de semana y se buscan todas las clases con ese bit en 1. Importa una <b>LISTA DE RECURSOS</b> para tener fechas exactas en vez de patrones.</p>
+            </>
           )}
-        </div>
-      ) : (
-        <div className="card" style={{padding:0}}>
-          <div className="tbl-scroll">
-            <table className="tbl">
-              <thead><tr>
-                <th>Sala</th><th>Asignatura</th><th>Sección</th><th>Docente</th>
-                <th>{usaEventos ? 'Fecha' : 'Días'}</th><th>Horario</th><th>Inscritos</th>
-              </tr></thead>
-              <tbody>
-                {filtered.slice(0,400).map((p,i) => (
-                  <tr key={i}>
-                    <td><b style={{color:'var(--primary)'}}>{p.s}</b></td>
-                    <td style={{maxWidth:260}}>{p.a || p.de || ''}</td>
-                    <td className="muted">{p.sc}</td>
-                    <td>{p.d || ''}</td>
-                    <td>{p.fi
-                      ? `${DIA_CORTO[dowFromIso(p.fi)]} ${fmtFecha(p.fi)}`
-                      : (p.dw ? [...p.dw].map((b,j)=>b==='1'?DIA_CORTO[j]:null).filter(Boolean).join(' · ') : '')}</td>
-                    <td>{p.hi}–{p.hf}</td>
-                    <td>{p.i!=null ? `${p.i}/${(p.i||0)+(p.p||0)}` : '—'}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
+          <div style={{marginTop:10,padding:10,background:'#FBFCFD',borderRadius:8,border:'1px solid var(--border-soft)'}}>
+            <div className="row" style={{gap:14,flexWrap:'wrap'}}>
+              {DIA_NOMBRES.map((nm,i) => (
+                <div key={i} style={{flex:1,minWidth:90}}>
+                  <div style={{fontSize:11,color:'var(--text-muted)',fontWeight:700,marginBottom:3}}>{nm}</div>
+                  <div style={{height:6,background:'#EEF2F7',borderRadius:4,overflow:'hidden'}}>
+                    <div style={{height:'100%',width:`${(diaCount[i]/maxDiaCount)*100}%`,background:i>=5?'var(--text-soft)':'var(--primary-2)'}}/>
+                  </div>
+                  <div style={{fontSize:11,marginTop:3}}>{diaCount[i].toLocaleString('es-CL')} clases</div>
+                </div>
+              ))}
+            </div>
           </div>
-          {filtered.length>400 && <div className="muted" style={{padding:10,textAlign:'center',fontSize:12}}>Mostrando primeras 400 de {filtered.length}. Filtra para refinar.</div>}
         </div>
       )}
     </div>
@@ -3825,6 +3678,9 @@ function ImportarSabana({ data, toast, onReplace, onSeed, isCloud }){
           </div>
         </div>
       )}
+
+      {/* Verificador post-importación: sanity check del mapeo SABANA → dw */}
+      {(data.programacion||[]).length > 0 && <VerificadorSabana data={data}/>}
     </div>
   );
 }
@@ -4910,7 +4766,6 @@ function App(){
     horario:['Horario semanal','Disponibilidad física Lun-Dom × Módulos'],
     mapa:['Mapa de calor','Ocupación de la sede por módulo y día'],
     salas:['Catálogo de salas','Salas y recintos'],
-    prog:['Programación académica','SABANA · 2026·1'],
     reservas:['Reservas','Gestión y búsqueda de disponibilidad'],
     nueva:['Solicitar reserva','Nueva solicitud'],
     importar:['Importar datos','SABANA · LISTA DE RECURSOS · Jefaturas'],
@@ -4926,7 +4781,6 @@ function App(){
         {view==='dashboard' && <Dashboard data={data} reservas={reservas} user={user} db={db}/>}
         {view==='horario'   && <Horario data={data} reservas={reservas} onGoNueva={goNueva}/>}
         {view==='salas'     && <Salas data={data} user={user} toast={setToast} onCreate={createSala} onUpdate={updateSala} onDelete={deleteSala}/>}
-        {view==='prog'      && <Programacion data={data}/>}
         {view==='reservas'  && <Reservas reservas={reservas} data={data} user={user} toast={setToast} onGoNueva={goNueva} onUpdateEstado={updateReservaEstado}/>}
         {view==='nueva'     && <NuevaReserva data={data} reservas={reservas} user={user} toast={setToast} goReservas={()=>setView('reservas')} prefill={prefillNueva} onCreate={createReserva}/>}
         {view==='importar'  && <ImportarDatos data={data} toast={setToast} db={db}
