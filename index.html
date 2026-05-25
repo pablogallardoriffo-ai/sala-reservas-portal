@@ -15,10 +15,20 @@
   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
   <script src="./config.js"></script>
   <style>
-    /* === Design tokens === */
+    /* === Design tokens · sistema dual claro/oscuro estilo iOS ===
+       El tema se aplica vía atributo [data-theme] en <html>.
+       Si no hay data-theme explícito, respeta prefers-color-scheme. */
     :root{
+      /* Brand (no cambian entre temas) */
+      --brand-primary:#002A5C;
+      --brand-primary-2:#003C82;
+      --brand-accent:#FFCE00;
+      --brand-red:#E30613;
+
+      /* Modo claro (default) */
       --bg:#F4F6FA;
       --surface:#FFFFFF;
+      --surface-2:#FBFCFD;
       --sidebar:#0E1A33;
       --sidebar-2:#172649;
       --sidebar-hover:#1F2F58;
@@ -34,6 +44,7 @@
       --text-soft:#8A95AA;
       --border:#E5E9F2;
       --border-soft:#EFF2F7;
+      --kpi-bg:#FFFFFF;
       --success:#10B981;
       --success-bg:#E8F8F1;
       --warning:#F59E0B;
@@ -48,6 +59,80 @@
       --radius:10px;
       --radius-sm:6px;
       --radius-lg:16px;
+    }
+
+    /* Modo oscuro · iOS-like (negros profundos con grises elevados) */
+    :root[data-theme="dark"]{
+      --bg:#000000;
+      --surface:#1C1C1E;
+      --surface-2:#2C2C2E;
+      --sidebar:#000000;
+      --sidebar-2:#1C1C1E;
+      --sidebar-hover:#2C2C2E;
+      --sidebar-active:#FFCE00;
+      --sidebar-text:#E5E5EA;
+      --sidebar-text-muted:#8E8E93;
+      --primary:#0A84FF;
+      --primary-2:#5AC8FA;
+      --accent:#FFD60A;
+      --red:#FF453A;
+      --text:#FFFFFF;
+      --text-muted:#AEAEB2;
+      --text-soft:#8E8E93;
+      --border:#38383A;
+      --border-soft:#2C2C2E;
+      --kpi-bg:#1C1C1E;
+      --success:#30D158;
+      --success-bg:rgba(48,209,88,.16);
+      --warning:#FF9F0A;
+      --warning-bg:rgba(255,159,10,.16);
+      --danger:#FF453A;
+      --danger-bg:rgba(255,69,58,.16);
+      --info:#0A84FF;
+      --info-bg:rgba(10,132,255,.16);
+      --shadow-sm:0 1px 2px rgba(0,0,0,.5);
+      --shadow:0 1px 3px rgba(0,0,0,.5), 0 4px 12px rgba(0,0,0,.3);
+      --shadow-lg:0 10px 30px rgba(0,0,0,.6);
+    }
+
+    /* Auto: si prefiere oscuro y no hay override, usar el dark */
+    @media (prefers-color-scheme: dark){
+      :root:not([data-theme]){
+        --bg:#000000;
+        --surface:#1C1C1E;
+        --surface-2:#2C2C2E;
+        --sidebar:#000000;
+        --sidebar-2:#1C1C1E;
+        --sidebar-hover:#2C2C2E;
+        --sidebar-text:#E5E5EA;
+        --sidebar-text-muted:#8E8E93;
+        --primary:#0A84FF;
+        --primary-2:#5AC8FA;
+        --accent:#FFD60A;
+        --red:#FF453A;
+        --text:#FFFFFF;
+        --text-muted:#AEAEB2;
+        --text-soft:#8E8E93;
+        --border:#38383A;
+        --border-soft:#2C2C2E;
+        --kpi-bg:#1C1C1E;
+        --success:#30D158;
+        --success-bg:rgba(48,209,88,.16);
+        --warning:#FF9F0A;
+        --warning-bg:rgba(255,159,10,.16);
+        --danger:#FF453A;
+        --danger-bg:rgba(255,69,58,.16);
+        --info:#0A84FF;
+        --info-bg:rgba(10,132,255,.16);
+        --shadow-sm:0 1px 2px rgba(0,0,0,.5);
+        --shadow:0 1px 3px rgba(0,0,0,.5), 0 4px 12px rgba(0,0,0,.3);
+        --shadow-lg:0 10px 30px rgba(0,0,0,.6);
+      }
+    }
+
+    /* Transición suave al cambiar tema */
+    html, body, .app, .card, .kpi, .tbl, input, select, button, .topbar, .sidebar {
+      transition: background-color .25s ease, color .25s ease, border-color .25s ease;
     }
     *{box-sizing:border-box;margin:0;padding:0}
     html,body,#root{height:100%}
@@ -97,7 +182,7 @@
       border-radius:50%;
     }
     .login-side .brand{position:relative;display:flex;align-items:center;gap:14px}
-    .login-side .brand{background:#fff;padding:14px 22px;border-radius:10px;align-self:flex-start;box-shadow:0 4px 14px rgba(0,0,0,.18)}
+    .login-side .brand{background:var(--surface);padding:14px 22px;border-radius:10px;align-self:flex-start;box-shadow:0 4px 14px rgba(0,0,0,.18)}
     .login-side .brand img{height:48px;width:auto;display:block}
     .login-hero{position:relative}
     .login-hero h1{font-size:38px;font-weight:800;line-height:1.15;margin-bottom:16px}
@@ -120,7 +205,7 @@
     .field label{display:block;font-size:12px;font-weight:600;color:var(--text-muted);margin-bottom:6px;text-transform:uppercase;letter-spacing:.4px}
     .field input,.field select,.field textarea{
       width:100%;padding:11px 14px;border:1px solid var(--border);
-      border-radius:var(--radius-sm);background:#fff;color:var(--text);
+      border-radius:var(--radius-sm);background:var(--surface);color:var(--text);
       transition:border-color .15s, box-shadow .15s;
     }
     .field input:focus,.field select:focus,.field textarea:focus{
@@ -154,11 +239,11 @@
     .role-chips{display:flex;flex-wrap:wrap;gap:8px;margin-bottom:16px}
     .role-chip{
       padding:7px 12px;border-radius:999px;font-size:12px;font-weight:600;
-      background:#F2F4F8;color:var(--text-muted);cursor:pointer;border:1px solid transparent;
+      background:var(--border-soft);color:var(--text-muted);cursor:pointer;border:1px solid transparent;
     }
     .role-chip.active{background:#E8EEF8;color:var(--primary);border-color:#C4D2EA}
 
-    .login-hint{margin-top:18px;padding:12px 14px;background:#FAFBFC;border:1px dashed var(--border);border-radius:var(--radius-sm);font-size:12px;color:var(--text-muted)}
+    .login-hint{margin-top:18px;padding:12px 14px;background:var(--surface-2);border:1px dashed var(--border);border-radius:var(--radius-sm);font-size:12px;color:var(--text-muted)}
     .login-hint b{color:var(--text)}
 
     /* === App layout === */
@@ -169,7 +254,7 @@
     }
     .sb-brand{
       display:flex;align-items:center;justify-content:center;padding:18px 16px;
-      border-bottom:1px solid rgba(255,255,255,.06);background:#fff;
+      border-bottom:1px solid rgba(255,255,255,.06);background:var(--surface);
     }
     .sb-brand img{height:46px;width:auto;display:block;max-width:100%}
     .sb-sub{
@@ -225,6 +310,23 @@
     .topbar .crumbs{font-size:12px;color:var(--text-muted)}
     .topbar .right{margin-left:auto;display:flex;align-items:center;gap:14px}
 
+    /* Theme toggle (estilo iOS pill) */
+    .theme-toggle{
+      display:inline-flex;align-items:center;gap:6px;
+      padding:6px 12px;border-radius:999px;
+      background:var(--surface-2);border:1px solid var(--border);
+      color:var(--text);font-size:12px;font-weight:600;cursor:pointer;
+      transition:transform .12s ease, background .15s ease, border-color .15s ease;
+    }
+    .theme-toggle:hover{background:var(--border-soft);border-color:var(--border)}
+    .theme-toggle:active{transform:scale(0.96)}
+    .theme-icon{font-size:14px;line-height:1}
+    .theme-label{letter-spacing:.2px}
+    @media (max-width:680px){
+      .theme-label{display:none}
+      .theme-toggle{padding:6px 10px}
+    }
+
     /* Reloj institucional */
     .clock{
       display:flex;flex-direction:column;align-items:flex-end;
@@ -245,7 +347,7 @@
     }
     .search{
       position:relative;display:flex;align-items:center;
-      background:#F2F4F8;border-radius:8px;padding:8px 12px;width:280px;
+      background:var(--border-soft);border-radius:8px;padding:8px 12px;width:280px;
     }
     .search input{background:transparent;border:none;outline:none;width:100%;padding-left:8px}
     .pill{
@@ -303,11 +405,11 @@
     .tbl th{
       text-align:left;padding:10px 12px;font-size:11px;color:var(--text-muted);
       text-transform:uppercase;letter-spacing:.4px;border-bottom:1px solid var(--border-soft);
-      background:#FBFCFD;font-weight:700;
+      background:var(--surface-2);font-weight:700;
     }
     .tbl td{padding:11px 12px;border-bottom:1px solid var(--border-soft);font-size:13px;vertical-align:middle}
     .tbl tr:last-child td{border-bottom:none}
-    .tbl tr:hover td{background:#FAFBFD}
+    .tbl tr:hover td{background:var(--surface-2)}
     .tbl-scroll{overflow:auto;max-height:540px;border:1px solid var(--border-soft);border-radius:var(--radius-sm)}
     .tbl-scroll table{border-collapse:separate;border-spacing:0}
     .tbl-scroll th{position:sticky;top:0;z-index:2}
@@ -344,7 +446,7 @@
     .col-2{display:grid;grid-template-columns:1fr 1fr;gap:14px}
     .chip{
       display:inline-flex;align-items:center;gap:6px;padding:3px 10px;border-radius:999px;
-      background:#F2F4F8;font-size:11.5px;font-weight:600;color:var(--text-muted)
+      background:var(--border-soft);font-size:11.5px;font-weight:600;color:var(--text-muted)
     }
     .chip.success{background:var(--success-bg);color:var(--success)}
     .chip.warn{background:var(--warning-bg);color:var(--warning)}
@@ -393,7 +495,7 @@
       padding:10px;background:#F8FAFD;font-weight:700;font-size:12px;
       border-bottom:1px solid var(--border-soft);border-right:1px solid var(--border-soft);text-align:center;
     }
-    .week-grid .row-h{padding:8px;font-size:11px;color:var(--text-muted);border-right:1px solid var(--border-soft);border-bottom:1px solid var(--border-soft);text-align:center;background:#FBFCFD;font-weight:600}
+    .week-grid .row-h{padding:8px;font-size:11px;color:var(--text-muted);border-right:1px solid var(--border-soft);border-bottom:1px solid var(--border-soft);text-align:center;background:var(--surface-2);font-weight:600}
     .week-grid .cell{
       min-height:50px;padding:5px;border-right:1px solid var(--border-soft);border-bottom:1px solid var(--border-soft);
       display:flex;flex-direction:column;gap:3px;
@@ -412,14 +514,14 @@
     }
     .heat-tbl tbody td{border:1px solid var(--border-soft);min-width:84px}
     .heat-tbl tbody td.lab{
-      background:#FBFCFD;color:var(--text-muted);text-align:center;font-size:12px;
+      background:var(--surface-2);color:var(--text-muted);text-align:center;font-size:12px;
       font-weight:600;padding:0;
     }
     .heat-tbl tbody td.lab b{color:var(--primary);font-size:13px}
 
     /* Print: layout limpio para reportes formales */
     @media print {
-      body, html { background:#fff; color:#000 }
+      body, html { background:var(--surface); color:#000 }
       .sidebar, .topbar, .sb-user, .toast, .login-hint { display:none !important }
       .main { margin:0; padding:0 }
       .content { padding:20px }
@@ -444,7 +546,7 @@
     /* Horario físico */
     .hgrid{
       display:grid;grid-template-columns:120px repeat(7,minmax(120px,1fr));
-      border:1px solid var(--border-soft);border-radius:var(--radius);overflow:hidden;background:#fff;
+      border:1px solid var(--border-soft);border-radius:var(--radius);overflow:hidden;background:var(--surface);
       font-size:11.5px;
     }
     .hgrid .hh{
@@ -461,7 +563,7 @@
     .hgrid .mod b{display:block;font-size:13px;color:var(--text);margin-bottom:2px}
     .hgrid .cl{
       padding:6px;border-right:1px solid var(--border-soft);border-bottom:1px solid var(--border-soft);
-      min-height:54px;display:flex;flex-direction:column;gap:2px;background:#FBFCFD;cursor:default;
+      min-height:54px;display:flex;flex-direction:column;gap:2px;background:var(--surface-2);cursor:default;
       transition:background .12s;
     }
     .hgrid .cl.libre{background:#FBFEFB}
@@ -480,16 +582,16 @@
     }
 
     .week-nav{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
-    .week-nav .btn-icon{background:#EEF2F7}
+    .week-nav .btn-icon{background:var(--border-soft)}
     .week-nav .label{font-weight:700;font-size:13.5px;padding:0 8px}
 
     .seg{
-      display:inline-flex;background:#F2F4F8;border-radius:8px;padding:3px;gap:2px;
+      display:inline-flex;background:var(--border-soft);border-radius:8px;padding:3px;gap:2px;
     }
     .seg button{
       padding:6px 14px;font-size:12.5px;font-weight:600;color:var(--text-muted);border-radius:6px;
     }
-    .seg button.on{background:#fff;color:var(--text);box-shadow:0 1px 2px rgba(0,0,0,.06)}
+    .seg button.on{background:var(--surface);color:var(--text);box-shadow:0 1px 2px rgba(0,0,0,.06)}
 
     .free-card{
       background:var(--surface);border:1px solid var(--border-soft);border-radius:var(--radius);
@@ -513,11 +615,11 @@
     .state-chips{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:4px}
     .state-chip{
       display:inline-flex;align-items:center;gap:8px;padding:8px 14px;border-radius:999px;
-      background:#fff;border:1.5px solid var(--border);font-weight:600;font-size:12.5px;
+      background:var(--surface);border:1.5px solid var(--border);font-weight:600;font-size:12.5px;
       color:var(--text-muted);cursor:pointer;transition:all .12s;
     }
     .state-chip b{
-      padding:2px 8px;border-radius:999px;background:#EEF2F7;color:var(--text-muted);
+      padding:2px 8px;border-radius:999px;background:var(--border-soft);color:var(--text-muted);
       font-size:11px;min-width:22px;text-align:center;
     }
     .state-chip:hover{border-color:#C4D2EA}
@@ -551,7 +653,7 @@
 
     .time-pill{
       display:inline-flex;align-items:center;gap:4px;
-      padding:3px 8px;border-radius:6px;background:#EEF2F7;color:var(--text-muted);
+      padding:3px 8px;border-radius:6px;background:var(--border-soft);color:var(--text-muted);
       font-family:'Inter',monospace;font-size:11.5px;font-weight:600;
       font-variant-numeric:tabular-nums;
     }
@@ -566,7 +668,7 @@
       font-size:11px;font-weight:800;margin-right:8px;vertical-align:middle;
     }
     .sala-pick{
-      background:#fff;border:1.5px solid var(--border-soft);border-radius:var(--radius);
+      background:var(--surface);border:1.5px solid var(--border-soft);border-radius:var(--radius);
       padding:12px 14px;cursor:pointer;display:flex;flex-direction:column;gap:6px;
       transition:border-color .12s,box-shadow .12s,transform .12s,background .12s;
       position:relative;
@@ -1323,6 +1425,52 @@ function Login({ onLogin, db, mode, onReconfigure }){
   );
 }
 
+/* ========= THEME TOGGLE (claro/oscuro estilo iOS) =========
+   Lee el tema desde localStorage (override del usuario) o cae a la
+   preferencia del sistema. Aplica data-theme="light|dark" en <html>.
+   3 estados: light | dark | auto (sigue el sistema).
+   Persistente entre sesiones. */
+const THEME_KEY = 'duoc_portal_theme';
+const getStoredTheme = () => { try { return localStorage.getItem(THEME_KEY) || 'auto'; } catch(e){ return 'auto'; } };
+const applyTheme = (theme) => {
+  const html = document.documentElement;
+  if(theme === 'auto') html.removeAttribute('data-theme');
+  else html.setAttribute('data-theme', theme);
+  try { localStorage.setItem(THEME_KEY, theme); } catch(e){}
+};
+// Aplica el tema al cargar (antes del primer render)
+applyTheme(getStoredTheme());
+
+function ThemeToggle(){
+  const [theme, setTheme] = useState(getStoredTheme());
+  // Detectar cambio de preferencia del sistema cuando estamos en auto.
+  // matchMedia puede no existir (jsdom / navegadores muy viejos) → no-op.
+  useEffect(()=>{
+    if(typeof window.matchMedia !== 'function') return;
+    const mq = window.matchMedia('(prefers-color-scheme: dark)');
+    if(!mq?.addEventListener) return;
+    const onChange = () => { if(theme === 'auto') applyTheme('auto'); };
+    mq.addEventListener('change', onChange);
+    return () => mq.removeEventListener?.('change', onChange);
+  }, [theme]);
+
+  const cycle = () => {
+    // light → dark → auto → light…
+    const next = theme === 'light' ? 'dark' : theme === 'dark' ? 'auto' : 'light';
+    setTheme(next); applyTheme(next);
+  };
+  const icon = theme === 'light' ? '☀️' : theme === 'dark' ? '🌙' : '🖥️';
+  const label = theme === 'light' ? 'Claro' : theme === 'dark' ? 'Oscuro' : 'Auto';
+  const titulo = `Tema: ${label} (click para cambiar)`;
+
+  return (
+    <button className="theme-toggle" onClick={cycle} title={titulo} aria-label={titulo}>
+      <span className="theme-icon">{icon}</span>
+      <span className="theme-label">{label}</span>
+    </button>
+  );
+}
+
 /* ========= RELOJ INSTITUCIONAL ========= */
 function Clock(){
   const [now, setNow] = useState(new Date());
@@ -1408,6 +1556,7 @@ function Shell({ user, mode, onReconfigure, onLogout, view, setView, children, t
           </div>
           <div className="right">
             <div className="search">{I.search}<input placeholder="Buscar…" /></div>
+            <ThemeToggle/>
             <button className="btn-icon" title="Notificaciones">{I.bell}</button>
             <span className={`pill ${mode==='cloud'?'success':''}`} title={mode==='cloud'?'Datos sincronizados con Supabase':'Datos solo en este navegador'}>{mode==='cloud'?'☁ ONLINE':'💾 LOCAL'}</span>
             <span className="pill">{ROLES[user.role].badge}</span>
@@ -1766,7 +1915,7 @@ function Dashboard({ data, reservas, user, db, onGoView }){
           </div>
         </div>
         {ahora.enCurso > 0 && (
-          <div style={{marginTop:14,padding:10,background:'#FBFCFD',borderRadius:8,border:'1px solid var(--border-soft)'}}>
+          <div style={{marginTop:14,padding:10,background:'var(--surface-2)',borderRadius:8,border:'1px solid var(--border-soft)'}}>
             <div className="muted" style={{fontSize:11,fontWeight:700,textTransform:'uppercase',letterSpacing:.4,marginBottom:8}}>Algunas clases en curso ({ahora.enCurso}):</div>
             <div className="row" style={{gap:6,flexWrap:'wrap'}}>
               {ahora.enCursoLista.map((s,i) => (
@@ -1851,7 +2000,7 @@ function Dashboard({ data, reservas, user, db, onGoView }){
             { titulo:'Hoy', data: miniHeatmap.hoy },
             { titulo:'Mañana', data: miniHeatmap.man },
           ].map(({ titulo, data: arr }, dayIdx) => (
-            <div key={dayIdx} style={{padding:12,background:'#FBFCFD',border:'1px solid var(--border-soft)',borderRadius:8}}>
+            <div key={dayIdx} style={{padding:12,background:'var(--surface-2)',border:'1px solid var(--border-soft)',borderRadius:8}}>
               <div style={{fontWeight:700,fontSize:13,marginBottom:8}}>{titulo}</div>
               <div style={{display:'grid',gridTemplateColumns:'40px 1fr 40px',gap:4,alignItems:'center'}}>
                 {data.modulos.map((mod, mi) => {
@@ -1897,7 +2046,7 @@ function Dashboard({ data, reservas, user, db, onGoView }){
                   <span style={{fontSize:13}}><b style={{color:'var(--primary)'}}>{s.codigo}</b> <span className="muted" style={{fontSize:11}}>· cap {s.cap}</span></span>
                   <span style={{fontWeight:700,fontSize:13,color: s.avgUso >= 0.9 ? 'var(--danger)' : 'var(--warning)'}}>{Math.round(s.avgUso*100)}%</span>
                 </div>
-                <div style={{height:8,background:'#EEF2F7',borderRadius:6,overflow:'hidden'}}>
+                <div style={{height:8,background:'var(--border-soft)',borderRadius:6,overflow:'hidden'}}>
                   <div style={{height:'100%',width:`${Math.min(100,Math.round(s.avgUso*100))}%`,background: s.avgUso >= 0.9 ? 'var(--danger)' : 'var(--warning)'}}/>
                 </div>
               </div>
@@ -1915,7 +2064,7 @@ function Dashboard({ data, reservas, user, db, onGoView }){
                   <span style={{fontSize:13}}><b style={{color:'var(--primary)'}}>{s.codigo}</b> <span className="muted" style={{fontSize:11}}>· cap {s.cap}</span></span>
                   <span style={{fontWeight:700,fontSize:13,color:'var(--success)'}}>{Math.round(s.avgUso*100)}%</span>
                 </div>
-                <div style={{height:8,background:'#EEF2F7',borderRadius:6,overflow:'hidden'}}>
+                <div style={{height:8,background:'var(--border-soft)',borderRadius:6,overflow:'hidden'}}>
                   <div style={{height:'100%',width:`${Math.max(2,Math.round(s.avgUso*100))}%`,background:'var(--success)'}}/>
                 </div>
               </div>
@@ -1942,7 +2091,7 @@ function Dashboard({ data, reservas, user, db, onGoView }){
             </div>
 
             {/* Almacenamiento - permanente */}
-            <div style={{marginBottom:18,padding:14,background:'#FBFCFD',borderRadius:8,border:'1px solid var(--border-soft)'}}>
+            <div style={{marginBottom:18,padding:14,background:'var(--surface-2)',borderRadius:8,border:'1px solid var(--border-soft)'}}>
               <div className="row between" style={{marginBottom:8}}>
                 <div>
                   <b>💾 Almacenamiento de la base</b>
@@ -1953,7 +2102,7 @@ function Dashboard({ data, reservas, user, db, onGoView }){
                   <div className="muted" style={{fontSize:11}}>te queda {bdUso.pctLibre.toFixed(2)}% libre</div>
                 </div>
               </div>
-              <div style={{height:14,background:'#EEF2F7',borderRadius:7,overflow:'hidden',position:'relative'}}>
+              <div style={{height:14,background:'var(--border-soft)',borderRadius:7,overflow:'hidden',position:'relative'}}>
                 <div style={{height:'100%',width:`${Math.min(100,pct)}%`,background:barCol,transition:'width .3s'}}/>
               </div>
               <div className="row between" style={{marginTop:6,fontSize:11}}>
@@ -1970,7 +2119,7 @@ function Dashboard({ data, reservas, user, db, onGoView }){
             </div>
 
             {/* Recursos mensuales - resetean */}
-            <div style={{padding:14,background:'#FBFCFD',borderRadius:8,border:'1px solid var(--border-soft)'}}>
+            <div style={{padding:14,background:'var(--surface-2)',borderRadius:8,border:'1px solid var(--border-soft)'}}>
               <div className="row between" style={{marginBottom:10}}>
                 <div>
                   <b>🔄 Recursos mensuales</b>
@@ -1979,17 +2128,17 @@ function Dashboard({ data, reservas, user, db, onGoView }){
                 <span className="chip muted" style={{fontSize:11}}>Consulta tu uso real en Supabase</span>
               </div>
               <div className="grid grid-3" style={{gap:10}}>
-                <div style={{padding:'10px 12px',background:'#fff',border:'1px solid var(--border-soft)',borderRadius:6}}>
+                <div style={{padding:'10px 12px',background:'var(--surface)',border:'1px solid var(--border-soft)',borderRadius:6}}>
                   <div className="muted" style={{fontSize:10.5,fontWeight:700,textTransform:'uppercase',letterSpacing:.4}}>Egress (descarga)</div>
                   <div style={{fontSize:18,fontWeight:800}}>{bdUso.FREE_EGRESS_GB} GB/mes</div>
                   <div className="muted" style={{fontSize:11}}>~10k cargas del portal</div>
                 </div>
-                <div style={{padding:'10px 12px',background:'#fff',border:'1px solid var(--border-soft)',borderRadius:6}}>
+                <div style={{padding:'10px 12px',background:'var(--surface)',border:'1px solid var(--border-soft)',borderRadius:6}}>
                   <div className="muted" style={{fontSize:10.5,fontWeight:700,textTransform:'uppercase',letterSpacing:.4}}>Mensajes realtime</div>
                   <div style={{fontSize:18,fontWeight:800}}>{bdUso.FREE_REALTIME_MSG_M}M/mes</div>
                   <div className="muted" style={{fontSize:11}}>~660k cambios sincronizados</div>
                 </div>
-                <div style={{padding:'10px 12px',background:'#fff',border:'1px solid var(--border-soft)',borderRadius:6}}>
+                <div style={{padding:'10px 12px',background:'var(--surface)',border:'1px solid var(--border-soft)',borderRadius:6}}>
                   <div className="muted" style={{fontSize:10.5,fontWeight:700,textTransform:'uppercase',letterSpacing:.4}}>Conexiones realtime</div>
                   <div style={{fontSize:18,fontWeight:800}}>{bdUso.FREE_REALTIME_CON}</div>
                   <div className="muted" style={{fontSize:11}}>simultáneas en vivo</div>
@@ -2055,7 +2204,7 @@ function Dashboard({ data, reservas, user, db, onGoView }){
                 </div>
               </div>
             ) : (
-              <div className="card" style={{background:'#F8FAFD',borderColor:'var(--border-soft)',padding:'16px 20px',marginBottom:18}}>
+              <div className="card" style={{background:'var(--surface-2)',borderColor:'var(--border-soft)',padding:'16px 20px',marginBottom:18}}>
                 <div className="row" style={{gap:12}}>
                   <span style={{fontSize:24}}>✨</span>
                   <div>
@@ -2146,7 +2295,7 @@ function Dashboard({ data, reservas, user, db, onGoView }){
                         </td>
                         <td>
                           <div className="row" style={{gap:8}}>
-                            <div style={{flex:1,minWidth:80,height:6,background:'#EEF2F7',borderRadius:4,overflow:'hidden'}}>
+                            <div style={{flex:1,minWidth:80,height:6,background:'var(--border-soft)',borderRadius:4,overflow:'hidden'}}>
                               <div style={{height:'100%',width:`${u.slaPct}%`,background:u.slaPct>=80?'var(--success)':u.slaPct>=50?'var(--warning)':'var(--danger)'}}/>
                             </div>
                             <span className={`chip ${slaCls}`} style={{fontSize:11}}>{u.slaPct.toFixed(0)}%</span>
@@ -2175,7 +2324,7 @@ function Dashboard({ data, reservas, user, db, onGoView }){
                   <span style={{fontWeight:600,fontSize:13}}>{k}</span>
                   <span className="muted" style={{fontSize:12}}>{v}</span>
                 </div>
-                <div style={{height:8,background:'#EEF2F7',borderRadius:6,overflow:'hidden'}}>
+                <div style={{height:8,background:'var(--border-soft)',borderRadius:6,overflow:'hidden'}}>
                   <div style={{height:'100%',width:`${(v/maxEsc)*100}%`,background:'linear-gradient(90deg,var(--primary),var(--primary-2))'}}/>
                 </div>
               </div>
@@ -2200,7 +2349,7 @@ function Dashboard({ data, reservas, user, db, onGoView }){
             <div className="stack" style={{gap:8}}>
               {solicitudesProximas.length===0 && <div className="muted" style={{fontSize:13}}>Sin solicitudes para hoy ni mañana.</div>}
               {solicitudesProximas.map(r => (
-                <div key={r.id} className="row between" style={{padding:'8px 10px',background:'#FBFCFD',border:'1px solid var(--border-soft)',borderRadius:8}}>
+                <div key={r.id} className="row between" style={{padding:'8px 10px',background:'var(--surface-2)',border:'1px solid var(--border-soft)',borderRadius:8}}>
                   <div style={{minWidth:0,flex:1}}>
                     <div style={{fontWeight:600,fontSize:13}}>
                       <span style={{color:'var(--primary)'}}>{r.r}</span> · {(r.mo||'').slice(0,40)}
@@ -2687,12 +2836,12 @@ function VerificadorSabana({ data }){
               <p style={{marginTop:8}}>Al elegir una fecha en <b>Horario semanal</b>, se calcula su día de semana y se buscan todas las clases con ese bit en 1. Importa una <b>LISTA DE RECURSOS</b> para tener fechas exactas en vez de patrones.</p>
             </>
           )}
-          <div style={{marginTop:10,padding:10,background:'#FBFCFD',borderRadius:8,border:'1px solid var(--border-soft)'}}>
+          <div style={{marginTop:10,padding:10,background:'var(--surface-2)',borderRadius:8,border:'1px solid var(--border-soft)'}}>
             <div className="row" style={{gap:14,flexWrap:'wrap'}}>
               {DIA_NOMBRES.map((nm,i) => (
                 <div key={i} style={{flex:1,minWidth:90}}>
                   <div style={{fontSize:11,color:'var(--text-muted)',fontWeight:700,marginBottom:3}}>{nm}</div>
-                  <div style={{height:6,background:'#EEF2F7',borderRadius:4,overflow:'hidden'}}>
+                  <div style={{height:6,background:'var(--border-soft)',borderRadius:4,overflow:'hidden'}}>
                     <div style={{height:'100%',width:`${(diaCount[i]/maxDiaCount)*100}%`,background:i>=5?'var(--text-soft)':'var(--primary-2)'}}/>
                   </div>
                   <div style={{fontSize:11,marginTop:3}}>{diaCount[i].toLocaleString('es-CL')} clases</div>
@@ -3748,7 +3897,7 @@ function Reportes({ data, reservas }){
                       <td style={{textAlign:'right'}}><b>{r.promInscritos}</b></td>
                       <td>
                         <div className="row" style={{gap:8}}>
-                          <div style={{flex:1,minWidth:80,height:6,background:'#EEF2F7',borderRadius:4,overflow:'hidden'}}>
+                          <div style={{flex:1,minWidth:80,height:6,background:'var(--border-soft)',borderRadius:4,overflow:'hidden'}}>
                             <div style={{height:'100%',width:`${Math.min(100, Math.max(2, pct))}%`,background:color}}/>
                           </div>
                           <span style={{fontSize:11,fontWeight:700,color,minWidth:36,textAlign:'right'}}>{pct}%</span>
@@ -4675,7 +4824,7 @@ function ImportarRecursos({ data, toast, onReplace, isCloud }){
 
         {/* Barra de progreso de la subida (chunks reintentables + auto-resume) */}
         {progress && (
-          <div style={{marginTop:14,padding:14,background:'#FBFCFD',borderRadius:8,border:'1px solid var(--border-soft)'}}>
+          <div style={{marginTop:14,padding:14,background:'var(--surface-2)',borderRadius:8,border:'1px solid var(--border-soft)'}}>
             <div className="row between" style={{marginBottom:8,flexWrap:'wrap',gap:8}}>
               <div>
                 <b style={{fontSize:13}}>{progress.autoAttempt ? '🔄 Reanudando subida…' : 'Subiendo a la base de datos…'}</b>
@@ -4694,7 +4843,7 @@ function ImportarRecursos({ data, toast, onReplace, isCloud }){
                 </button>
               </div>
             </div>
-            <div style={{height:12,background:'#EEF2F7',borderRadius:6,overflow:'hidden'}}>
+            <div style={{height:12,background:'var(--border-soft)',borderRadius:6,overflow:'hidden'}}>
               <div style={{height:'100%',width:`${Math.round(progress.done/progress.total*100)}%`,background:progress.autoAttempt?'linear-gradient(90deg,var(--warning),#F5D680)':'linear-gradient(90deg,var(--primary),var(--primary-2))',transition:'width .3s'}}/>
             </div>
             <div className="muted" style={{fontSize:11,marginTop:6}}>
@@ -5560,7 +5709,7 @@ class ErrorBoundary extends React.Component {
             </div>
             <details style={{marginBottom:14,fontSize:11,color:'var(--text-muted)'}}>
               <summary style={{cursor:'pointer'}}>Detalle técnico</summary>
-              <pre style={{whiteSpace:'pre-wrap',marginTop:8,padding:10,background:'#FBFCFD',border:'1px solid var(--border-soft)',borderRadius:6,maxHeight:260,overflow:'auto'}}>{stack}</pre>
+              <pre style={{whiteSpace:'pre-wrap',marginTop:8,padding:10,background:'var(--surface-2)',border:'1px solid var(--border-soft)',borderRadius:6,maxHeight:260,overflow:'auto'}}>{stack}</pre>
             </details>
             <div className="row" style={{gap:8}}>
               <button className="btn btn-primary" onClick={this.reload}>Recargar página</button>
