@@ -417,6 +417,23 @@
     }
     .heat-tbl tbody td.lab b{color:var(--primary);font-size:13px}
 
+    /* Print: layout limpio para reportes formales */
+    @media print {
+      body, html { background:#fff; color:#000 }
+      .sidebar, .topbar, .sb-user, .toast, .login-hint { display:none !important }
+      .main { margin:0; padding:0 }
+      .content { padding:20px }
+      .card { box-shadow:none; border:1px solid #ddd; break-inside:avoid; page-break-inside:avoid }
+      .no-print-actions .card-header > .row:last-child { display:none !important }
+      .tbl-scroll { max-height:none !important; overflow:visible !important }
+      table { break-inside:auto }
+      tr { break-inside:avoid }
+      thead { display:table-header-group }
+      a[href]:after { content:'' }
+      .print-header { display:block !important; margin-bottom:20px; padding-bottom:10px; border-bottom:2px solid var(--primary) }
+    }
+    .print-header { display:none }
+
     .toast{
       position:fixed;bottom:24px;right:24px;z-index:80;background:#0E1A33;color:#fff;
       padding:12px 18px;border-radius:var(--radius);box-shadow:var(--shadow-lg);font-size:13px;
@@ -3385,52 +3402,421 @@ function Usuarios({ users, toast, onCreate, onUpdate, onDelete }){
   );
 }
 
-/* ========= REPORTES ========= */
+/* ========= REPORTES =========
+   4 análisis sobre sesiones (LISTA DE RECURSOS enriquecida con SABANA):
+   - Análisis por escuela: carga, alumnos, salas, top sala
+   - Carga docente: horas, secciones, alumnos
+   - Salas subutilizadas: capacidad vs ocupación promedio
+   - Ocupación por semana del semestre (heatmap 18 semanas × 6 días)
+   Cada tabla tiene botones Exportar CSV / Imprimir. */
 function Reportes({ data, reservas }){
-  const topSalas = useMemo(()=>{
-    const m = {};
-    // Prefiere eventos (sesiones por fecha exacta); si no hay, cuenta patrones
-    // semanales de programacion.
-    const fuente = hasEventos(data) ? data.eventos : data.programacion;
-    fuente.forEach(p => { m[p.s] = (m[p.s]||0)+1; });
-    reservas.forEach(r => { m[r.r] = (m[r.r]||0)+0.5; });
-    return Object.entries(m).sort((a,b)=>b[1]-a[1]).slice(0,15);
-  },[data, reservas]);
+  const [tab, setTab] = useState('escuela');
+  const usaEventos = hasEventos(data);
+  const sesiones = useMemo(()=> sesionesConsolidadas(data), [data]);
 
-  const reservasPorEstado = useMemo(()=>{
-    const m = {aprobada:0,pendiente:0,rechazada:0};
-    reservas.forEach(r => { m[r.es]=(m[r.es]||0)+1; });
-    return m;
-  },[reservas]);
+  // === Análisis por escuela ===
+  const reporteEscuela = useMemo(()=>{
+    const m = new Map();  // escuela → {sesiones, alumnos, salas:Set, secciones:Set, salasMap}
+    const seen = new Set();
+    for(const s of sesiones){
+      const k = `${s.sc||''}|${s.s||''}|${s.hi}|${s.hf}|${s.fi||s.dw||''}`;
+      if(seen.has(k)) continue;
+      seen.add(k);
+      const es = s.es || 'Sin escuela';
+      if(!m.has(es)) m.set(es, { sesiones:0, alumnos:0, salas:new Set(), secciones:new Set(), salasMap:new Map() });
+      const e = m.get(es);
+      e.sesiones++;
+      e.alumnos += Number(s.i) || 0;
+      if(s.s){
+        e.salas.add(s.s);
+        e.salasMap.set(s.s, (e.salasMap.get(s.s)||0) + 1);
+      }
+      if(s.sc) e.secciones.add(s.sc);
+    }
+    return [...m.entries()].map(([codigo, e]) => {
+      const topSala = [...e.salasMap.entries()].sort((a,b)=> b[1]-a[1])[0];
+      return {
+        codigo,
+        nombre: ESCUELAS_FULL[codigo] || codigo,
+        sesiones: e.sesiones,
+        alumnos: e.alumnos,
+        secciones: e.secciones.size,
+        salas: e.salas.size,
+        topSala: topSala ? `${topSala[0]} (${topSala[1]})` : '—',
+        promPorSesion: e.sesiones > 0 ? Math.round(e.alumnos / e.sesiones) : 0,
+      };
+    }).sort((a,b)=> b.alumnos - a.alumnos);
+  }, [sesiones]);
 
-  const max = Math.max(1, ...topSalas.map(x=>x[1]));
+  // === Carga docente ===
+  const reporteDocentes = useMemo(()=>{
+    const m = new Map();  // docente → stats
+    const seen = new Set();
+    for(const s of sesiones){
+      if(!s.d) continue;
+      const k = `${s.sc||''}|${s.s||''}|${s.hi}|${s.hf}|${s.fi||s.dw||''}`;
+      if(seen.has(k)) continue;
+      seen.add(k);
+      if(!m.has(s.d)) m.set(s.d, { sesiones:0, alumnos:0, salas:new Set(), secciones:new Set(), escuela:s.es });
+      const e = m.get(s.d);
+      e.sesiones++;
+      e.alumnos += Number(s.i) || 0;
+      if(s.s) e.salas.add(s.s);
+      if(s.sc) e.secciones.add(s.sc);
+    }
+    return [...m.entries()].map(([nombre, e]) => ({
+      nombre,
+      escuela: ESCUELAS_FULL[e.escuela] || e.escuela || '—',
+      sesiones: e.sesiones,
+      alumnos: e.alumnos,
+      secciones: e.secciones.size,
+      salas: e.salas.size,
+    })).sort((a,b)=> b.sesiones - a.sesiones);
+  }, [sesiones]);
+
+  // === Salas subutilizadas ===
+  // Calcula uso promedio (inscritos / capacidad) por sala. Tabla incluye
+  // todas las salas con datos para que se pueda exportar el ranking entero.
+  const reporteSalas = useMemo(()=>{
+    const capBySala = new Map(data.salas.map(s => [s.codigo, s.capacidad||0]));
+    const stats = new Map();  // codigo → {ratios:[], sesiones, alumnos}
+    const seen = new Set();
+    for(const s of sesiones){
+      if(!s.s) continue;
+      const k = `${s.sc||''}|${s.s}|${s.hi}|${s.hf}|${s.fi||s.dw||''}`;
+      if(seen.has(k)) continue;
+      seen.add(k);
+      const cap = capBySala.get(s.s) || 0;
+      const ins = Number(s.i) || 0;
+      if(!stats.has(s.s)) stats.set(s.s, { ratios:[], sesiones:0, alumnos:0 });
+      const x = stats.get(s.s);
+      x.sesiones++;
+      x.alumnos += ins;
+      if(cap > 0 && ins > 0) x.ratios.push(ins / cap);
+    }
+    const salaInfo = new Map(data.salas.map(s => [s.codigo, s]));
+    return [...stats.entries()].map(([codigo, x]) => {
+      const info = salaInfo.get(codigo) || {};
+      const avgUso = x.ratios.length ? x.ratios.reduce((a,b)=>a+b,0) / x.ratios.length : 0;
+      return {
+        codigo,
+        nombre: info.nombre || codigo,
+        tipo: info.tipo || '—',
+        capacidad: info.capacidad || 0,
+        sesiones: x.sesiones,
+        alumnos: x.alumnos,
+        promInscritos: x.sesiones > 0 ? Math.round(x.alumnos / x.sesiones) : 0,
+        avgUso,
+      };
+    }).filter(x => x.capacidad > 0).sort((a,b)=> a.avgUso - b.avgUso);
+  }, [data, sesiones]);
+
+  // === Ocupación por semana del semestre ===
+  const reporteSemanas = useMemo(()=>{
+    if(!usaEventos) return null;
+    const fechas = [...new Set(data.eventos.map(e=>e.fi).filter(Boolean))].sort();
+    if(!fechas.length) return null;
+    const first = new Date(getMonday(fechas[0]));
+    const last  = new Date(fechas[fechas.length-1]+'T00:00:00');
+    const semanas = [];
+    let cur = new Date(first);
+    let n = 1;
+    while(cur <= last){
+      semanas.push({ num:n++, lunes:isoDate(cur), domingo:isoDate(addDays(cur, 6)) });
+      cur = addDays(cur, 7);
+    }
+    const sabanaIdx = buildSabanaIndex(data.programacion);
+    const grid = semanas.map(()=> [0,0,0,0,0,0]);  // Lun-Sab
+    const totales = semanas.map(()=> 0);
+    const seen = new Set();
+    for(const ev of data.eventos){
+      const k = `${ev.sc||''}|${ev.s||''}|${ev.hi}|${ev.hf}|${ev.fi||''}`;
+      if(seen.has(k)) continue;
+      seen.add(k);
+      const meta = sabanaIdx.get(secCodeFrom(ev.sc));
+      const ins = Number(meta?.i) || 0;
+      if(!ins) continue;
+      const semIdx = semanas.findIndex(w => ev.fi >= w.lunes && ev.fi <= w.domingo);
+      if(semIdx < 0) continue;
+      const dw = dowFromIso(ev.fi);
+      if(dw >= 6) continue;  // skip domingo
+      // contar cuántos módulos cubre
+      let cubre = 0;
+      for(const mod of data.modulos){
+        if(moduleInTimeRange(mod.num, ev.hi, ev.hf, data.modulos)) cubre++;
+      }
+      grid[semIdx][dw] += ins * cubre;
+      totales[semIdx] += ins * cubre;
+    }
+    const flat = grid.flat();
+    const max = Math.max(1, ...flat);
+    return { semanas, grid, totales, max };
+  }, [data, usaEventos]);
+
+  // === Helpers de exportación ===
+  const toCsv = (rows, headers) => {
+    const escape = (s) => {
+      const str = String(s ?? '');
+      return /[",\n;]/.test(str) ? `"${str.replace(/"/g, '""')}"` : str;
+    };
+    return [
+      headers.map(h => escape(h.label)).join(';'),
+      ...rows.map(r => headers.map(h => escape(typeof h.value==='function' ? h.value(r) : r[h.key])).join(';'))
+    ].join('\n');
+  };
+  const downloadCsv = (name, csv) => {
+    const blob = new Blob(['﻿'+csv], { type:'text/csv;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url; a.download = `${name}_${new Date().toISOString().slice(0,10)}.csv`;
+    document.body.appendChild(a); a.click(); a.remove();
+    URL.revokeObjectURL(url);
+  };
+  const imprimir = () => window.print();
+
+  // Headers de cada reporte (configurables para CSV y tabla)
+  const HEADERS = {
+    escuela: [
+      { key:'codigo',       label:'Código' },
+      { key:'nombre',       label:'Escuela' },
+      { key:'sesiones',     label:'Sesiones' },
+      { key:'secciones',    label:'Secciones' },
+      { key:'salas',        label:'Salas distintas' },
+      { key:'alumnos',      label:'Alumnos·módulo' },
+      { key:'promPorSesion',label:'Prom. inscritos/sesión' },
+      { key:'topSala',      label:'Top sala' },
+    ],
+    docente: [
+      { key:'nombre',    label:'Docente' },
+      { key:'escuela',   label:'Escuela' },
+      { key:'sesiones',  label:'Sesiones' },
+      { key:'secciones', label:'Secciones' },
+      { key:'salas',     label:'Salas distintas' },
+      { key:'alumnos',   label:'Alumnos atendidos' },
+    ],
+    salas: [
+      { key:'codigo',        label:'Código' },
+      { key:'nombre',        label:'Sala' },
+      { key:'tipo',          label:'Tipo' },
+      { key:'capacidad',     label:'Capacidad' },
+      { key:'sesiones',      label:'Sesiones' },
+      { key:'promInscritos', label:'Prom. inscritos' },
+      { key:'avgUso',        label:'% uso promedio', value:(r)=> `${Math.round(r.avgUso*100)}%` },
+    ],
+  };
+
+  const tabs = [
+    { key:'escuela', label:'🏛 Por escuela', count: reporteEscuela.length },
+    { key:'docente', label:'👨‍🏫 Carga docente', count: reporteDocentes.length },
+    { key:'salas',   label:'🏫 Salas subutilizadas', count: reporteSalas.length },
+    { key:'semana',  label:'📅 Por semana', count: reporteSemanas?.semanas?.length || 0, disabled: !reporteSemanas },
+  ];
 
   return (
-    <div className="grid grid-2">
-      <div className="card">
-        <div className="card-header"><div><h3>Salas más utilizadas</h3><div className="sub">{hasEventos(data) ? 'LISTA DE RECURSOS' : 'SABANA'} + reservas</div></div></div>
-        <div className="stack" style={{gap:8}}>
-          {topSalas.map(([k,v])=>(
-            <div key={k}>
-              <div className="row between" style={{marginBottom:4}}>
-                <span style={{fontWeight:600,fontSize:13}}>{k}</span>
-                <span className="muted" style={{fontSize:12}}>{Math.round(v)}</span>
-              </div>
-              <div style={{height:8,background:'#EEF2F7',borderRadius:6,overflow:'hidden'}}>
-                <div style={{height:'100%',width:`${(v/max)*100}%`,background:'linear-gradient(90deg,var(--primary-2),#5A8FE0)'}}/>
-              </div>
+    <div className="stack">
+      {/* Encabezado solo visible al imprimir */}
+      <div className="print-header">
+        <div style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}>
+          <div>
+            <div style={{fontSize:11,color:'#666',textTransform:'uppercase',letterSpacing:.6,fontWeight:700}}>Duoc UC · Sede Viña del Mar</div>
+            <div style={{fontSize:20,fontWeight:800,color:'#003C82',marginTop:4}}>
+              {tab==='escuela' && 'Reporte · Análisis por escuela'}
+              {tab==='docente' && 'Reporte · Carga docente'}
+              {tab==='salas'   && 'Reporte · Salas subutilizadas'}
+              {tab==='semana'  && 'Reporte · Ocupación por semana del semestre'}
             </div>
+            <div style={{fontSize:11,color:'#888',marginTop:2}}>Portal de Salas · 2026·1</div>
+          </div>
+          <div style={{fontSize:11,color:'#666',textAlign:'right'}}>
+            Generado: {new Date().toLocaleDateString('es-CL',{day:'2-digit',month:'long',year:'numeric'})} · {new Date().toLocaleTimeString('es-CL',{hour:'2-digit',minute:'2-digit'})}
+          </div>
+        </div>
+      </div>
+
+      {/* Tabs */}
+      <div className="card" style={{padding:0,overflow:'hidden'}}>
+        <div className="row" style={{borderBottom:'1px solid var(--border-soft)',flexWrap:'wrap'}}>
+          {tabs.map(t => (
+            <button key={t.key} onClick={()=>!t.disabled && setTab(t.key)} disabled={t.disabled}
+              style={{
+                flex:'1 1 180px',padding:'14px 16px',
+                background:tab===t.key?'#fff':'#FBFCFD',border:'none',
+                borderRight:'1px solid var(--border-soft)',
+                borderBottom: tab===t.key?'3px solid var(--primary-2)':'3px solid transparent',
+                textAlign:'left',cursor:t.disabled?'not-allowed':'pointer',
+                opacity:t.disabled?0.45:1
+              }}>
+              <div style={{fontSize:14,fontWeight:700,color: tab===t.key?'var(--primary)':'var(--text)'}}>{t.label}</div>
+              <div style={{fontSize:11,color:'var(--text-muted)',marginTop:2}}>
+                {t.disabled ? 'Requiere LISTA DE RECURSOS' : `${t.count.toLocaleString('es-CL')} filas`}
+              </div>
+            </button>
           ))}
         </div>
       </div>
-      <div className="card">
-        <div className="card-header"><div><h3>Estado de reservas</h3></div></div>
-        <div className="grid grid-3">
-          <div className="kpi kpi-green"><span className="label">Aprobadas</span><span className="value">{reservasPorEstado.aprobada}</span></div>
-          <div className="kpi kpi-amber"><span className="label">Pendientes</span><span className="value">{reservasPorEstado.pendiente}</span></div>
-          <div className="kpi kpi-red"><span className="label">Rechazadas</span><span className="value">{reservasPorEstado.rechazada}</span></div>
+
+      {tab==='escuela' && (
+        <div className="card no-print-actions">
+          <div className="card-header">
+            <div><h3>Análisis por escuela</h3><div className="sub">Carga académica consolidada · {reporteEscuela.length} escuelas · ordenadas por alumnos·módulo</div></div>
+            <div className="row" style={{gap:8}}>
+              <button className="btn btn-ghost" style={{fontSize:12,padding:'6px 12px'}} onClick={()=>downloadCsv('analisis_escuela', toCsv(reporteEscuela, HEADERS.escuela))}>📥 CSV</button>
+              <button className="btn btn-ghost" style={{fontSize:12,padding:'6px 12px'}} onClick={imprimir}>🖨 Imprimir</button>
+            </div>
+          </div>
+          <div className="tbl-scroll" style={{maxHeight:600}}>
+            <table className="tbl">
+              <thead><tr>{HEADERS.escuela.map(h => <th key={h.key} style={{textAlign:h.key==='nombre'||h.key==='topSala'||h.key==='codigo'?'left':'right'}}>{h.label}</th>)}</tr></thead>
+              <tbody>
+                {reporteEscuela.map(r => (
+                  <tr key={r.codigo}>
+                    <td><b style={{color:'var(--primary)'}}>{r.codigo}</b></td>
+                    <td>{r.nombre}</td>
+                    <td style={{textAlign:'right'}}>{r.sesiones.toLocaleString('es-CL')}</td>
+                    <td style={{textAlign:'right'}}>{r.secciones.toLocaleString('es-CL')}</td>
+                    <td style={{textAlign:'right'}}>{r.salas}</td>
+                    <td style={{textAlign:'right'}}><b>{r.alumnos.toLocaleString('es-CL')}</b></td>
+                    <td style={{textAlign:'right'}}>{r.promPorSesion}</td>
+                    <td>{r.topSala}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
         </div>
-      </div>
+      )}
+
+      {tab==='docente' && (
+        <div className="card no-print-actions">
+          <div className="card-header">
+            <div><h3>Carga docente</h3><div className="sub">{reporteDocentes.length} docentes · ordenados por sesiones (mayor a menor)</div></div>
+            <div className="row" style={{gap:8}}>
+              <button className="btn btn-ghost" style={{fontSize:12,padding:'6px 12px'}} onClick={()=>downloadCsv('carga_docente', toCsv(reporteDocentes, HEADERS.docente))}>📥 CSV</button>
+              <button className="btn btn-ghost" style={{fontSize:12,padding:'6px 12px'}} onClick={imprimir}>🖨 Imprimir</button>
+            </div>
+          </div>
+          <div className="tbl-scroll" style={{maxHeight:600}}>
+            <table className="tbl">
+              <thead><tr>{HEADERS.docente.map(h => <th key={h.key} style={{textAlign:h.key==='nombre'||h.key==='escuela'?'left':'right'}}>{h.label}</th>)}</tr></thead>
+              <tbody>
+                {reporteDocentes.slice(0, 500).map((r,i) => (
+                  <tr key={i}>
+                    <td>{r.nombre}</td>
+                    <td>{r.escuela}</td>
+                    <td style={{textAlign:'right'}}><b>{r.sesiones.toLocaleString('es-CL')}</b></td>
+                    <td style={{textAlign:'right'}}>{r.secciones}</td>
+                    <td style={{textAlign:'right'}}>{r.salas}</td>
+                    <td style={{textAlign:'right'}}>{r.alumnos.toLocaleString('es-CL')}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          {reporteDocentes.length > 500 && <div className="muted" style={{padding:10,textAlign:'center',fontSize:12}}>Mostrando primeros 500 de {reporteDocentes.length}. Exporta CSV para tener todos.</div>}
+        </div>
+      )}
+
+      {tab==='salas' && (
+        <div className="card no-print-actions">
+          <div className="card-header">
+            <div><h3>Salas subutilizadas</h3><div className="sub">{reporteSalas.length} salas con capacidad &gt; 0 · ordenadas por menor % de uso (más subutilizadas arriba)</div></div>
+            <div className="row" style={{gap:8}}>
+              <button className="btn btn-ghost" style={{fontSize:12,padding:'6px 12px'}} onClick={()=>downloadCsv('salas_subutilizadas', toCsv(reporteSalas, HEADERS.salas))}>📥 CSV</button>
+              <button className="btn btn-ghost" style={{fontSize:12,padding:'6px 12px'}} onClick={imprimir}>🖨 Imprimir</button>
+            </div>
+          </div>
+          <div className="tbl-scroll" style={{maxHeight:600}}>
+            <table className="tbl">
+              <thead><tr>
+                <th>Código</th><th>Sala</th><th>Tipo</th>
+                <th style={{textAlign:'right'}}>Cap.</th>
+                <th style={{textAlign:'right'}}>Sesiones</th>
+                <th style={{textAlign:'right'}}>Prom. inscritos</th>
+                <th>% uso (visual)</th>
+              </tr></thead>
+              <tbody>
+                {reporteSalas.map(r => {
+                  const pct = Math.round(r.avgUso*100);
+                  const color = pct >= 80 ? 'var(--danger)' : pct >= 50 ? 'var(--warning)' : 'var(--success)';
+                  return (
+                    <tr key={r.codigo}>
+                      <td><b style={{color:'var(--primary)'}}>{r.codigo}</b></td>
+                      <td style={{maxWidth:240}}>{r.nombre}</td>
+                      <td>{r.tipo}</td>
+                      <td style={{textAlign:'right'}}>{r.capacidad}</td>
+                      <td style={{textAlign:'right'}}>{r.sesiones}</td>
+                      <td style={{textAlign:'right'}}><b>{r.promInscritos}</b></td>
+                      <td>
+                        <div className="row" style={{gap:8}}>
+                          <div style={{flex:1,minWidth:80,height:6,background:'#EEF2F7',borderRadius:4,overflow:'hidden'}}>
+                            <div style={{height:'100%',width:`${Math.min(100, Math.max(2, pct))}%`,background:color}}/>
+                          </div>
+                          <span style={{fontSize:11,fontWeight:700,color,minWidth:36,textAlign:'right'}}>{pct}%</span>
+                        </div>
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+
+      {tab==='semana' && reporteSemanas && (
+        <div className="card no-print-actions" style={{padding:0,overflow:'hidden'}}>
+          <div className="card-header" style={{padding:'14px 18px'}}>
+            <div><h3>Ocupación por semana del semestre</h3><div className="sub">{reporteSemanas.semanas.length} semanas · Lun-Sáb · alumno·módulo por celda</div></div>
+            <div className="row" style={{gap:8}}>
+              <button className="btn btn-ghost" style={{fontSize:12,padding:'6px 12px'}} onClick={()=>{
+                const rows = reporteSemanas.semanas.map((w,i)=>({
+                  semana:w.num, lunes:w.lunes, domingo:w.domingo,
+                  lun:reporteSemanas.grid[i][0], mar:reporteSemanas.grid[i][1], mie:reporteSemanas.grid[i][2],
+                  jue:reporteSemanas.grid[i][3], vie:reporteSemanas.grid[i][4], sab:reporteSemanas.grid[i][5],
+                  total:reporteSemanas.totales[i],
+                }));
+                downloadCsv('ocupacion_semanas', toCsv(rows, [
+                  {key:'semana',label:'Semana'},
+                  {key:'lunes',label:'Lunes (fecha)'},
+                  {key:'domingo',label:'Domingo (fecha)'},
+                  {key:'lun',label:'Lun'},{key:'mar',label:'Mar'},{key:'mie',label:'Mié'},
+                  {key:'jue',label:'Jue'},{key:'vie',label:'Vie'},{key:'sab',label:'Sáb'},
+                  {key:'total',label:'Total semana'},
+                ]));
+              }}>📥 CSV</button>
+              <button className="btn btn-ghost" style={{fontSize:12,padding:'6px 12px'}} onClick={imprimir}>🖨 Imprimir</button>
+            </div>
+          </div>
+          <div style={{overflowX:'auto'}}>
+            <table className="heat-tbl">
+              <thead><tr>
+                <th style={{width:50}}>Sem</th>
+                <th style={{width:130}}>Rango</th>
+                {DIA_NOMBRES.slice(0,6).map(d => <th key={d}>{d.toUpperCase()}</th>)}
+                <th style={{width:90}}>Total</th>
+              </tr></thead>
+              <tbody>
+                {reporteSemanas.semanas.map((w,i) => (
+                  <tr key={w.num}>
+                    <td className="lab"><b>S{w.num}</b></td>
+                    <td className="lab" style={{fontSize:11}}>{new Date(w.lunes+'T00:00:00').toLocaleDateString('es-CL',{day:'2-digit',month:'short'})}–{new Date(w.domingo+'T00:00:00').toLocaleDateString('es-CL',{day:'2-digit',month:'short'})}</td>
+                    {reporteSemanas.grid[i].map((v, dw) => {
+                      if(v === 0) return <td key={dw} style={{background:'#F0FDF4',textAlign:'center',color:'#999'}}>0</td>;
+                      const pct = v / reporteSemanas.max;
+                      const lerp = (a,b,t)=> Math.round(a+(b-a)*t);
+                      let r,g,b;
+                      if(pct < 0.5){ const t = pct/0.5; r=lerp(34,251,t); g=lerp(197,191,t); b=lerp(94,36,t); }
+                      else { const t = (pct-0.5)/0.5; r=lerp(251,220,t); g=lerp(191,38,t); b=lerp(36,38,t); }
+                      return <td key={dw} style={{background:`rgb(${r},${g},${b})`,color:pct>0.45?'#fff':'#1A1A1A',textAlign:'center',fontWeight:700}}>{v.toLocaleString('es-CL')}</td>;
+                    })}
+                    <td className="lab" style={{textAlign:'right',fontWeight:700,color:'var(--primary)'}}>{reporteSemanas.totales[i].toLocaleString('es-CL')}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
