@@ -97,39 +97,65 @@
     }
 
     /* Auto: si prefiere oscuro y no hay override, usar el dark */
-    @media (prefers-color-scheme: dark){
-      :root:not([data-theme]){
-        --bg:#000000;
-        --surface:#1C1C1E;
-        --surface-2:#2C2C2E;
-        --sidebar:#000000;
-        --sidebar-2:#1C1C1E;
-        --sidebar-hover:#2C2C2E;
-        --sidebar-text:#E5E5EA;
-        --sidebar-text-muted:#8E8E93;
-        --primary:#0A84FF;
-        --primary-2:#5AC8FA;
-        --accent:#FFD60A;
-        --red:#FF453A;
-        --text:#FFFFFF;
-        --text-muted:#AEAEB2;
-        --text-soft:#8E8E93;
-        --border:#38383A;
-        --border-soft:#2C2C2E;
-        --kpi-bg:#1C1C1E;
-        --success:#30D158;
-        --success-bg:rgba(48,209,88,.16);
-        --warning:#FF9F0A;
-        --warning-bg:rgba(255,159,10,.16);
-        --danger:#FF453A;
-        --danger-bg:rgba(255,69,58,.16);
-        --info:#0A84FF;
-        --info-bg:rgba(10,132,255,.16);
-        --shadow-sm:0 1px 2px rgba(0,0,0,.5);
-        --shadow:0 1px 3px rgba(0,0,0,.5), 0 4px 12px rgba(0,0,0,.3);
-        --shadow-lg:0 10px 30px rgba(0,0,0,.6);
-      }
+    /* (El JS setea siempre data-theme="light|dark" según preferencia del
+       usuario o del sistema. No necesitamos @media para auto.) */
+
+    /* Overrides específicos en modo oscuro para elementos con colores
+       hardcoded que rompen el contraste o se ven mal. */
+    :root[data-theme="dark"] .tbl thead th,
+    :root[data-theme="dark"] .week-grid .hdr,
+    :root[data-theme="dark"] .week-grid .row-h,
+    :root[data-theme="dark"] .upload-zone,
+    :root[data-theme="dark"] .filters {
+      background:var(--surface-2);
+      color:var(--text);
     }
+    :root[data-theme="dark"] .tbl tbody td{color:var(--text)}
+    :root[data-theme="dark"] .tbl tbody tr:hover td{background:var(--border-soft)}
+    :root[data-theme="dark"] .hgrid .cl{background:var(--surface)}
+    :root[data-theme="dark"] .hgrid .cl.libre{background:rgba(48,209,88,.06)}
+    :root[data-theme="dark"] .hgrid .cl.libre:hover{background:rgba(48,209,88,.14)}
+    :root[data-theme="dark"] .hgrid .cl.weekend{background:var(--surface-2)}
+    :root[data-theme="dark"] .countdown.ok{background:rgba(48,209,88,.16);color:#30D158;border-color:rgba(48,209,88,.32)}
+    :root[data-theme="dark"] .countdown.warning{background:rgba(255,159,10,.16);color:#FF9F0A;border-color:rgba(255,159,10,.32)}
+    :root[data-theme="dark"] .countdown.danger,
+    :root[data-theme="dark"] .countdown.critical{background:rgba(255,69,58,.16);color:#FF453A;border-color:rgba(255,69,58,.32)}
+    :root[data-theme="dark"] .countdown.expired{background:var(--surface-2);color:#FF453A;border-color:rgba(255,69,58,.4)}
+    :root[data-theme="dark"] .time-pill.fast{background:rgba(48,209,88,.16);color:#30D158}
+    :root[data-theme="dark"] .time-pill.slow{background:rgba(255,159,10,.16);color:#FF9F0A}
+    :root[data-theme="dark"] .time-pill.over{background:rgba(255,69,58,.16);color:#FF453A}
+    :root[data-theme="dark"] .blk.acad,
+    :root[data-theme="dark"] .blk-ac{background:#0A84FF;color:#fff}
+    :root[data-theme="dark"] .legend .lib,
+    :root[data-theme="dark"] .legend .occ{background:var(--surface-2)}
+    :root[data-theme="dark"] *::-webkit-scrollbar-thumb{background:#48484A}
+    :root[data-theme="dark"] *::-webkit-scrollbar-thumb:hover{background:#636366}
+    /* Inputs en oscuro: bg superficie elevada, no blanco */
+    :root[data-theme="dark"] input:not([type="checkbox"]):not([type="radio"]),
+    :root[data-theme="dark"] select,
+    :root[data-theme="dark"] textarea{
+      background:var(--surface-2);color:var(--text);border-color:var(--border);
+    }
+    :root[data-theme="dark"] input::placeholder{color:var(--text-soft)}
+    /* Banners de cards con fondo claro: tonificar a oscuro */
+    :root[data-theme="dark"] .card[style*="background: rgb(255, 251, 234)"],
+    :root[data-theme="dark"] .card[style*="background:#FFFBEA"]{
+      background:rgba(255,159,10,.10) !important;border-color:rgba(255,159,10,.3) !important;
+    }
+    :root[data-theme="dark"] .card[style*="background: rgb(239, 252, 245)"],
+    :root[data-theme="dark"] .card[style*="background:#EFFCF5"],
+    :root[data-theme="dark"] .card[style*="background: rgb(246, 252, 248)"],
+    :root[data-theme="dark"] .card[style*="background:#F6FCF8"]{
+      background:rgba(48,209,88,.10) !important;border-color:rgba(48,209,88,.3) !important;
+    }
+    :root[data-theme="dark"] .card[style*="background: rgb(234, 242, 254)"],
+    :root[data-theme="dark"] .card[style*="background:#EAF2FE"],
+    :root[data-theme="dark"] div[style*="background:#EAF2FE"]{
+      background:rgba(10,132,255,.10) !important;border-color:rgba(10,132,255,.3) !important;
+    }
+    /* Bloque celeste del snapshot (Importar LISTA DE RECURSOS) */
+    :root[data-theme="dark"] div[style*="C4D2EA"]{border-color:rgba(10,132,255,.3) !important}
+    /* Encabezado de impresión (print-header) — solo se ve en impresión, irrelevante en oscuro */
 
     /* Transición suave al cambiar tema */
     html, body, .app, .card, .kpi, .tbl, input, select, button, .topbar, .sidebar {
@@ -1570,13 +1596,16 @@ function Login({ onLogin, db, mode, onReconfigure }){
    Persistente entre sesiones. */
 const THEME_KEY = 'duoc_portal_theme';
 const getStoredTheme = () => { try { return localStorage.getItem(THEME_KEY) || 'auto'; } catch(e){ return 'auto'; } };
+const prefersDark = () => typeof window.matchMedia === 'function' && window.matchMedia('(prefers-color-scheme: dark)').matches;
+// data-theme siempre tiene el tema EFECTIVO (light/dark). En auto, se
+// resuelve a la preferencia del sistema. La preferencia del usuario
+// (light/dark/auto) queda en localStorage por separado.
 const applyTheme = (theme) => {
   const html = document.documentElement;
-  if(theme === 'auto') html.removeAttribute('data-theme');
-  else html.setAttribute('data-theme', theme);
+  const effective = theme === 'auto' ? (prefersDark() ? 'dark' : 'light') : theme;
+  html.setAttribute('data-theme', effective);
   try { localStorage.setItem(THEME_KEY, theme); } catch(e){}
 };
-// Aplica el tema al cargar (antes del primer render)
 applyTheme(getStoredTheme());
 
 function ThemeToggle(){
@@ -1589,6 +1618,7 @@ function ThemeToggle(){
     if(!mq?.addEventListener) return;
     const onChange = () => { if(theme === 'auto') applyTheme('auto'); };
     mq.addEventListener('change', onChange);
+    onChange();  // aplica al montar por si el sistema cambió antes
     return () => mq.removeEventListener?.('change', onChange);
   }, [theme]);
 
@@ -1637,13 +1667,13 @@ function Shell({ user, mode, onReconfigure, onLogout, view, setView, children, t
     const base = [
       ['dashboard', 'Dashboard',                I.dashboard, ['admin','reservador','usuario']],
       ['horario',   'Horario Sala',             I.horario,   ['admin','reservador','usuario']],
-      ['mapa',      'Mapa de calor',            I.heatmap,   ['admin','reservador','usuario']],
       ['docente',   'Horario docente',          I.users,     ['admin','reservador','usuario']],
+      ['mapa',      'Mapa de calor',            I.heatmap,   ['admin','reservador','usuario']],
       ['nueva',     'Solicitar reserva',        I.nueva,     ['admin','reservador','usuario']],
       ['reservas',  'Solicitudes de Reservas',  I.reservas,  ['admin','reservador','usuario']],
-      ['importar',  'Importar datos',           I.upload,    ['admin']],
-      ['usuarios',  'Usuarios',                 I.users,     ['admin']],
       ['reportes',  'Reportes',                 I.reports,   ['admin','reservador']],
+      ['usuarios',  'Usuarios',                 I.users,     ['admin']],
+      ['importar',  'Importar datos',           I.upload,    ['admin']],
     ];
     return base.filter(([,,,roles]) => roles.includes(user.role));
   },[user.role]);
