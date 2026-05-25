@@ -1336,7 +1336,6 @@ function Shell({ user, mode, onReconfigure, onLogout, view, setView, children, t
       ['horario',   'Horario Sala',             I.horario,   ['admin','reservador','usuario']],
       ['mapa',      'Mapa de calor',            I.heatmap,   ['admin','reservador','usuario']],
       ['docente',   'Horario docente',          I.users,     ['admin','reservador','usuario']],
-      ['salas',     'Salas',                    I.salas,     ['admin','reservador','usuario']],
       ['nueva',     'Solicitar reserva',        I.nueva,     ['admin','reservador','usuario']],
       ['reservas',  'Solicitudes de Reservas',  I.reservas,  ['admin','reservador','usuario']],
       ['importar',  'Importar datos',           I.upload,    ['admin']],
@@ -1405,9 +1404,18 @@ function Shell({ user, mode, onReconfigure, onLogout, view, setView, children, t
 }
 
 /* ========= DASHBOARD ========= */
-function Dashboard({ data, reservas, user, db }){
-  const today = new Date(); const todayIso = today.toISOString().slice(0,10);
-  const dow = today.getDay()===0 ? 6 : today.getDay()-1;
+function Dashboard({ data, reservas, user, db, onGoView }){
+  // Reloj reactivo: refresca cada 60s para que el bloque "AHORA" se mantenga vivo.
+  const [now, setNow] = useState(new Date());
+  useEffect(()=>{
+    const t = setInterval(()=> setNow(new Date()), 60*1000);
+    return ()=> clearInterval(t);
+  },[]);
+  const todayIso = now.toISOString().slice(0,10);
+  const mañanaIso = (()=>{ const d = new Date(now); d.setDate(d.getDate()+1); return d.toISOString().slice(0,10); })();
+  const dow = now.getDay()===0 ? 6 : now.getDay()-1;
+  const hhmmNow = `${String(now.getHours()).padStart(2,'0')}:${String(now.getMinutes()).padStart(2,'0')}`;
+  const hhmmIn2h = (()=>{ const d = new Date(now.getTime() + 2*60*60*1000); return `${String(d.getHours()).padStart(2,'0')}:${String(d.getMinutes()).padStart(2,'0')}`; })();
 
   // Estado de la BD compartida (solo admin + cloud)
   const [dbStats, setDbStats] = useState(null);
@@ -1493,11 +1501,129 @@ function Dashboard({ data, reservas, user, db }){
   },[data]);
 
   const maxEsc = Math.max(1, ...ocupacionPorEscuela.map(x=>x[1]));
-  const proximasReservas = useMemo(()=> reservas
-    .filter(r => r.fi >= todayIso)
-    .sort((a,b)=> a.fi.localeCompare(b.fi))
-    .slice(0,6)
-  ,[reservas, todayIso]);
+
+  // === ESTADO DE LA SEDE AHORA ===
+  // En curso: sesiones cuya hora actual cae entre hi y hf hoy.
+  // Próximas 2h: sesiones cuyo hi cae entre ahora y ahora+2h hoy.
+  // Salas libres ahora: total salas con clase=0 ahora.
+  // Alumnos en sede: suma inscritos de sesiones en curso.
+  const sesionesHoy = useMemo(()=> sesionesEnFecha(data, todayIso), [data, todayIso]);
+  const ahora = useMemo(()=>{
+    const dedup = new Set();
+    const enCurso = [];
+    const proximas = [];
+    for(const s of sesionesHoy){
+      const k = `${s.sc||''}|${s.s||''}|${s.hi}|${s.hf}`;
+      if(dedup.has(k)) continue;
+      dedup.add(k);
+      if(s.hi <= hhmmNow && hhmmNow < s.hf) enCurso.push(s);
+      else if(s.hi > hhmmNow && s.hi <= hhmmIn2h) proximas.push(s);
+    }
+    const salasOcupadas = new Set(enCurso.map(s => s.s));
+    const alumnosEnSede = enCurso.reduce((a,s)=> a + (Number(s.i)||0), 0);
+    return {
+      enCurso: enCurso.length,
+      proximas: proximas.length,
+      salasLibres: data.salas.length - salasOcupadas.size,
+      alumnosEnSede,
+      enCursoLista: enCurso.sort((a,b)=> (a.s||'').localeCompare(b.s||'')).slice(0,8),
+      proximasLista: proximas.sort((a,b)=> a.hi.localeCompare(b.hi)).slice(0,8),
+    };
+  }, [sesionesHoy, hhmmNow, hhmmIn2h, data.salas]);
+
+  // === SLA: vencidas + en peligro ===
+  // Solo admin/reservador. Vencidas: pendientes con > 1h desde creado_en.
+  // En peligro: pendientes con > 30 min y ≤ 1h.
+  const slaUrgentes = useMemo(()=>{
+    if(user.role!=='admin' && user.role!=='reservador') return null;
+    const nowMs = now.getTime();
+    const SLA = 60 * 60 * 1000;
+    const PELIGRO = 30 * 60 * 1000;
+    const pendientes = reservas.filter(r => r.es === 'pendiente' && r.creado_en);
+    const vencidas = [], peligro = [], frescas = [];
+    for(const r of pendientes){
+      const cAt = new Date(r.creado_en).getTime();
+      if(isNaN(cAt)){ frescas.push(r); continue; }
+      const elapsed = nowMs - cAt;
+      if(elapsed >= SLA) vencidas.push(r);
+      else if(elapsed >= PELIGRO) peligro.push(r);
+      else frescas.push(r);
+    }
+    return {
+      vencidas: vencidas.sort((a,b)=> new Date(a.creado_en) - new Date(b.creado_en)),
+      peligro:  peligro.sort((a,b)=> new Date(a.creado_en) - new Date(b.creado_en)),
+      frescas:  frescas.length,
+    };
+  }, [reservas, user, now]);
+
+  // === SOLICITUDES QUE PARTEN EN ≤1 DÍA ===
+  const solicitudesProximas = useMemo(()=> reservas
+    .filter(r => (r.fi === todayIso || r.fi === mañanaIso) && r.es !== 'rechazada')
+    .sort((a,b)=> (a.fi||'').localeCompare(b.fi||'') || (a.hi||'').localeCompare(b.hi||''))
+    .slice(0, 8)
+  ,[reservas, todayIso, mañanaIso]);
+
+  // === MINI MAPA DE CALOR (hoy + mañana) ===
+  // Para cada (módulo, día) hoy/mañana: suma de inscritos.
+  const miniHeatmap = useMemo(()=>{
+    const calc = (iso) => {
+      const arr = new Array(data.modulos.length).fill(0);
+      const seen = new Set();
+      const sesionesDia = sesionesEnFecha(data, iso);
+      for(const s of sesionesDia){
+        const k = `${s.sc||''}|${s.s||''}|${s.hi}|${s.hf}`;
+        if(seen.has(k)) continue;
+        seen.add(k);
+        const ins = Number(s.i) || 0;
+        if(!ins) continue;
+        data.modulos.forEach((mod, mi) => {
+          if(moduleInTimeRange(mod.num, s.hi, s.hf, data.modulos)) arr[mi] += ins;
+        });
+      }
+      return arr;
+    };
+    const hoy = calc(todayIso), man = calc(mañanaIso);
+    const max = Math.max(1, ...hoy, ...man);
+    return { hoy, man, max };
+  }, [data, todayIso, mañanaIso]);
+
+  // === SALAS SATURADAS vs SUBUTILIZADAS ===
+  // Para cada sala con capacidad, calcular promedio (inscritos / capacidad)
+  // en sesiones de hoy y mañana. Top 5 saturadas (alta utilización) y
+  // top 5 subutilizadas (baja utilización con capacidad ≥ 20).
+  const salasUtilizacion = useMemo(()=>{
+    const capBySala = new Map(data.salas.map(s => [s.codigo, s.capacidad||0]));
+    const ratioBySala = new Map();   // codigo → [ratio, ratio, ...]
+    const seen = new Set();
+    for(const iso of [todayIso, mañanaIso]){
+      const sess = sesionesEnFecha(data, iso);
+      for(const s of sess){
+        const k = `${s.sc||''}|${s.s||''}|${s.hi}|${s.hf}|${iso}`;
+        if(seen.has(k)) continue;
+        seen.add(k);
+        const cap = capBySala.get(s.s);
+        const ins = Number(s.i) || 0;
+        if(!cap || !ins) continue;
+        const ratio = ins / cap;
+        if(!ratioBySala.has(s.s)) ratioBySala.set(s.s, []);
+        ratioBySala.get(s.s).push(ratio);
+      }
+    }
+    const stats = [];
+    for(const [codigo, ratios] of ratioBySala){
+      const avg = ratios.reduce((a,b)=>a+b, 0) / ratios.length;
+      stats.push({
+        codigo,
+        cap: capBySala.get(codigo) || 0,
+        avgUso: avg,
+        sesiones: ratios.length,
+        nombre: data.salas.find(x => x.codigo===codigo)?.nombre || codigo,
+      });
+    }
+    const saturadas = [...stats].sort((a,b)=> b.avgUso - a.avgUso).slice(0, 5);
+    const subutilizadas = stats.filter(x => x.cap >= 20).sort((a,b)=> a.avgUso - b.avgUso).slice(0, 5);
+    return { saturadas, subutilizadas };
+  }, [data, todayIso, mañanaIso]);
 
   // Métricas de gestión: visibles para admin (visión equipo) y reservador (visión personal + equipo)
   const metricas = useMemo(()=>{
@@ -1585,6 +1711,201 @@ function Dashboard({ data, reservas, user, db }){
           <div className="icon">{I.bell}</div>
         </div>
       </div>
+
+      {/* === ESTADO DE LA SEDE AHORA === */}
+      <div className="card">
+        <div className="card-header">
+          <div>
+            <h3>📡 Estado de la sede AHORA</h3>
+            <div className="sub">
+              {now.toLocaleDateString('es-CL', {weekday:'long', day:'2-digit', month:'long'})} · {hhmmNow} hrs · refresca cada minuto
+            </div>
+          </div>
+        </div>
+        <div className="grid grid-4">
+          <div className="kpi kpi-amber">
+            <span className="label">Clases en curso</span>
+            <span className="value">{ahora.enCurso}</span>
+            <span className="delta">{ahora.alumnosEnSede.toLocaleString('es-CL')} alumnos en sede</span>
+            <div className="icon">🎓</div>
+          </div>
+          <div className="kpi kpi-blue">
+            <span className="label">Próximas 2 horas</span>
+            <span className="value">{ahora.proximas}</span>
+            <span className="delta">arrancan antes de {hhmmIn2h}</span>
+            <div className="icon">⏭</div>
+          </div>
+          <div className="kpi kpi-green">
+            <span className="label">Salas libres ahora</span>
+            <span className="value">{ahora.salasLibres}</span>
+            <span className="delta">de {data.salas.length} totales</span>
+            <div className="icon">🏫</div>
+          </div>
+          <div className="kpi kpi-red">
+            <span className="label">% ocupación</span>
+            <span className="value">{Math.round((1 - ahora.salasLibres/Math.max(1,data.salas.length))*100)}%</span>
+            <span className="delta">salas con clase ahora</span>
+            <div className="icon">📊</div>
+          </div>
+        </div>
+        {ahora.enCurso > 0 && (
+          <div style={{marginTop:14,padding:10,background:'#FBFCFD',borderRadius:8,border:'1px solid var(--border-soft)'}}>
+            <div className="muted" style={{fontSize:11,fontWeight:700,textTransform:'uppercase',letterSpacing:.4,marginBottom:8}}>Algunas clases en curso ({ahora.enCurso}):</div>
+            <div className="row" style={{gap:6,flexWrap:'wrap'}}>
+              {ahora.enCursoLista.map((s,i) => (
+                <span key={i} className="chip info" style={{fontSize:11}} title={`${s.a||s.de||''} · ${s.sc||''} · ${s.i||0} alumnos · hasta ${s.hf}`}>
+                  <b>{s.s}</b> · {(s.a||s.de||'').slice(0,18)} · 👥{s.i||0}
+                </span>
+              ))}
+            </div>
+          </div>
+        )}
+      </div>
+
+      {/* === SLA: vencidas + en peligro === */}
+      {slaUrgentes && (slaUrgentes.vencidas.length>0 || slaUrgentes.peligro.length>0) && (
+        <div className="card">
+          <div className="card-header">
+            <div>
+              <h3>⏱ SLA · solicitudes que requieren atención</h3>
+              <div className="sub">Objetivo: decidir cada solicitud en ≤1h desde su creación.</div>
+            </div>
+            {onGoView && <button className="btn btn-ghost" style={{fontSize:12,padding:'6px 12px'}} onClick={()=>onGoView('reservas')}>Ver todas →</button>}
+          </div>
+          <div className="grid grid-3">
+            <div className="kpi kpi-red">
+              <span className="label">⏰ Vencidas (&gt;1h)</span>
+              <span className="value">{slaUrgentes.vencidas.length}</span>
+              <span className="delta">acción inmediata</span>
+              <div className="icon">🚨</div>
+            </div>
+            <div className="kpi kpi-amber">
+              <span className="label">⚠ En peligro (30-60 min)</span>
+              <span className="value">{slaUrgentes.peligro.length}</span>
+              <span className="delta">resolver pronto</span>
+              <div className="icon">⏳</div>
+            </div>
+            <div className="kpi kpi-green">
+              <span className="label">✓ Frescas (&lt;30 min)</span>
+              <span className="value">{slaUrgentes.frescas}</span>
+              <span className="delta">dentro de SLA</span>
+              <div className="icon">✓</div>
+            </div>
+          </div>
+          {slaUrgentes.vencidas.length > 0 && (
+            <div style={{marginTop:14}}>
+              <div className="muted" style={{fontSize:11,fontWeight:700,textTransform:'uppercase',letterSpacing:.4,marginBottom:8}}>🚨 Vencidas — atender ya</div>
+              <div className="tbl-scroll" style={{maxHeight:200,border:'1px solid var(--border-soft)',borderRadius:8}}>
+                <table className="tbl">
+                  <thead><tr><th>Sala</th><th>Motivo</th><th>Fecha</th><th>Horario</th><th style={{textAlign:'right'}}>Esperando</th></tr></thead>
+                  <tbody>
+                    {slaUrgentes.vencidas.slice(0,8).map(r => {
+                      const mins = Math.floor((now.getTime() - new Date(r.creado_en).getTime()) / 60000);
+                      const h = Math.floor(mins/60), m = mins % 60;
+                      return (
+                        <tr key={r.id}>
+                          <td><b>{r.r}</b></td>
+                          <td style={{maxWidth:240}}>{r.mo || r.observacion || '—'}</td>
+                          <td>{fmtFecha(r.fi)}</td>
+                          <td>{r.hi}–{r.hf}</td>
+                          <td style={{textAlign:'right'}}><span className="chip danger" style={{fontSize:11}}>{h>0?`${h}h `:''}{m}m</span></td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* === MINI MAPA DE CALOR (hoy / mañana) === */}
+      <div className="card">
+        <div className="card-header">
+          <div>
+            <h3>🌡 Mini mapa de calor · hoy y mañana</h3>
+            <div className="sub">Alumnos por módulo. Hoy ({now.toLocaleDateString('es-CL',{weekday:'short',day:'2-digit',month:'short'})}) vs mañana. Click "Ver mapa completo" para filtros.</div>
+          </div>
+          {onGoView && <button className="btn btn-ghost" style={{fontSize:12,padding:'6px 12px'}} onClick={()=>onGoView('mapa')}>Ver mapa completo →</button>}
+        </div>
+        <div className="grid grid-2" style={{gap:14}}>
+          {[
+            { titulo:'Hoy', data: miniHeatmap.hoy },
+            { titulo:'Mañana', data: miniHeatmap.man },
+          ].map(({ titulo, data: arr }, dayIdx) => (
+            <div key={dayIdx} style={{padding:12,background:'#FBFCFD',border:'1px solid var(--border-soft)',borderRadius:8}}>
+              <div style={{fontWeight:700,fontSize:13,marginBottom:8}}>{titulo}</div>
+              <div style={{display:'grid',gridTemplateColumns:'40px 1fr 40px',gap:4,alignItems:'center'}}>
+                {data.modulos.map((mod, mi) => {
+                  const v = arr[mi];
+                  const pct = v / miniHeatmap.max;
+                  const lerp = (a,b,t)=> Math.round(a+(b-a)*t);
+                  let r,g,b;
+                  if(v === 0){ r=240;g=253;b=244; }
+                  else if(pct < 0.5){ const t = pct/0.5; r=lerp(34,251,t); g=lerp(197,191,t); b=lerp(94,36,t); }
+                  else { const t = (pct-0.5)/0.5; r=lerp(251,220,t); g=lerp(191,38,t); b=lerp(36,38,t); }
+                  return (
+                    <React.Fragment key={mod.num}>
+                      <div style={{fontSize:10,color:'var(--text-muted)',textAlign:'right',fontWeight:600}}>M{mod.num}</div>
+                      <div style={{height:18,background:`rgb(${r},${g},${b})`,borderRadius:3,position:'relative'}}>
+                        {v > 0 && (
+                          <span style={{position:'absolute',top:'50%',left:'50%',transform:'translate(-50%,-50%)',fontSize:10,fontWeight:700,color:pct>0.45?'#fff':'#1A1A1A'}}>
+                            {v.toLocaleString('es-CL')}
+                          </span>
+                        )}
+                      </div>
+                      <div style={{fontSize:9,color:'var(--text-muted)',textAlign:'left'}}>{mod.inicio}</div>
+                    </React.Fragment>
+                  );
+                })}
+              </div>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      {/* === SALAS SATURADAS vs SUBUTILIZADAS === */}
+      {(salasUtilizacion.saturadas.length>0 || salasUtilizacion.subutilizadas.length>0) && (
+        <div className="grid grid-2">
+          <div className="card">
+            <div className="card-header">
+              <div><h3>🔥 Salas más saturadas</h3><div className="sub">Hoy + mañana · % uso vs capacidad</div></div>
+            </div>
+            {salasUtilizacion.saturadas.length === 0 ? (
+              <div className="empty"><span className="emoji">📊</span>Sin datos de saturación.</div>
+            ) : salasUtilizacion.saturadas.map(s => (
+              <div key={s.codigo} style={{marginBottom:8}}>
+                <div className="row between" style={{marginBottom:4}}>
+                  <span style={{fontSize:13}}><b style={{color:'var(--primary)'}}>{s.codigo}</b> <span className="muted" style={{fontSize:11}}>· cap {s.cap}</span></span>
+                  <span style={{fontWeight:700,fontSize:13,color: s.avgUso >= 0.9 ? 'var(--danger)' : 'var(--warning)'}}>{Math.round(s.avgUso*100)}%</span>
+                </div>
+                <div style={{height:8,background:'#EEF2F7',borderRadius:6,overflow:'hidden'}}>
+                  <div style={{height:'100%',width:`${Math.min(100,Math.round(s.avgUso*100))}%`,background: s.avgUso >= 0.9 ? 'var(--danger)' : 'var(--warning)'}}/>
+                </div>
+              </div>
+            ))}
+          </div>
+          <div className="card">
+            <div className="card-header">
+              <div><h3>💧 Salas subutilizadas</h3><div className="sub">Capacidad ≥ 20 con baja ocupación promedio</div></div>
+            </div>
+            {salasUtilizacion.subutilizadas.length === 0 ? (
+              <div className="empty"><span className="emoji">📊</span>Sin datos suficientes.</div>
+            ) : salasUtilizacion.subutilizadas.map(s => (
+              <div key={s.codigo} style={{marginBottom:8}}>
+                <div className="row between" style={{marginBottom:4}}>
+                  <span style={{fontSize:13}}><b style={{color:'var(--primary)'}}>{s.codigo}</b> <span className="muted" style={{fontSize:11}}>· cap {s.cap}</span></span>
+                  <span style={{fontWeight:700,fontSize:13,color:'var(--success)'}}>{Math.round(s.avgUso*100)}%</span>
+                </div>
+                <div style={{height:8,background:'#EEF2F7',borderRadius:6,overflow:'hidden'}}>
+                  <div style={{height:'100%',width:`${Math.max(2,Math.round(s.avgUso*100))}%`,background:'var(--success)'}}/>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
 
       {user.role==='admin' && db?.isCloud && bdUso && (() => {
         const pct = bdUso.pctUsado;
@@ -1855,17 +2176,24 @@ function Dashboard({ data, reservas, user, db }){
             ))}
           </div>
           <div style={{marginTop:18}}>
-            <div className="card-header"><div><h3 style={{fontSize:14}}>Próximas reservas</h3></div></div>
+            <div className="row between" style={{marginBottom:8}}>
+              <h3 style={{fontSize:14}}>📌 Solicitudes que parten en ≤1 día</h3>
+              {onGoView && <button className="btn btn-ghost" style={{fontSize:11,padding:'4px 10px'}} onClick={()=>onGoView('reservas')}>Ver todas →</button>}
+            </div>
             <div className="stack" style={{gap:8}}>
-              {proximasReservas.length===0 && <div className="muted" style={{fontSize:13}}>Sin reservas próximas.</div>}
-              {proximasReservas.map(r => (
+              {solicitudesProximas.length===0 && <div className="muted" style={{fontSize:13}}>Sin solicitudes para hoy ni mañana.</div>}
+              {solicitudesProximas.map(r => (
                 <div key={r.id} className="row between" style={{padding:'8px 10px',background:'#FBFCFD',border:'1px solid var(--border-soft)',borderRadius:8}}>
-                  <div style={{minWidth:0}}>
-                    <div style={{fontWeight:600,fontSize:13}}>{r.r} · {r.mo}</div>
+                  <div style={{minWidth:0,flex:1}}>
+                    <div style={{fontWeight:600,fontSize:13}}>
+                      <span style={{color:'var(--primary)'}}>{r.r}</span> · {(r.mo||'').slice(0,40)}
+                      {r.es==='pendiente' && <span className="chip warn" style={{fontSize:9,marginLeft:6,padding:'1px 5px'}}>⏳ Pend.</span>}
+                      {r.es==='aprobada' && <span className="chip success" style={{fontSize:9,marginLeft:6,padding:'1px 5px'}}>✓ Aprob.</span>}
+                    </div>
                     <div className="muted" style={{fontSize:11}}>{r.do || 'Sin docente'}</div>
                   </div>
                   <div style={{textAlign:'right'}}>
-                    <div style={{fontSize:12,fontWeight:700}}>{fmtFecha(r.fi)}</div>
+                    <div style={{fontSize:12,fontWeight:700}}>{r.fi===todayIso?'HOY':r.fi===mañanaIso?'MAÑANA':fmtFecha(r.fi)}</div>
                     <div className="muted" style={{fontSize:11}}>{r.hi}–{r.hf}</div>
                   </div>
                 </div>
@@ -4335,7 +4663,7 @@ function ImportarJefes({ data, toast, onReplace, onCreate, onUpdate, onDelete })
 /* ========= IMPORTAR DATOS (wrapper unificado) =========
    Una sola pestaña con 3 tabs internos: SABANA, LISTA DE RECURSOS y
    Jefaturas. Cada tab monta el componente importador correspondiente. */
-function ImportarDatos({ data, toast, db, onReplaceSabana, onReplaceEventos, onReplaceJefes, onCreateJefe, onUpdateJefe, onDeleteJefe, onSeed }){
+function ImportarDatos({ data, toast, db, user, onReplaceSabana, onReplaceEventos, onReplaceJefes, onCreateJefe, onUpdateJefe, onDeleteJefe, onCreateSala, onUpdateSala, onDeleteSala, onSeed }){
   const [tab, setTab] = useState('recursos');
 
   // Lookup rápido del último import por tipo
@@ -4358,6 +4686,7 @@ function ImportarDatos({ data, toast, db, onReplaceSabana, onReplaceEventos, onR
     { key:'sabana',   label:'📘 SABANA',            sub:'Programación académica (patrón semanal)', count:(data.programacion||[]).length, logKey:'sabana' },
     { key:'recursos', label:'📅 LISTA DE RECURSOS', sub:'Sesiones por fecha (eventos)',           count:(data.eventos||[]).length,     logKey:'recursos' },
     { key:'jefes',    label:'⭐ Jefaturas',          sub:'Docente → jefe directo',                 count:(data.docente_jefes||[]).length, logKey:'jefes' },
+    { key:'salas',    label:'🏫 Salas',              sub:'Catálogo de salas y recintos',           count:(data.salas||[]).length },
   ];
 
   return (
@@ -4405,6 +4734,7 @@ function ImportarDatos({ data, toast, db, onReplaceSabana, onReplaceEventos, onR
       {tab==='sabana'   && <ImportarSabana   data={data} toast={toast} onReplace={onReplaceSabana} onSeed={onSeed} isCloud={db.isCloud}/>}
       {tab==='recursos' && <ImportarRecursos data={data} toast={toast} onReplace={onReplaceEventos} isCloud={db.isCloud}/>}
       {tab==='jefes'    && <ImportarJefes    data={data} toast={toast} onReplace={onReplaceJefes} onCreate={onCreateJefe} onUpdate={onUpdateJefe} onDelete={onDeleteJefe}/>}
+      {tab==='salas'    && <Salas            data={data} user={user} toast={toast} onCreate={onCreateSala} onUpdate={onUpdateSala} onDelete={onDeleteSala}/>}
     </div>
   );
 }
@@ -4777,7 +5107,6 @@ function App(){
     dashboard:['Dashboard','Panel de control'],
     horario:['Horario Sala','Disponibilidad física Lun-Dom × Módulos por sala'],
     mapa:['Mapa de calor','Ocupación de la sede por módulo y día'],
-    salas:['Catálogo de salas','Salas y recintos'],
     reservas:['Solicitudes de Reservas','Gestión y búsqueda de disponibilidad'],
     nueva:['Solicitar reserva','Nueva solicitud'],
     importar:['Importar datos','SABANA · LISTA DE RECURSOS · Jefaturas'],
@@ -4791,18 +5120,20 @@ function App(){
     <>
       <Shell user={user} mode={mode} onReconfigure={reconfigure} onLogout={()=>{ setUser(null); }} view={view} setView={setView} title={title} crumbs={crumbs}
         pendientes={(reservas||[]).filter(r => r.es==='pendiente').length}>
-        {view==='dashboard' && <Dashboard data={data} reservas={reservas} user={user} db={db}/>}
+        {view==='dashboard' && <Dashboard data={data} reservas={reservas} user={user} db={db} onGoView={setView}/>}
         {view==='horario'   && <Horario data={data} reservas={reservas} onGoNueva={goNueva}/>}
-        {view==='salas'     && <Salas data={data} user={user} toast={setToast} onCreate={createSala} onUpdate={updateSala} onDelete={deleteSala}/>}
         {view==='reservas'  && <Reservas reservas={reservas} data={data} user={user} toast={setToast} onGoNueva={goNueva} onUpdateEstado={updateReservaEstado}/>}
         {view==='nueva'     && <NuevaReserva data={data} reservas={reservas} user={user} toast={setToast} goReservas={()=>setView('reservas')} prefill={prefillNueva} onCreate={createReserva}/>}
-        {view==='importar'  && <ImportarDatos data={data} toast={setToast} db={db}
+        {view==='importar'  && <ImportarDatos data={data} toast={setToast} db={db} user={user}
           onReplaceSabana={replaceProgramacionOp}
           onReplaceEventos={replaceEventosOp}
           onReplaceJefes={replaceJefesOp}
           onCreateJefe={createJefeOp}
           onUpdateJefe={updateJefeOp}
           onDeleteJefe={deleteJefeOp}
+          onCreateSala={createSala}
+          onUpdateSala={updateSala}
+          onDeleteSala={deleteSala}
           onSeed={seedFromBundle}/>}
         {view==='docente'   && <HorarioDocente data={data}/>}
         {view==='usuarios'  && <Usuarios users={users} toast={setToast} onCreate={createUser} onUpdate={updateUser} onDelete={deleteUser}/>}
