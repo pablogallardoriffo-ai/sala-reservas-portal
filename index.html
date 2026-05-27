@@ -1544,7 +1544,7 @@ function SetupScreen({ onConfigured }){
 // URL pública de la imagen del campus Duoc UC Viña del Mar para el login.
 // Cámbiala por el URL directo de la foto (click derecho → "Copiar dirección
 // de imagen"). Si la URL no carga, el login cae al gradient azul original.
-const CAMPUS_IMG_URL = '';  // ← pega aquí el URL de la imagen del campus
+const CAMPUS_IMG_URL = './assets/duoc-campus.jpg';
 
 function Login({ onLogin, db, mode, onReconfigure }){
   const [imgOk, setImgOk] = useState(!!CAMPUS_IMG_URL);
