@@ -3390,7 +3390,7 @@ function Gestiones({ data, user, db, toast }){
     try {
       const data = await db.loadAuditorias();
       setAuditorias(data);
-    } catch(e){ console.error('loadAuditorias:', e); toast(`Error cargando auditorías: ${e.message}`); }
+    } catch(e){ console.error('loadAuditorias:', e); toast(`Error cargando datos: ${e.message}`); }
     finally { setLoadingA(false); }
   };
   useEffect(()=>{ if(unlocked) recargar(); }, [unlocked, db]);
@@ -3564,7 +3564,7 @@ function Gestiones({ data, user, db, toast }){
         if(i >= 0){ const next = list.slice(); next[i] = saved; return next; }
         return [...list, saved];
       });
-      toast('Auditoría guardada.');
+      toast('Registro guardado.');
     } catch(e){ console.error('saveAuditoria:', e); toast(`Error: ${e.message}`); }
   };
 
@@ -3575,11 +3575,11 @@ function Gestiones({ data, user, db, toast }){
           <div style={{textAlign:'center',marginBottom:16}}>
             <div style={{fontSize:42,marginBottom:6}}>🔒</div>
             <h3 style={{fontSize:18}}>Acceso restringido</h3>
-            <div className="sub" style={{marginTop:6}}>Pestaña <b>Gestiones</b> · auditorías en terreno.<br/>Solo administradores con la contraseña asignada.</div>
+            <div className="sub" style={{marginTop:6}}>Pestaña interna · Solo personal autorizado con contraseña asignada.</div>
           </div>
           <form onSubmit={tryUnlock} className="stack" style={{gap:12}}>
             <div className="field">
-              <label>Contraseña de Gestiones</label>
+              <label>Contraseña</label>
               <input
                 type="password" value={pw}
                 onChange={e=>{ setPw(e.target.value); setPwErr(false); }}
@@ -3602,16 +3602,16 @@ function Gestiones({ data, user, db, toast }){
       <div className="card">
         <div className="card-header">
           <div>
-            <h3>🔒 Gestiones · Auditorías en terreno</h3>
-            <div className="sub">Auditor: <b>{user.nombre || user.username}</b> · Las auditorías quedan registradas con tu cuenta.</div>
+            <h3>🔒 Gestiones</h3>
+            <div className="sub">Usuario: <b>{user.nombre || user.username}</b> · Los registros quedan asociados a tu cuenta.</div>
           </div>
           <div className="row" style={{gap:8}}>
             <button className="btn btn-ghost" style={{fontSize:12,padding:'6px 12px'}} onClick={lock}>🔒 Bloquear</button>
           </div>
         </div>
         <div className="seg" style={{marginTop:4}}>
-          <button className={tab==='recorrido'?'active':''} onClick={()=>setTab('recorrido')}>🚶 Recorrido</button>
-          <button className={tab==='panel'?'active':''} onClick={()=>setTab('panel')}>📊 Panel de análisis</button>
+          <button className={tab==='recorrido'?'active':''} onClick={()=>setTab('recorrido')}>📋 Listado</button>
+          <button className={tab==='panel'?'active':''} onClick={()=>setTab('panel')}>📊 Resumen</button>
         </div>
       </div>
 
@@ -3664,28 +3664,28 @@ function GestionesRecorrido({ data, user, fecha, setFecha, cfg, guardarCfg, mues
 
   return (
     <>
-      {/* Configuración del sorteo */}
+      {/* Configuración */}
       <div className="card">
         <div className="card-header">
           <div>
-            <h3>⚙ Configuración del recorrido</h3>
-            <div className="sub">Edita los parámetros del sorteo. El sorteo es estable por <b>fecha + auditor</b> (no cambia al recargar).</div>
+            <h3>⚙ Configuración</h3>
+            <div className="sub">Edita los parámetros. La selección es estable por <b>fecha + usuario</b> (no cambia al recargar).</div>
           </div>
-          <button className="btn btn-ghost" style={{fontSize:12,padding:'6px 12px'}} onClick={onReroll}>🔀 Re-sortear</button>
+          <button className="btn btn-ghost" style={{fontSize:12,padding:'6px 12px'}} onClick={onReroll}>🔀 Re-generar</button>
         </div>
         <div className="filters">
           <div className="field" style={{maxWidth:170}}>
-            <label>Fecha del recorrido</label>
+            <label>Fecha</label>
             <input type="date" value={fecha} onChange={e=>setFecha(e.target.value)}/>
           </div>
           <div className="field" style={{maxWidth:120}}>
-            <label>Módulo desde</label>
+            <label>Rango desde</label>
             <select value={cfg.modIni} onChange={e=>guardarCfg({modIni:Number(e.target.value)})}>
               {data.modulos.map(m => <option key={m.num} value={m.num}>Mód. {m.num} ({m.inicio})</option>)}
             </select>
           </div>
           <div className="field" style={{maxWidth:120}}>
-            <label>Módulo hasta</label>
+            <label>Rango hasta</label>
             <select value={cfg.modFin} onChange={e=>guardarCfg({modFin:Number(e.target.value)})}>
               {data.modulos.map(m => <option key={m.num} value={m.num}>Mód. {m.num} ({m.fin})</option>)}
             </select>
@@ -3697,18 +3697,18 @@ function GestionesRecorrido({ data, user, fecha, setFecha, cfg, guardarCfg, mues
           <div className="field" style={{justifyContent:'flex-end'}}>
             <label>&nbsp;</label>
             <div className="muted" style={{fontSize:12.5}}>
-              Universo: <b>{candidatas.length.toLocaleString('es-CL')}</b> clases candidatas{esHoy?' · de hoy':''}{modActivo?` · Mód.${modActivo.num} activo`:''}
-              {muestra.length>0 && <> · Diversidad muestra: <b>{diversidad.escuelas}</b> {diversidad.escuelas===1?'escuela':'escuelas'} (de {escUniverso}) · <b>{diversidad.siglas}</b> {diversidad.siglas===1?'asignatura':'asignaturas'}</>}
+              Universo: <b>{candidatas.length.toLocaleString('es-CL')}</b> disponibles{esHoy?' · de hoy':''}{modActivo?` · Mód.${modActivo.num} activo`:''}
+              {muestra.length>0 && <> · Cobertura: <b>{diversidad.escuelas}</b> {diversidad.escuelas===1?'área':'áreas'} (de {escUniverso}) · <b>{diversidad.siglas}</b> {diversidad.siglas===1?'ítem':'ítems'}</>}
             </div>
           </div>
         </div>
       </div>
 
-      {/* Lista de clases sorteadas */}
+      {/* Lista */}
       {loading ? (
-        <div className="card"><div className="loader"><div className="spinner"/><div>Cargando auditorías…</div></div></div>
+        <div className="card"><div className="loader"><div className="spinner"/><div>Cargando…</div></div></div>
       ) : muestra.length === 0 ? (
-        <div className="card"><div className="empty"><span className="emoji">🔍</span>Sin clases candidatas con esta configuración. Prueba ampliar el rango de módulos o cambiar la fecha.</div></div>
+        <div className="card"><div className="empty"><span className="emoji">🔍</span>Sin resultados con esta configuración. Prueba ampliar el rango o cambiar la fecha.</div></div>
       ) : (() => {
         // Filtra del recorrido las clases con AMBOS bloques registrados —
         // su detalle vive en el "Panel de análisis". Las parcialmente
@@ -3723,12 +3723,12 @@ function GestionesRecorrido({ data, user, fecha, setFecha, cfg, guardarCfg, mues
           <>
             {completas > 0 && (
               <div className="chip success" style={{padding:'8px 12px',fontSize:12.5,alignSelf:'flex-start'}}>
-                ✅ {completas} {completas===1?'clase auditada':'clases auditadas'} esta sesión — ya están en el <b>Panel de análisis</b>.
+                ✅ {completas} {completas===1?'completado':'completados'} en esta sesión — ya están en el <b>Resumen</b>.
               </div>
             )}
             <div className="stack" style={{gap:10}}>
               {pendientes.length === 0 ? (
-                <div className="card"><div className="empty"><span className="emoji">🎉</span>Recorrido completado. Todas las clases sorteadas fueron auditadas.</div></div>
+                <div className="card"><div className="empty"><span className="emoji">🎉</span>Sesión completada. Todos los ítems fueron procesados.</div></div>
               ) : pendientes.map((s, i) => (
                 <ItemAuditoria
                   key={`${s.sc||''}|${s.s||''}|${s.hi}|${s.hf}`}
@@ -3809,11 +3809,11 @@ function ItemAuditoria({ idx, sess, auditoria, now, esHoy, onSave }){
   // revisar lo que dejó registrado sin necesidad de ir al Panel).
   const ResumenInicio = () => (
     <div style={{padding:'10px 14px',background:'var(--surface-2)',borderRadius:8,border:'1px solid var(--border-soft)'}}>
-      <div style={{fontSize:11,fontWeight:700,letterSpacing:.4,textTransform:'uppercase',color:'var(--text-muted)',marginBottom:6}}>🚪 Inicio registrado</div>
+      <div style={{fontSize:11,fontWeight:700,letterSpacing:.4,textTransform:'uppercase',color:'var(--text-muted)',marginBottom:6}}>▶ Inicio registrado</div>
       <div className="row" style={{gap:10,alignItems:'center',flexWrap:'wrap',fontSize:13}}>
         {a.llego_a_hora==='si'
-          ? <span className="chip success">✓ Llegó a la hora</span>
-          : <span className="chip danger">✗ No llegó a la hora</span>}
+          ? <span className="chip success">✓ Conforme</span>
+          : <span className="chip danger">✗ No conforme</span>}
         {a.hora_llegada && <span className="muted">Hora real: <b>{a.hora_llegada}</b></span>}
         {a.obs_inicio && <span className="muted" style={{fontStyle:'italic'}}>"{a.obs_inicio}"</span>}
       </div>
@@ -3821,11 +3821,11 @@ function ItemAuditoria({ idx, sess, auditoria, now, esHoy, onSave }){
   );
   const ResumenFin = () => (
     <div style={{padding:'10px 14px',background:'var(--surface-2)',borderRadius:8,border:'1px solid var(--border-soft)'}}>
-      <div style={{fontSize:11,fontWeight:700,letterSpacing:.4,textTransform:'uppercase',color:'var(--text-muted)',marginBottom:6}}>🏁 Término registrado</div>
+      <div style={{fontSize:11,fontWeight:700,letterSpacing:.4,textTransform:'uppercase',color:'var(--text-muted)',marginBottom:6}}>■ Término registrado</div>
       <div className="row" style={{gap:10,alignItems:'center',flexWrap:'wrap',fontSize:13}}>
         {a.termino_a_hora==='si'
-          ? <span className="chip success">✓ Terminó a la hora</span>
-          : <span className="chip danger">✗ Se fue antes / después</span>}
+          ? <span className="chip success">✓ Conforme</span>
+          : <span className="chip danger">✗ No conforme</span>}
         {a.hora_salida && <span className="muted">Hora real: <b>{a.hora_salida}</b></span>}
         {a.obs_fin && <span className="muted" style={{fontStyle:'italic'}}>"{a.obs_fin}"</span>}
       </div>
@@ -3847,7 +3847,7 @@ function ItemAuditoria({ idx, sess, auditoria, now, esHoy, onSave }){
             {estado==='plan' && <span className="chip">Planificación</span>}
           </div>
           <div style={{marginTop:6,fontSize:12.5,color:'var(--text-muted)'}}>
-            👨‍🏫 <b>{sess.d || '—'}</b> · {sess.hi}–{sess.hf} · {(sess.i||0)} alumnos {sess.es?`· ${ESCUELAS_FULL[sess.es]||sess.es}`:''}
+            👤 <b>{sess.d || '—'}</b> · {sess.hi}–{sess.hf} · n° {(sess.i||0)} {sess.es?`· ${ESCUELAS_FULL[sess.es]||sess.es}`:''}
           </div>
         </div>
         <div className="row" style={{gap:6,alignItems:'center'}}>
@@ -3861,21 +3861,21 @@ function ItemAuditoria({ idx, sess, auditoria, now, esHoy, onSave }){
         {/* Bloque INICIO — solo si aún no se guardó */}
         {!inicioCompleto ? (
           <div>
-            <div style={{fontSize:11,fontWeight:700,letterSpacing:.4,textTransform:'uppercase',color:'var(--text-muted)',marginBottom:8}}>🚪 Inicio · Programado {sess.hi}</div>
+            <div style={{fontSize:11,fontWeight:700,letterSpacing:.4,textTransform:'uppercase',color:'var(--text-muted)',marginBottom:8}}>▶ Inicio · Hora prevista {sess.hi}</div>
             <div className="row" style={{gap:8,flexWrap:'wrap',marginBottom:8}}>
-              <button type="button" className={`btn btn-sm ${llego==='si'?'btn-primary':'btn-ghost'}`} onClick={()=>setLlego('si')}>✓ Llegó a la hora</button>
-              <button type="button" className={`btn btn-sm ${llego==='no'?'btn-danger':'btn-ghost'}`} onClick={()=>setLlego('no')}>✗ No llegó a la hora</button>
+              <button type="button" className={`btn btn-sm ${llego==='si'?'btn-primary':'btn-ghost'}`} onClick={()=>setLlego('si')}>✓ Conforme</button>
+              <button type="button" className={`btn btn-sm ${llego==='no'?'btn-danger':'btn-ghost'}`} onClick={()=>setLlego('no')}>✗ No conforme</button>
             </div>
             <div className="row" style={{gap:8,alignItems:'flex-end'}}>
               <div className="field" style={{flex:1}}>
-                <label>Hora real de llegada</label>
+                <label>Hora real de inicio</label>
                 <input type="time" value={horaLleg} onChange={e=>setHoraLleg(e.target.value)}/>
               </div>
               <button type="button" className="btn btn-sm btn-ghost" onClick={marcarLlegadaAhora}>Ahora</button>
             </div>
             <div className="field" style={{marginTop:8}}>
-              <label>Observación de inicio</label>
-              <textarea rows="2" value={obsIni} onChange={e=>setObsIni(e.target.value)} placeholder="Notas sobre el inicio…"/>
+              <label>Observación</label>
+              <textarea rows="2" value={obsIni} onChange={e=>setObsIni(e.target.value)} placeholder="Notas…"/>
             </div>
             <button type="button" className="btn btn-sm btn-primary" style={{marginTop:8}} onClick={guardarInicio}>💾 Guardar inicio</button>
           </div>
@@ -3884,21 +3884,21 @@ function ItemAuditoria({ idx, sess, auditoria, now, esHoy, onSave }){
         {/* Bloque FIN — solo si aún no se guardó */}
         {!finCompleto ? (
           <div>
-            <div style={{fontSize:11,fontWeight:700,letterSpacing:.4,textTransform:'uppercase',color:'var(--text-muted)',marginBottom:8}}>🏁 Término · Programado {sess.hf}</div>
+            <div style={{fontSize:11,fontWeight:700,letterSpacing:.4,textTransform:'uppercase',color:'var(--text-muted)',marginBottom:8}}>■ Término · Hora prevista {sess.hf}</div>
             <div className="row" style={{gap:8,flexWrap:'wrap',marginBottom:8}}>
-              <button type="button" className={`btn btn-sm ${termino==='si'?'btn-primary':'btn-ghost'}`} onClick={()=>setTermino('si')}>✓ Terminó a la hora</button>
-              <button type="button" className={`btn btn-sm ${termino==='no'?'btn-danger':'btn-ghost'}`} onClick={()=>setTermino('no')}>✗ Se fue antes / después</button>
+              <button type="button" className={`btn btn-sm ${termino==='si'?'btn-primary':'btn-ghost'}`} onClick={()=>setTermino('si')}>✓ Conforme</button>
+              <button type="button" className={`btn btn-sm ${termino==='no'?'btn-danger':'btn-ghost'}`} onClick={()=>setTermino('no')}>✗ No conforme</button>
             </div>
             <div className="row" style={{gap:8,alignItems:'flex-end'}}>
               <div className="field" style={{flex:1}}>
-                <label>Hora real de salida</label>
+                <label>Hora real de término</label>
                 <input type="time" value={horaSal} onChange={e=>setHoraSal(e.target.value)}/>
               </div>
               <button type="button" className="btn btn-sm btn-ghost" onClick={marcarSalidaAhora}>Ahora</button>
             </div>
             <div className="field" style={{marginTop:8}}>
-              <label>Observación de término</label>
-              <textarea rows="2" value={obsFin} onChange={e=>setObsFin(e.target.value)} placeholder="Notas sobre el término…"/>
+              <label>Observación</label>
+              <textarea rows="2" value={obsFin} onChange={e=>setObsFin(e.target.value)} placeholder="Notas…"/>
             </div>
             <button type="button" className="btn btn-sm btn-primary" style={{marginTop:8}} onClick={guardarFin}>💾 Guardar fin</button>
           </div>
@@ -3989,7 +3989,7 @@ function GestionesPanel({ data, auditorias, loading, onReload }){
     const blob = new Blob(['﻿'+lines.join('\n')], { type:'text/csv;charset=utf-8' });
     const url = URL.createObjectURL(blob);
     const link = document.createElement('a');
-    link.href = url; link.download = `auditorias_${new Date().toISOString().slice(0,10)}.csv`;
+    link.href = url; link.download = `gestiones_${new Date().toISOString().slice(0,10)}.csv`;
     document.body.appendChild(link); link.click(); link.remove();
     URL.revokeObjectURL(url);
   };
@@ -3999,8 +3999,8 @@ function GestionesPanel({ data, auditorias, loading, onReload }){
       <div className="card">
         <div className="card-header">
           <div>
-            <h3>📊 Panel · Análisis de auditorías</h3>
-            <div className="sub">{filtradas.length.toLocaleString('es-CL')} auditorías en el período · {auditorias.length.toLocaleString('es-CL')} totales en sistema</div>
+            <h3>📊 Resumen</h3>
+            <div className="sub">{filtradas.length.toLocaleString('es-CL')} registros en el período · {auditorias.length.toLocaleString('es-CL')} totales</div>
           </div>
           <div className="row" style={{gap:6}}>
             <button className="btn btn-ghost" style={{fontSize:12,padding:'6px 12px'}} onClick={onReload}>🔄 Recargar</button>
@@ -4017,14 +4017,14 @@ function GestionesPanel({ data, auditorias, loading, onReload }){
             <input type="date" value={hasta} onChange={e=>setHasta(e.target.value)}/>
           </div>
           <div className="field">
-            <label>Escuela</label>
+            <label>Área</label>
             <select value={escuela} onChange={e=>setEscuela(e.target.value)}>
               <option value="">Todas</option>
               {escuelas.map(es => <option key={es} value={es}>{ESCUELAS_FULL[es]||es}</option>)}
             </select>
           </div>
           <div className="field">
-            <label>Auditor</label>
+            <label>Usuario</label>
             <select value={auditor} onChange={e=>setAuditor(e.target.value)}>
               <option value="">Todos</option>
               {auditores.map(au => <option key={au} value={au}>{au}</option>)}
@@ -4035,42 +4035,42 @@ function GestionesPanel({ data, auditorias, loading, onReload }){
 
       <div className="grid grid-4">
         <div className="kpi kpi-blue">
-          <span className="label">Auditorías totales</span>
+          <span className="label">Registros totales</span>
           <span className="value">{kpis.total.toLocaleString('es-CL')}</span>
           <span className="delta">en el período filtrado</span>
           <div className="icon">📋</div>
         </div>
         <div className="kpi kpi-green">
-          <span className="label">% llegan a la hora</span>
+          <span className="label">% conformes al inicio</span>
           <span className="value">{kpis.pctInicio!=null ? `${kpis.pctInicio}%` : '—'}</span>
           <span className="delta">{kpis.llegoSi}/{kpis.llegoSi+kpis.llegoNo} registros</span>
           <div className="icon">✓</div>
         </div>
         <div className="kpi kpi-amber">
-          <span className="label">% terminan a la hora</span>
+          <span className="label">% conformes al término</span>
           <span className="value">{kpis.pctFin!=null ? `${kpis.pctFin}%` : '—'}</span>
           <span className="delta">{kpis.termSi}/{kpis.termSi+kpis.termNo} registros</span>
           <div className="icon">🏁</div>
         </div>
         <div className="kpi kpi-red">
-          <span className="label">Incumplimientos</span>
+          <span className="label">No conformes</span>
           <span className="value">{(kpis.llegoNo + kpis.termNo).toLocaleString('es-CL')}</span>
           <span className="delta">{kpis.llegoNo} inicio · {kpis.termNo} término</span>
           <div className="icon">⚠</div>
         </div>
       </div>
 
-      {/* Ranking docentes con más incumplimientos */}
+      {/* Ranking personas con más observaciones */}
       <div className="card" style={{padding:0}}>
         <div className="card-header" style={{padding:'14px 18px'}}>
           <div>
-            <h3>🚩 Docentes con más incumplimientos</h3>
-            <div className="sub">Top 20 docentes con mayor cantidad de incumplimientos (inicio + término) en el período</div>
+            <h3>🚩 Personas con más observaciones</h3>
+            <div className="sub">Top 20 con mayor cantidad de no conformidades (inicio + término) en el período</div>
           </div>
         </div>
         <div className="tbl-scroll" style={{maxHeight:400}}>
           <table className="tbl">
-            <thead><tr><th>Docente</th><th>Escuela</th><th style={{textAlign:'right'}}>Visitas</th><th style={{textAlign:'right'}}>No inicio</th><th style={{textAlign:'right'}}>No fin</th><th style={{textAlign:'right'}}>Total</th></tr></thead>
+            <thead><tr><th>Persona</th><th>Área</th><th style={{textAlign:'right'}}>Visitas</th><th style={{textAlign:'right'}}>No inicio</th><th style={{textAlign:'right'}}>No fin</th><th style={{textAlign:'right'}}>Total</th></tr></thead>
             <tbody>
               {rankingDocentes.map((r,i)=>(
                 <tr key={i}>
@@ -4082,20 +4082,20 @@ function GestionesPanel({ data, auditorias, loading, onReload }){
                   <td style={{textAlign:'right',fontWeight:700,color:r.total>0?'var(--danger)':'inherit'}}>{r.total}</td>
                 </tr>
               ))}
-              {rankingDocentes.length===0 && <tr><td colSpan="6"><div className="empty"><span className="emoji">📭</span>Sin auditorías registradas en el período.</div></td></tr>}
+              {rankingDocentes.length===0 && <tr><td colSpan="6"><div className="empty"><span className="emoji">📭</span>Sin registros en el período.</div></td></tr>}
             </tbody>
           </table>
         </div>
       </div>
 
-      {/* Por escuela */}
+      {/* Por área */}
       <div className="card" style={{padding:0}}>
         <div className="card-header" style={{padding:'14px 18px'}}>
-          <div><h3>🏛 Cumplimiento por escuela</h3></div>
+          <div><h3>🏛 Conformidad por área</h3></div>
         </div>
         <div className="tbl-scroll">
           <table className="tbl">
-            <thead><tr><th>Escuela</th><th style={{textAlign:'right'}}>Visitas</th><th style={{textAlign:'right'}}>Llegan</th><th style={{textAlign:'right'}}>No llegan</th><th style={{textAlign:'right'}}>% Cumplimiento</th></tr></thead>
+            <thead><tr><th>Área</th><th style={{textAlign:'right'}}>Visitas</th><th style={{textAlign:'right'}}>Conformes</th><th style={{textAlign:'right'}}>No conformes</th><th style={{textAlign:'right'}}>% Conformidad</th></tr></thead>
             <tbody>
               {porEscuela.map((r,i)=>{
                 const tot = r.llegoSi + r.llegoNo;
@@ -4116,14 +4116,14 @@ function GestionesPanel({ data, auditorias, loading, onReload }){
         </div>
       </div>
 
-      {/* Por auditor */}
+      {/* Por usuario */}
       <div className="card" style={{padding:0}}>
         <div className="card-header" style={{padding:'14px 18px'}}>
-          <div><h3>👤 Auditorías por recorredor</h3></div>
+          <div><h3>👤 Registros por usuario</h3></div>
         </div>
         <div className="tbl-scroll">
           <table className="tbl">
-            <thead><tr><th>Auditor</th><th style={{textAlign:'right'}}>Visitas</th><th style={{textAlign:'right'}}>Completas (inicio+fin)</th></tr></thead>
+            <thead><tr><th>Usuario</th><th style={{textAlign:'right'}}>Visitas</th><th style={{textAlign:'right'}}>Completas (inicio+fin)</th></tr></thead>
             <tbody>
               {porAuditor.map((r,i)=>(
                 <tr key={i}>
@@ -7630,7 +7630,7 @@ function App(){
     nueva:['Solicitar reserva','Nueva solicitud'],
     importar:['Importar datos','SABANA · LISTA DE RECURSOS · Jefaturas'],
     repDoc:['Reporte Docente','Carga docente agrupada por director de carrera (jefatura)'],
-    gestiones:['Gestiones','Auditorías en terreno · sólo administradores'],
+    gestiones:['Gestiones','Pestaña interna · sólo administradores autorizados'],
     docente:['Horario docente','Agenda semanal del docente'],
     usuarios:['Usuarios','Administración de cuentas'],
     reportes:['Reportes','Ocupación y métricas'],
