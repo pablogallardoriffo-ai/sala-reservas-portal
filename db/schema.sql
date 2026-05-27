@@ -23,9 +23,15 @@ CREATE TABLE IF NOT EXISTS salas (
   capacidad    INT,
   tipo         TEXT,
   responsable  TEXT,
+  edificio     TEXT,                                  -- nombre del edificio (puede ser null)
+  ubicacion    TEXT DEFAULT 'Sede',                   -- 'Sede' | 'Fuera de Sede'
   activa       BOOLEAN DEFAULT TRUE,
   updated_at   TIMESTAMPTZ DEFAULT NOW()
 );
+-- Migración para bases ya existentes (corre estos ALTER si la tabla
+-- 'salas' ya existía sin estos campos):
+ALTER TABLE salas ADD COLUMN IF NOT EXISTS edificio  TEXT;
+ALTER TABLE salas ADD COLUMN IF NOT EXISTS ubicacion TEXT DEFAULT 'Sede';
 
 -- MÓDULOS HORARIOS
 CREATE TABLE IF NOT EXISTS modulos (

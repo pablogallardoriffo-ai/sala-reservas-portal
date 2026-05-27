@@ -480,6 +480,10 @@
       width:100%;max-width:560px;box-shadow:var(--shadow-lg);
       max-height:90vh;display:flex;flex-direction:column;
     }
+    .modal.modal-wide{max-width:980px}
+    .kpi.kpi-click{cursor:pointer;border:none;text-align:left;width:100%;font:inherit;color:inherit;transition:transform .12s,box-shadow .12s}
+    .kpi.kpi-click:hover{transform:translateY(-2px);box-shadow:var(--shadow-lg)}
+    .kpi.kpi-click:active{transform:translateY(0)}
     .modal-h{padding:20px 24px;border-bottom:1px solid var(--border-soft);display:flex;align-items:center;justify-content:space-between}
     .modal-h h3{font-size:17px;font-weight:700}
     .modal-b{padding:22px 24px;overflow-y:auto}
@@ -1143,6 +1147,15 @@ const dowFromIso = (iso) => {
 
 // ¿Hay eventos (LISTA DE RECURSOS) cargados? — define la fuente de verdad.
 const hasEventos = (data) => !!(data?.eventos && data.eventos.length);
+
+// ¿La sala es virtual? Detecta por código o nombre que contenga "VIRTUAL".
+// Se usa para excluir virtuales de reportes de subutilización (no tiene
+// sentido medir capacidad/ocupación de una sala sin presencialidad).
+const isSalaVirtual = (s) => {
+  if(!s) return false;
+  const txt = `${s.codigo||''} ${s.nombre||''} ${s.tipo||''}`.toUpperCase();
+  return /VIRTUAL/.test(txt);
+};
 
 // Sesiones académicas en una fecha (ISO YYYY-MM-DD), opcionalmente filtradas
 // por sala. Prefiere `eventos` por fecha exacta; cae al patrón semanal del
@@ -1988,9 +2001,10 @@ function QrModal({ onClose }){
 }
 
 /* ========= DASHBOARD ========= */
-function Dashboard({ data, reservas, user, db, onGoView }){
+function Dashboard({ data, reservas, user, db, onGoView, onGoNuevaPrefill }){
   // Reloj reactivo: refresca cada 60s para que el bloque "AHORA" se mantenga vivo.
   const [now, setNow] = useState(new Date());
+  const [drawer, setDrawer] = useState(null); // 'enCurso' | 'proximas' | 'libres' | null
   useEffect(()=>{
     const t = setInterval(()=> setNow(new Date()), 60*1000);
     return ()=> clearInterval(t);
@@ -2092,6 +2106,17 @@ function Dashboard({ data, reservas, user, db, onGoView }){
   // Salas libres ahora: total salas con clase=0 ahora.
   // Alumnos en sede: suma inscritos de sesiones en curso.
   const sesionesHoy = useMemo(()=> sesionesEnFecha(data, todayIso), [data, todayIso]);
+  // Módulo actual (para preseleccionar al hacer click en "Reservar" desde
+  // una sala libre): el módulo cuyo rango horario contiene la hora actual.
+  const modActivo = useMemo(()=>{
+    const n = now.getHours()*60 + now.getMinutes();
+    return data.modulos.find(m => {
+      const [h1,m1] = m.inicio.split(':').map(Number);
+      const [h2,m2] = m.fin.split(':').map(Number);
+      const a = h1*60+m1, b = h2*60+m2;
+      return n >= a && n < b;
+    }) || null;
+  }, [data.modulos, now]);
   const ahora = useMemo(()=>{
     const dedup = new Set();
     const enCurso = [];
@@ -2105,13 +2130,18 @@ function Dashboard({ data, reservas, user, db, onGoView }){
     }
     const salasOcupadas = new Set(enCurso.map(s => s.s));
     const alumnosEnSede = enCurso.reduce((a,s)=> a + (Number(s.i)||0), 0);
+    // Lista de salas libres (no virtuales) con metadata de la sala
+    const libresLista = data.salas
+      .filter(s => !isSalaVirtual(s) && !salasOcupadas.has(s.codigo))
+      .sort((a,b)=> (a.codigo||'').localeCompare(b.codigo||''));
     return {
       enCurso: enCurso.length,
       proximas: proximas.length,
-      salasLibres: data.salas.length - salasOcupadas.size,
+      salasLibres: libresLista.length,
       alumnosEnSede,
-      enCursoLista: enCurso.sort((a,b)=> (a.s||'').localeCompare(b.s||'')).slice(0,8),
-      proximasLista: proximas.sort((a,b)=> a.hi.localeCompare(b.hi)).slice(0,8),
+      enCursoLista: enCurso.sort((a,b)=> (a.s||'').localeCompare(b.s||'')),
+      proximasLista: proximas.sort((a,b)=> a.hi.localeCompare(b.hi)),
+      libresLista,
     };
   }, [sesionesHoy, hhmmNow, hhmmIn2h, data.salas]);
 
@@ -2176,12 +2206,15 @@ function Dashboard({ data, reservas, user, db, onGoView }){
   // en sesiones de hoy y mañana. Top 5 saturadas (alta utilización) y
   // top 5 subutilizadas (baja utilización con capacidad ≥ 20).
   const salasUtilizacion = useMemo(()=>{
+    const salaInfoMap = new Map(data.salas.map(s => [s.codigo, s]));
     const capBySala = new Map(data.salas.map(s => [s.codigo, s.capacidad||0]));
     const ratioBySala = new Map();   // codigo → [ratio, ratio, ...]
     const seen = new Set();
     for(const iso of [todayIso, mañanaIso]){
       const sess = sesionesEnFecha(data, iso);
       for(const s of sess){
+        const sInfo = salaInfoMap.get(s.s);
+        if(sInfo && isSalaVirtual(sInfo)) continue;  // ← excluye virtuales
         const k = `${s.sc||''}|${s.s||''}|${s.hi}|${s.hf}|${iso}`;
         if(seen.has(k)) continue;
         seen.add(k);
@@ -2307,24 +2340,24 @@ function Dashboard({ data, reservas, user, db, onGoView }){
           </div>
         </div>
         <div className="grid grid-4">
-          <div className="kpi kpi-amber">
+          <button type="button" className="kpi kpi-amber kpi-click" onClick={()=>ahora.enCurso>0 && setDrawer('enCurso')} title={ahora.enCurso>0?'Ver detalle de clases en curso':'Sin clases en curso'}>
             <span className="label">Clases en curso</span>
             <span className="value">{ahora.enCurso}</span>
-            <span className="delta">{ahora.alumnosEnSede.toLocaleString('es-CL')} alumnos en sede</span>
+            <span className="delta">{ahora.alumnosEnSede.toLocaleString('es-CL')} alumnos en sede {ahora.enCurso>0?'· click para ver':''}</span>
             <div className="icon">🎓</div>
-          </div>
-          <div className="kpi kpi-blue">
+          </button>
+          <button type="button" className="kpi kpi-blue kpi-click" onClick={()=>ahora.proximas>0 && setDrawer('proximas')} title={ahora.proximas>0?'Ver detalle de próximas clases':'Sin próximas clases'}>
             <span className="label">Próximas 2 horas</span>
             <span className="value">{ahora.proximas}</span>
-            <span className="delta">arrancan antes de {hhmmIn2h}</span>
+            <span className="delta">inician antes de {hhmmIn2h} {ahora.proximas>0?'· click para ver':''}</span>
             <div className="icon">⏭</div>
-          </div>
-          <div className="kpi kpi-green">
+          </button>
+          <button type="button" className="kpi kpi-green kpi-click" onClick={()=>ahora.salasLibres>0 && setDrawer('libres')} title={ahora.salasLibres>0?'Ver salas libres y reservar':'Sin salas libres'}>
             <span className="label">Salas libres ahora</span>
             <span className="value">{ahora.salasLibres}</span>
-            <span className="delta">de {data.salas.length} totales</span>
+            <span className="delta">de {data.salas.length} totales {ahora.salasLibres>0?'· click para reservar':''}</span>
             <div className="icon">🏫</div>
-          </div>
+          </button>
           <div className="kpi kpi-red">
             <span className="label">% ocupación</span>
             <span className="value">{Math.round((1 - ahora.salasLibres/Math.max(1,data.salas.length))*100)}%</span>
@@ -2332,19 +2365,95 @@ function Dashboard({ data, reservas, user, db, onGoView }){
             <div className="icon">📊</div>
           </div>
         </div>
-        {ahora.enCurso > 0 && (
-          <div style={{marginTop:14,padding:10,background:'var(--surface-2)',borderRadius:8,border:'1px solid var(--border-soft)'}}>
-            <div className="muted" style={{fontSize:11,fontWeight:700,textTransform:'uppercase',letterSpacing:.4,marginBottom:8}}>Algunas clases en curso ({ahora.enCurso}):</div>
-            <div className="row" style={{gap:6,flexWrap:'wrap'}}>
-              {ahora.enCursoLista.map((s,i) => (
-                <span key={i} className="chip info" style={{fontSize:11}} title={`${s.a||s.de||''} · ${s.sc||''} · ${s.i||0} alumnos · hasta ${s.hf}`}>
-                  <b>{s.s}</b> · {(s.a||s.de||'').slice(0,18)} · 👥{s.i||0}
-                </span>
-              ))}
-            </div>
-          </div>
-        )}
       </div>
+
+      {/* Drawer / modal con detalle al hacer click en una KPI */}
+      {drawer && (
+        <Modal
+          title={
+            drawer==='enCurso' ? `🎓 Clases en curso · ${ahora.enCurso}` :
+            drawer==='proximas' ? `⏭ Próximas 2 horas · ${ahora.proximas} clases` :
+            `🏫 Salas libres ahora · ${ahora.salasLibres}${modActivo?` · Mód.${modActivo.num} (${modActivo.inicio}–${modActivo.fin})`:''}`
+          }
+          onClose={()=>setDrawer(null)}
+          wide
+        >
+          {drawer==='enCurso' && (
+            <div className="tbl-scroll" style={{maxHeight:'60vh'}}>
+              <table className="tbl">
+                <thead><tr><th>Sala</th><th>Asignatura</th><th>Sección</th><th>Docente</th><th style={{textAlign:'right'}}>Alumnos</th><th>Hasta</th></tr></thead>
+                <tbody>
+                  {ahora.enCursoLista.map((s,i)=>(
+                    <tr key={i}>
+                      <td><b style={{color:'var(--primary)'}}>{s.s}</b></td>
+                      <td style={{maxWidth:280}}>{s.a||s.de||'—'}</td>
+                      <td><span className="chip">{s.sc||'—'}</span></td>
+                      <td className="muted">{s.d||'—'}</td>
+                      <td style={{textAlign:'right',fontWeight:700}}>{s.i||0}</td>
+                      <td><span className="chip warn">{s.hf}</span></td>
+                    </tr>
+                  ))}
+                  {ahora.enCursoLista.length===0 && <tr><td colSpan="6"><div className="empty"><span className="emoji">📭</span>Sin clases en curso.</div></td></tr>}
+                </tbody>
+              </table>
+            </div>
+          )}
+          {drawer==='proximas' && (
+            <div className="tbl-scroll" style={{maxHeight:'60vh'}}>
+              <table className="tbl">
+                <thead><tr><th>Inicia</th><th>Sala</th><th>Asignatura</th><th>Sección</th><th>Docente</th><th style={{textAlign:'right'}}>Alumnos</th></tr></thead>
+                <tbody>
+                  {ahora.proximasLista.map((s,i)=>(
+                    <tr key={i}>
+                      <td><b className="chip info">{s.hi}</b></td>
+                      <td><b style={{color:'var(--primary)'}}>{s.s}</b></td>
+                      <td style={{maxWidth:280}}>{s.a||s.de||'—'}</td>
+                      <td><span className="chip">{s.sc||'—'}</span></td>
+                      <td className="muted">{s.d||'—'}</td>
+                      <td style={{textAlign:'right',fontWeight:700}}>{s.i||0}</td>
+                    </tr>
+                  ))}
+                  {ahora.proximasLista.length===0 && <tr><td colSpan="6"><div className="empty"><span className="emoji">📭</span>Sin clases en las próximas 2 horas.</div></td></tr>}
+                </tbody>
+              </table>
+            </div>
+          )}
+          {drawer==='libres' && (
+            <>
+              <div className="sub" style={{marginBottom:10,fontSize:12.5}}>
+                {modActivo
+                  ? <>Click en <b>Reservar</b> precarga sala + módulo {modActivo.num} en <b>Solicitar reserva</b>. Las salas virtuales no aparecen.</>
+                  : <>Estás fuera de un módulo (recreo o fin de jornada). Click en <b>Reservar</b> abre Solicitar reserva con la sala precargada — eliges el módulo allí.</>}
+              </div>
+              <div className="tbl-scroll" style={{maxHeight:'60vh'}}>
+                <table className="tbl">
+                  <thead><tr><th>Código</th><th>Denominación</th><th>Tipo</th><th>Edificio</th><th style={{textAlign:'right'}}>Cap.</th><th></th></tr></thead>
+                  <tbody>
+                    {ahora.libresLista.map((s,i)=>(
+                      <tr key={i}>
+                        <td><b style={{color:'var(--primary)'}}>{s.codigo}</b></td>
+                        <td style={{maxWidth:280}}>{s.nombre||'—'}</td>
+                        <td><span className="chip">{s.tipo||'—'}</span></td>
+                        <td className="muted">{s.edificio||'—'}</td>
+                        <td style={{textAlign:'right',fontWeight:700}}>{s.capacidad||0}</td>
+                        <td className="nowrap" style={{textAlign:'right'}}>
+                          <button className="btn btn-sm btn-primary" onClick={()=>{
+                            setDrawer(null);
+                            const pre = { sala:s.codigo, fecha:todayIso };
+                            if(modActivo){ pre.mi = modActivo.num; pre.mf = modActivo.num; }
+                            onGoNuevaPrefill && onGoNuevaPrefill(pre);
+                          }}>Reservar</button>
+                        </td>
+                      </tr>
+                    ))}
+                    {ahora.libresLista.length===0 && <tr><td colSpan="6"><div className="empty"><span className="emoji">📭</span>Sin salas libres.</div></td></tr>}
+                  </tbody>
+                </table>
+              </div>
+            </>
+          )}
+        </Modal>
+      )}
 
       {/* === SLA: vencidas + en peligro === */}
       {slaUrgentes && (slaUrgentes.vencidas.length>0 || slaUrgentes.peligro.length>0) && (
@@ -3144,38 +3253,52 @@ function HorarioDocente({ data }){
 
 /* ========= SALAS ========= */
 const TIPOS_RECINTO_BASE = ['Sala','Laboratorio','Taller','Auditorio','Gimnasio','Estudio','Reunion','Cancha','Piscina'];
+const UBICACIONES = ['Sede','Fuera de Sede'];
+// Catálogo inicial de edificios sugeridos (Sede Viña del Mar) — el usuario
+// puede crear más mediante "＋ Crear nuevo edificio…" en el modal.
+const EDIFICIOS_BASE = ['Arlegui','Fortín','Aromos','Saint Dominic','Seminario San Rafael','Stadio Italiano'];
 
 function Salas({ data, user, toast, onCreate, onUpdate, onDelete }){
   const [q, setQ] = useState('');
   const [tipo, setTipo] = useState('');
+  const [edificioF, setEdificioF] = useState('');
+  const [ubicacionF, setUbicacionF] = useState('');
   const [modal, setModal] = useState(null);
-  const [form, setForm] = useState({codigo:'',nombre:'',capacidad:'',tipo:'Sala',responsable:''});
+  const [form, setForm] = useState({codigo:'',nombre:'',capacidad:'',tipo:'Sala',responsable:'',edificio:'',ubicacion:'Sede'});
   const [busy, setBusy] = useState(false);
   const [tipoCustom, setTipoCustom] = useState('');
   const [creandoTipo, setCreandoTipo] = useState(false);
+  const [edifCustom, setEdifCustom] = useState('');
+  const [creandoEdif, setCreandoEdif] = useState(false);
   const canEdit = user.role==='admin';
 
   const tipos = useMemo(()=> [...new Set(data.salas.map(s=>s.tipo))].sort(), [data]);
-  // Catálogo de tipos seleccionables = base + los que ya existan en el catálogo.
   const tiposCatalogo = useMemo(()=> {
     const set = new Set([...TIPOS_RECINTO_BASE, ...tipos.filter(Boolean)]);
     return [...set].sort();
   }, [tipos]);
+  // Catálogo de edificios = base + los que ya existan en el catálogo
+  const edificiosCatalogo = useMemo(()=> {
+    const set = new Set([...EDIFICIOS_BASE, ...data.salas.map(s=>s.edificio).filter(Boolean)]);
+    return [...set].sort();
+  }, [data.salas]);
+
   const filtered = useMemo(()=> data.salas.filter(s =>
     (!q || s.codigo.toLowerCase().includes(q.toLowerCase()) || (s.nombre||'').toLowerCase().includes(q.toLowerCase())) &&
-    (!tipo || s.tipo===tipo)
-  ), [data, q, tipo]);
+    (!tipo || s.tipo===tipo) &&
+    (!edificioF || (s.edificio||'') === edificioF) &&
+    (!ubicacionF || (s.ubicacion||'Sede') === ubicacionF)
+  ), [data, q, tipo, edificioF, ubicacionF]);
 
-  const resetForm = () => { setForm({codigo:'',nombre:'',capacidad:'',tipo:'Sala',responsable:''}); setTipoCustom(''); setCreandoTipo(false); };
+  const resetForm = () => {
+    setForm({codigo:'',nombre:'',capacidad:'',tipo:'Sala',responsable:'',edificio:'',ubicacion:'Sede'});
+    setTipoCustom(''); setCreandoTipo(false);
+    setEdifCustom(''); setCreandoEdif(false);
+  };
 
   const handleTipoSelect = (v) => {
-    if(v === '__nuevo__'){
-      setCreandoTipo(true);
-      setTipoCustom('');
-    } else {
-      setCreandoTipo(false);
-      setForm(f => ({...f, tipo:v}));
-    }
+    if(v === '__nuevo__'){ setCreandoTipo(true); setTipoCustom(''); }
+    else { setCreandoTipo(false); setForm(f => ({...f, tipo:v})); }
   };
   const confirmarNuevoTipo = () => {
     const nuevo = (tipoCustom||'').trim();
@@ -3194,6 +3317,27 @@ function Salas({ data, user, toast, onCreate, onUpdate, onDelete }){
     toast(`Tipo "${nuevo}" listo. Se guardará al confirmar la sala.`);
   };
 
+  const handleEdifSelect = (v) => {
+    if(v === '__nuevo__'){ setCreandoEdif(true); setEdifCustom(''); }
+    else { setCreandoEdif(false); setForm(f => ({...f, edificio:v})); }
+  };
+  const confirmarNuevoEdif = () => {
+    const nuevo = (edifCustom||'').trim();
+    if(!nuevo){ toast('Escribe el nombre del edificio.'); return; }
+    if(nuevo.length > 60){ toast('Máximo 60 caracteres.'); return; }
+    const yaExiste = edificiosCatalogo.some(t => t.toLowerCase() === nuevo.toLowerCase());
+    if(yaExiste){
+      const canonico = edificiosCatalogo.find(t => t.toLowerCase() === nuevo.toLowerCase());
+      setForm(f => ({...f, edificio:canonico}));
+      setCreandoEdif(false); setEdifCustom('');
+      toast(`"${canonico}" ya existe — se selecciona el existente.`);
+      return;
+    }
+    setForm(f => ({...f, edificio:nuevo}));
+    setCreandoEdif(false); setEdifCustom('');
+    toast(`Edificio "${nuevo}" listo.`);
+  };
+
   const add = async () => {
     if(!form.codigo || !form.nombre){ toast('Completa código y nombre.'); return; }
     if(data.salas.some(s => s.codigo===form.codigo)){ toast('Ya existe una sala con ese código.'); return; }
@@ -3204,14 +3348,23 @@ function Salas({ data, user, toast, onCreate, onUpdate, onDelete }){
     } finally { setBusy(false); }
   };
   const startEdit = (sala) => {
-    setForm({codigo:sala.codigo, nombre:sala.nombre||'', capacidad:String(sala.capacidad||''), tipo:sala.tipo||'Sala', responsable:sala.responsable||''});
+    setForm({
+      codigo:sala.codigo, nombre:sala.nombre||'',
+      capacidad:String(sala.capacidad||''), tipo:sala.tipo||'Sala',
+      responsable:sala.responsable||'',
+      edificio:sala.edificio||'', ubicacion:sala.ubicacion||'Sede',
+    });
     setModal('edit');
   };
   const update = async () => {
     if(!form.nombre){ toast('La denominación es obligatoria.'); return; }
     setBusy(true);
     try {
-      await onUpdate(form.codigo, { nombre:form.nombre, capacidad:Number(form.capacidad)||0, tipo:form.tipo, responsable:form.responsable });
+      await onUpdate(form.codigo, {
+        nombre:form.nombre, capacidad:Number(form.capacidad)||0,
+        tipo:form.tipo, responsable:form.responsable,
+        edificio:form.edificio||null, ubicacion:form.ubicacion||'Sede',
+      });
       resetForm(); setModal(null); toast('Sala actualizada.');
     } finally { setBusy(false); }
   };
@@ -3234,6 +3387,20 @@ function Salas({ data, user, toast, onCreate, onUpdate, onDelete }){
             {tipos.map(t=> <option key={t}>{t}</option>)}
           </select>
         </div>
+        <div className="field">
+          <label>Edificio</label>
+          <select value={edificioF} onChange={e=>setEdificioF(e.target.value)}>
+            <option value="">Todos</option>
+            {edificiosCatalogo.map(t=> <option key={t}>{t}</option>)}
+          </select>
+        </div>
+        <div className="field">
+          <label>Ubicación</label>
+          <select value={ubicacionF} onChange={e=>setUbicacionF(e.target.value)}>
+            <option value="">Todas</option>
+            {UBICACIONES.map(u=> <option key={u}>{u}</option>)}
+          </select>
+        </div>
         <div style={{marginLeft:'auto'}}>
           {canEdit && <button className="btn btn-primary" onClick={()=>setModal('add')}>{I.plus}Nueva sala</button>}
         </div>
@@ -3243,7 +3410,7 @@ function Salas({ data, user, toast, onCreate, onUpdate, onDelete }){
         <div className="tbl-scroll">
           <table className="tbl">
             <thead><tr>
-              <th>Código</th><th>Denominación</th><th>Tipo</th><th>Cap.</th><th>Responsable</th><th></th>
+              <th>Código</th><th>Denominación</th><th>Tipo</th><th>Edificio</th><th>Ubicación</th><th>Cap.</th><th>Responsable</th><th></th>
             </tr></thead>
             <tbody>
               {filtered.map(s => (
@@ -3251,6 +3418,8 @@ function Salas({ data, user, toast, onCreate, onUpdate, onDelete }){
                   <td><b style={{color:'var(--primary)'}}>{s.codigo}</b></td>
                   <td style={{maxWidth:340}}>{s.nombre}</td>
                   <td><span className="chip">{s.tipo}</span></td>
+                  <td className="muted">{s.edificio||'—'}</td>
+                  <td><span className={`chip ${s.ubicacion==='Fuera de Sede'?'warn':''}`}>{s.ubicacion||'Sede'}</span></td>
                   <td>{s.capacidad}</td>
                   <td className="muted">{s.responsable}</td>
                   <td className="nowrap" style={{textAlign:'right'}}>
@@ -3261,7 +3430,7 @@ function Salas({ data, user, toast, onCreate, onUpdate, onDelete }){
                   </td>
                 </tr>
               ))}
-              {filtered.length===0 && <tr><td colSpan="6"><div className="empty"><span className="emoji">📭</span>Sin resultados con esos filtros.</div></td></tr>}
+              {filtered.length===0 && <tr><td colSpan="8"><div className="empty"><span className="emoji">📭</span>Sin resultados con esos filtros.</div></td></tr>}
             </tbody>
           </table>
         </div>
@@ -3279,14 +3448,9 @@ function Salas({ data, user, toast, onCreate, onUpdate, onDelete }){
               <label>Tipo de recinto</label>
               {creandoTipo ? (
                 <div className="row" style={{gap:6}}>
-                  <input
-                    autoFocus
-                    value={tipoCustom}
-                    onChange={e=>setTipoCustom(e.target.value)}
+                  <input autoFocus value={tipoCustom} onChange={e=>setTipoCustom(e.target.value)}
                     onKeyDown={e=>{ if(e.key==='Enter'){ e.preventDefault(); confirmarNuevoTipo(); } if(e.key==='Escape'){ setCreandoTipo(false); setTipoCustom(''); } }}
-                    placeholder="Ej. Sala de cómputo, Pabellón…"
-                    style={{flex:1}}
-                  />
+                    placeholder="Ej. Sala de cómputo, Pabellón…" style={{flex:1}}/>
                   <button type="button" className="btn btn-sm btn-primary" onClick={confirmarNuevoTipo}>OK</button>
                   <button type="button" className="btn btn-sm btn-ghost" onClick={()=>{ setCreandoTipo(false); setTipoCustom(''); }}>✕</button>
                 </div>
@@ -3299,6 +3463,33 @@ function Salas({ data, user, toast, onCreate, onUpdate, onDelete }){
               )}
             </div>
             <div className="field"><label>Responsable</label><input value={form.responsable} onChange={e=>setForm({...form,responsable:e.target.value})}/></div>
+          </div>
+          <div className="col-2">
+            <div className="field">
+              <label>Edificio</label>
+              {creandoEdif ? (
+                <div className="row" style={{gap:6}}>
+                  <input autoFocus value={edifCustom} onChange={e=>setEdifCustom(e.target.value)}
+                    onKeyDown={e=>{ if(e.key==='Enter'){ e.preventDefault(); confirmarNuevoEdif(); } if(e.key==='Escape'){ setCreandoEdif(false); setEdifCustom(''); } }}
+                    placeholder="Ej. Torre A, Anexo Norte…" style={{flex:1}}/>
+                  <button type="button" className="btn btn-sm btn-primary" onClick={confirmarNuevoEdif}>OK</button>
+                  <button type="button" className="btn btn-sm btn-ghost" onClick={()=>{ setCreandoEdif(false); setEdifCustom(''); }}>✕</button>
+                </div>
+              ) : (
+                <select value={form.edificio} onChange={e=>handleEdifSelect(e.target.value)}>
+                  <option value="">— Sin asignar —</option>
+                  {edificiosCatalogo.map(t => <option key={t} value={t}>{t}</option>)}
+                  {form.edificio && !edificiosCatalogo.includes(form.edificio) && <option value={form.edificio}>{form.edificio}</option>}
+                  <option value="__nuevo__">＋ Crear nuevo edificio…</option>
+                </select>
+              )}
+            </div>
+            <div className="field">
+              <label>Ubicación</label>
+              <select value={form.ubicacion} onChange={e=>setForm({...form,ubicacion:e.target.value})}>
+                {UBICACIONES.map(u => <option key={u} value={u}>{u}</option>)}
+              </select>
+            </div>
           </div>
         </Modal>
       )}
@@ -4080,97 +4271,121 @@ function Reportes({ data, reservas }){
   const sesiones = useMemo(()=> sesionesConsolidadas(data), [data]);
 
   // === Análisis por escuela ===
+  // sesiones: instancias de clase (deduplicado por sección/horario/fecha).
+  // alumnos: estudiantes distintos atendidos — los inscritos se cuentan
+  // UNA VEZ por sección, no por instancia (los mismos 20 alumnos de una
+  // sección no son 20 alumnos × 18 semanas).
   const reporteEscuela = useMemo(()=>{
-    const m = new Map();  // escuela → {sesiones, alumnos, salas:Set, secciones:Set, salasMap}
-    const seen = new Set();
+    const m = new Map();
+    const seenInstance = new Set();
     for(const s of sesiones){
-      const k = `${s.sc||''}|${s.s||''}|${s.hi}|${s.hf}|${s.fi||s.dw||''}`;
-      if(seen.has(k)) continue;
-      seen.add(k);
       const es = s.es || 'Sin escuela';
-      if(!m.has(es)) m.set(es, { sesiones:0, alumnos:0, salas:new Set(), secciones:new Set(), salasMap:new Map() });
+      if(!m.has(es)) m.set(es, { sesiones:0, alumnosPorSeccion:new Map(), salas:new Set(), secciones:new Set(), salasMap:new Map() });
       const e = m.get(es);
-      e.sesiones++;
-      e.alumnos += Number(s.i) || 0;
-      if(s.s){
-        e.salas.add(s.s);
-        e.salasMap.set(s.s, (e.salasMap.get(s.s)||0) + 1);
+      const k = `${es}|${s.sc||''}|${s.s||''}|${s.hi}|${s.hf}|${s.fi||s.dw||''}`;
+      if(!seenInstance.has(k)){
+        seenInstance.add(k);
+        e.sesiones++;
+        if(s.s) e.salasMap.set(s.s, (e.salasMap.get(s.s)||0) + 1);
       }
-      if(s.sc) e.secciones.add(s.sc);
+      if(s.sc){
+        const ins = Number(s.i) || 0;
+        const prev = e.alumnosPorSeccion.get(s.sc) || 0;
+        if(ins > prev) e.alumnosPorSeccion.set(s.sc, ins);
+        e.secciones.add(s.sc);
+      }
+      if(s.s) e.salas.add(s.s);
     }
     return [...m.entries()].map(([codigo, e]) => {
       const topSala = [...e.salasMap.entries()].sort((a,b)=> b[1]-a[1])[0];
+      const alumnos = [...e.alumnosPorSeccion.values()].reduce((a,b)=>a+b, 0);
       return {
         codigo,
         nombre: ESCUELAS_FULL[codigo] || codigo,
         sesiones: e.sesiones,
-        alumnos: e.alumnos,
+        alumnos,
         secciones: e.secciones.size,
         salas: e.salas.size,
         topSala: topSala ? `${topSala[0]} (${topSala[1]})` : '—',
-        promPorSesion: e.sesiones > 0 ? Math.round(e.alumnos / e.sesiones) : 0,
+        promPorSesion: e.sesiones > 0 ? Math.round(alumnos / e.secciones.size) : 0,
       };
     }).sort((a,b)=> b.alumnos - a.alumnos);
   }, [sesiones]);
 
-  // === Carga docente ===
+  // === Carga docente === (misma lógica de deduplicación por sección)
   const reporteDocentes = useMemo(()=>{
-    const m = new Map();  // docente → stats
-    const seen = new Set();
+    const m = new Map();
+    const seenInstance = new Set();
     for(const s of sesiones){
       if(!s.d) continue;
-      const k = `${s.sc||''}|${s.s||''}|${s.hi}|${s.hf}|${s.fi||s.dw||''}`;
-      if(seen.has(k)) continue;
-      seen.add(k);
-      if(!m.has(s.d)) m.set(s.d, { sesiones:0, alumnos:0, salas:new Set(), secciones:new Set(), escuela:s.es });
+      if(!m.has(s.d)) m.set(s.d, { sesiones:0, alumnosPorSeccion:new Map(), salas:new Set(), secciones:new Set(), escuela:s.es });
       const e = m.get(s.d);
-      e.sesiones++;
-      e.alumnos += Number(s.i) || 0;
+      const k = `${s.d}|${s.sc||''}|${s.s||''}|${s.hi}|${s.hf}|${s.fi||s.dw||''}`;
+      if(!seenInstance.has(k)){
+        seenInstance.add(k);
+        e.sesiones++;
+      }
+      if(s.sc){
+        const ins = Number(s.i) || 0;
+        const prev = e.alumnosPorSeccion.get(s.sc) || 0;
+        if(ins > prev) e.alumnosPorSeccion.set(s.sc, ins);
+        e.secciones.add(s.sc);
+      }
       if(s.s) e.salas.add(s.s);
-      if(s.sc) e.secciones.add(s.sc);
     }
     return [...m.entries()].map(([nombre, e]) => ({
       nombre,
       escuela: ESCUELAS_FULL[e.escuela] || e.escuela || '—',
       sesiones: e.sesiones,
-      alumnos: e.alumnos,
+      alumnos: [...e.alumnosPorSeccion.values()].reduce((a,b)=>a+b, 0),
       secciones: e.secciones.size,
       salas: e.salas.size,
     })).sort((a,b)=> b.sesiones - a.sesiones);
   }, [sesiones]);
 
   // === Salas subutilizadas ===
-  // Calcula uso promedio (inscritos / capacidad) por sala. Tabla incluye
-  // todas las salas con datos para que se pueda exportar el ranking entero.
+  // Calcula uso promedio (inscritos / capacidad) por sala. Excluye salas
+  // VIRTUALES (no son presenciales — su capacidad no representa uso real).
+  // Alumnos por sala: deduplicado por sección (los mismos 20 alumnos no
+  // cuentan 18 veces porque la sección se dicta cada semana del semestre).
   const reporteSalas = useMemo(()=>{
+    const salaInfo = new Map(data.salas.map(s => [s.codigo, s]));
     const capBySala = new Map(data.salas.map(s => [s.codigo, s.capacidad||0]));
-    const stats = new Map();  // codigo → {ratios:[], sesiones, alumnos}
-    const seen = new Set();
+    const stats = new Map();
+    const seenInstance = new Set();
     for(const s of sesiones){
       if(!s.s) continue;
-      const k = `${s.sc||''}|${s.s}|${s.hi}|${s.hf}|${s.fi||s.dw||''}`;
-      if(seen.has(k)) continue;
-      seen.add(k);
-      const cap = capBySala.get(s.s) || 0;
-      const ins = Number(s.i) || 0;
-      if(!stats.has(s.s)) stats.set(s.s, { ratios:[], sesiones:0, alumnos:0 });
+      const sInfo = salaInfo.get(s.s);
+      if(sInfo && isSalaVirtual(sInfo)) continue;  // ← excluye virtuales
+      if(!stats.has(s.s)) stats.set(s.s, { ratios:[], sesiones:0, alumnosPorSeccion:new Map() });
       const x = stats.get(s.s);
-      x.sesiones++;
-      x.alumnos += ins;
-      if(cap > 0 && ins > 0) x.ratios.push(ins / cap);
+      const k = `${s.s}|${s.sc||''}|${s.hi}|${s.hf}|${s.fi||s.dw||''}`;
+      if(!seenInstance.has(k)){
+        seenInstance.add(k);
+        x.sesiones++;
+        const cap = capBySala.get(s.s) || 0;
+        const ins = Number(s.i) || 0;
+        if(cap > 0 && ins > 0) x.ratios.push(ins / cap);
+      }
+      if(s.sc){
+        const ins = Number(s.i) || 0;
+        const prev = x.alumnosPorSeccion.get(s.sc) || 0;
+        if(ins > prev) x.alumnosPorSeccion.set(s.sc, ins);
+      }
     }
-    const salaInfo = new Map(data.salas.map(s => [s.codigo, s]));
     return [...stats.entries()].map(([codigo, x]) => {
       const info = salaInfo.get(codigo) || {};
       const avgUso = x.ratios.length ? x.ratios.reduce((a,b)=>a+b,0) / x.ratios.length : 0;
+      const alumnos = [...x.alumnosPorSeccion.values()].reduce((a,b)=>a+b, 0);
+      const seccionesUnicas = x.alumnosPorSeccion.size;
       return {
         codigo,
         nombre: info.nombre || codigo,
         tipo: info.tipo || '—',
         capacidad: info.capacidad || 0,
         sesiones: x.sesiones,
-        alumnos: x.alumnos,
-        promInscritos: x.sesiones > 0 ? Math.round(x.alumnos / x.sesiones) : 0,
+        alumnos,
+        promInscritos: seccionesUnicas > 0 ? Math.round(alumnos / seccionesUnicas) : 0,
         avgUso,
       };
     }).filter(x => x.capacidad > 0).sort((a,b)=> a.avgUso - b.avgUso);
@@ -4507,23 +4722,43 @@ function ReporteDocente({ data }){
 
   const sesiones = useMemo(()=> sesionesConsolidadas(data), [data]);
 
-  // Stats por docente (deduplicado por sesión-instancia)
+  // Stats por docente:
+  // - sesiones: cantidad de INSTANCIAS de clase (deduplicado por
+  //   sección/sala/horario/fecha — una clase semanal recurrente cuenta
+  //   N veces, una vez por cada vez que el docente la dicta).
+  // - alumnos: cantidad de ESTUDIANTES distintos atendidos. Como el
+  //   sistema no entrega alumnos nominales, se aproxima sumando los
+  //   inscritos UNA VEZ por sección — los mismos 20 alumnos de una
+  //   sección no se cuentan 18 veces (1 por semana del semestre).
   const statsDocente = useMemo(()=>{
     const m = new Map();
-    const seen = new Set();
+    const seenInstance = new Set();
     for(const s of sesiones){
       if(!s.d) continue;
-      const k = `${s.sc||''}|${s.s||''}|${s.hi}|${s.hf}|${s.fi||s.dw||''}`;
-      if(seen.has(k)) continue;
-      seen.add(k);
-      if(!m.has(s.d)) m.set(s.d, { sesiones:0, alumnos:0, salas:new Set(), secciones:new Set(), siglas:new Set(), escuela:s.es });
+      if(!m.has(s.d)) m.set(s.d, { sesiones:0, alumnosPorSeccion:new Map(), salas:new Set(), secciones:new Set(), siglas:new Set(), escuela:s.es });
       const e = m.get(s.d);
-      e.sesiones++;
-      e.alumnos += Number(s.i) || 0;
+      // Sesiones (instancias) — deduplicado por fecha/módulo/sala/sección
+      const k = `${s.d}|${s.sc||''}|${s.s||''}|${s.hi}|${s.hf}|${s.fi||s.dw||''}`;
+      if(!seenInstance.has(k)){
+        seenInstance.add(k);
+        e.sesiones++;
+      }
+      // Alumnos: registrar inscritos UNA VEZ por sección. Toma el valor
+      // máximo encontrado en caso de que la fuente reporte distinto en
+      // distintas semanas (para no subestimar).
+      if(s.sc){
+        const ins = Number(s.i) || 0;
+        const prev = e.alumnosPorSeccion.get(s.sc) || 0;
+        if(ins > prev) e.alumnosPorSeccion.set(s.sc, ins);
+        e.secciones.add(s.sc);
+      }
       if(s.s)  e.salas.add(s.s);
-      if(s.sc) e.secciones.add(s.sc);
       const sig = siglaFrom(s.sc);
       if(sig)  e.siglas.add(sig);
+    }
+    // Consolidar suma final por docente
+    for(const e of m.values()){
+      e.alumnos = [...e.alumnosPorSeccion.values()].reduce((a,b)=>a+b, 0);
     }
     return m;
   }, [sesiones]);
@@ -4557,17 +4792,41 @@ function ReporteDocente({ data }){
         sinJefatura.push(row);
       }
     }
+    // Suma de alumnos por jefe: deduplica secciones que toquen >1 docente
+    // del mismo jefe (cuenta los alumnos una sola vez en ese grupo).
+    const sumAlumnosUnicos = (docentes) => {
+      const secGlobal = new Map();
+      for(const d of docentes){
+        const st = statsDocente.get(d.docente);
+        if(!st) continue;
+        for(const [sc, ins] of st.alumnosPorSeccion){
+          const prev = secGlobal.get(sc) || 0;
+          if(ins > prev) secGlobal.set(sc, ins);
+        }
+      }
+      return [...secGlobal.values()].reduce((a,b)=>a+b, 0);
+    };
+    // Secciones distintas por jefe (también deduplicadas a nivel grupo)
+    const seccionesUnicas = (docentes) => {
+      const all = new Set();
+      for(const d of docentes){
+        const st = statsDocente.get(d.docente);
+        if(!st) continue;
+        for(const sc of st.secciones) all.add(sc);
+      }
+      return all.size;
+    };
+
     const arr = [...byJefe.values()].map(g => ({
       ...g,
       docentes: g.docentes.sort((a,b)=> b.alumnos - a.alumnos),
       totDocentes: g.docentes.length,
       totSesiones: g.docentes.reduce((a,d)=> a+d.sesiones, 0),
-      totSecciones: g.docentes.reduce((a,d)=> a+d.secciones, 0),
+      totSecciones: seccionesUnicas(g.docentes),
       totSiglas: new Set(g.docentes.flatMap(d=>{
-        // recompute set por jefe → sumar siglas distintas
         return [...statsDocente.get(d.docente).siglas];
       })).size,
-      totAlumnos: g.docentes.reduce((a,d)=> a+d.alumnos, 0),
+      totAlumnos: sumAlumnosUnicos(g.docentes),
     })).sort((a,b)=> b.totAlumnos - a.totAlumnos);
 
     if(sinJefatura.length){
@@ -4577,9 +4836,9 @@ function ReporteDocente({ data }){
         docentes: sinJefatura.sort((a,b)=> b.alumnos - a.alumnos),
         totDocentes: sinJefatura.length,
         totSesiones: sinJefatura.reduce((a,d)=> a+d.sesiones, 0),
-        totSecciones: sinJefatura.reduce((a,d)=> a+d.secciones, 0),
+        totSecciones: seccionesUnicas(sinJefatura),
         totSiglas: 0,
-        totAlumnos: sinJefatura.reduce((a,d)=> a+d.alumnos, 0),
+        totAlumnos: sumAlumnosUnicos(sinJefatura),
       });
     }
     return arr;
@@ -4664,7 +4923,19 @@ function ReporteDocente({ data }){
           for(const st of statsDocente.values()) for(const s of st.siglas) all.add(s);
           return all.size;
         })()}</span><div className="icon">📚</div></div>
-        <div className="kpi kpi-blue"><span className="label">Alumnos atendidos total</span><span className="value">{[...statsDocente.values()].reduce((a,st)=> a+st.alumnos, 0).toLocaleString('es-CL')}</span><div className="icon">👥</div></div>
+        <div className="kpi kpi-blue"><span className="label">Alumnos atendidos total</span><span className="value">{(()=>{
+          // Deduplicación global por sección: una sección la cuentan UNA
+          // vez aunque tenga varios docentes asignados. Toma el máximo
+          // valor de inscritos encontrado en cualquier docente.
+          const seccGlobal = new Map();
+          for(const st of statsDocente.values()){
+            for(const [sc, ins] of st.alumnosPorSeccion){
+              const prev = seccGlobal.get(sc) || 0;
+              if(ins > prev) seccGlobal.set(sc, ins);
+            }
+          }
+          return [...seccGlobal.values()].reduce((a,b)=>a+b, 0).toLocaleString('es-CL');
+        })()}</span><div className="icon">👥</div></div>
       </div>
 
       <div className="card no-print-actions">
@@ -4751,6 +5022,8 @@ function MapaCalor({ data, user }){
   const [nivel, setNivel]     = useState('');
   const [docente, setDocente] = useState('');
   const [seccion, setSeccion] = useState('');
+  const [edificio, setEdificio] = useState('');
+  const [ubicacion, setUbicacion] = useState('');
   const now = useNowMinutes();
   const todayDw = (() => { const d = new Date().getDay(); return d===0 ? 6 : d-1; })();
 
@@ -4805,11 +5078,18 @@ function MapaCalor({ data, user }){
 
   // Sesiones filtradas
   const tipoBySala = useMemo(()=> new Map(data.salas.map(s=>[s.codigo, s.tipo])), [data.salas]);
+  const edifBySala = useMemo(()=> new Map(data.salas.map(s=>[s.codigo, s.edificio||''])), [data.salas]);
+  const ubicBySala = useMemo(()=> new Map(data.salas.map(s=>[s.codigo, s.ubicacion||'Sede'])), [data.salas]);
+  const edificios  = useMemo(()=> [...new Set(data.salas.map(s=>s.edificio).filter(Boolean))].sort(), [data.salas]);
+  const tieneEdificios = edificios.length > 0;
+  const tieneUbicaciones = data.salas.some(s => s.ubicacion);
   const filtradas = useMemo(()=>{
     const semObj = semana ? semanas.find(w => w.num === semana) : null;
     return sesiones.filter(s => {
       if(sala && s.s !== sala) return false;
       if(tipo && tipoBySala.get(s.s) !== tipo) return false;
+      if(edificio && edifBySala.get(s.s) !== edificio) return false;
+      if(ubicacion && ubicBySala.get(s.s) !== ubicacion) return false;
       if(escuela && s.es !== escuela) return false;
       if(jornada && s.j !== jornada) return false;
       if(nivel && String(s.n||'') !== nivel) return false;
@@ -4818,7 +5098,7 @@ function MapaCalor({ data, user }){
       if(semObj && s.fi && (s.fi < semObj.lunes || s.fi > semObj.domingo)) return false;
       return true;
     });
-  }, [sesiones, sala, tipo, escuela, jornada, nivel, docente, seccion, semana, semanas, tipoBySala]);
+  }, [sesiones, sala, tipo, edificio, ubicacion, escuela, jornada, nivel, docente, seccion, semana, semanas, tipoBySala, edifBySala, ubicBySala]);
 
   // Grid del mapa: 20 módulos × 7 días. Para cada (módulo, día) sumamos
   // inscritos de las sesiones cuyo rango horario cubre ese módulo,
@@ -4847,12 +5127,25 @@ function MapaCalor({ data, user }){
 
   const flat = mapa.flat();
   const maxCell = Math.max(0, ...flat);
-  const totalAlumnoModulo = flat.reduce((a,b)=>a+b, 0);
+  // Secciones distintas filtradas (deduplicadas por código de sección)
+  const seccionesDistintas = useMemo(()=> new Set(filtradas.map(s=>s.sc).filter(Boolean)).size, [filtradas]);
   const peakIdx = (() => {
     let best = null, bestV = 0;
     for(let mi=0; mi<mapa.length; mi++){
       for(let dw=0; dw<6; dw++){
         if(mapa[mi][dw] > bestV){ bestV = mapa[mi][dw]; best = { mod:data.modulos[mi], dw, v:bestV }; }
+      }
+    }
+    return best;
+  })();
+  // Pico mínimo: celda con valor > 0 más bajo (ignora celdas en cero, que
+  // representan módulos sin actividad — no son un "pico bajo", son vacío).
+  const minIdx = (() => {
+    let best = null, bestV = Infinity;
+    for(let mi=0; mi<mapa.length; mi++){
+      for(let dw=0; dw<6; dw++){
+        const v = mapa[mi][dw];
+        if(v > 0 && v < bestV){ bestV = v; best = { mod:data.modulos[mi], dw, v }; }
       }
     }
     return best;
@@ -4878,8 +5171,9 @@ function MapaCalor({ data, user }){
   const resetFiltros = () => {
     setSala(''); setSemana(0); setTipo(''); setEscuela(''); setJornada('');
     setNivel(''); setDocente(''); setSeccion('');
+    setEdificio(''); setUbicacion('');
   };
-  const algunFiltro = !!(sala||semana||tipo||escuela||jornada||nivel||docente||seccion);
+  const algunFiltro = !!(sala||semana||tipo||escuela||jornada||nivel||docente||seccion||edificio||ubicacion);
 
   return (
     <div className="stack">
@@ -4910,22 +5204,22 @@ function MapaCalor({ data, user }){
       {/* KPIs */}
       <div className="grid grid-4">
         <div className="kpi kpi-blue">
-          <span className="label">Sesiones filtradas</span>
-          <span className="value">{filtradas.length.toLocaleString('es-CL')}</span>
+          <span className="label">Secciones filtradas</span>
+          <span className="value">{seccionesDistintas.toLocaleString('es-CL')}</span>
           <span className="delta">{algunFiltro?'con filtros':'sin filtros'}</span>
           <div className="icon">📚</div>
-        </div>
-        <div className="kpi kpi-green">
-          <span className="label">Alumno · módulo total</span>
-          <span className="value">{totalAlumnoModulo.toLocaleString('es-CL')}</span>
-          <span className="delta">suma de inscritos × módulos cubiertos</span>
-          <div className="icon">👥</div>
         </div>
         <div className="kpi kpi-amber">
           <span className="label">Pico máximo</span>
           <span className="value">{maxCell.toLocaleString('es-CL')}</span>
           <span className="delta">{peakIdx ? `Mód.${peakIdx.mod.num} · ${DIA_NOMBRES[peakIdx.dw]}` : '—'}</span>
           <div className="icon">🔥</div>
+        </div>
+        <div className="kpi kpi-green">
+          <span className="label">Pico mínimo</span>
+          <span className="value">{minIdx ? minIdx.v.toLocaleString('es-CL') : 0}</span>
+          <span className="delta">{minIdx ? `Mód.${minIdx.mod.num} · ${DIA_NOMBRES[minIdx.dw]}` : 'sin actividad'}</span>
+          <div className="icon">💧</div>
         </div>
         <div className="kpi kpi-blue">
           <span className="label">Semanas detectadas</span>
@@ -4965,6 +5259,20 @@ function MapaCalor({ data, user }){
             <select value={tipo} onChange={e=>setTipo(e.target.value)}>
               <option value="">Todos</option>
               {tipos.map(t => <option key={t} value={t}>{t}</option>)}
+            </select>
+          </div>
+          <div className="field">
+            <label>Edificio {!tieneEdificios && <span className="muted" style={{fontSize:10}}>(sin datos)</span>}</label>
+            <select value={edificio} onChange={e=>setEdificio(e.target.value)} disabled={!tieneEdificios}>
+              <option value="">{tieneEdificios?'Todos':'No hay edificios cargados'}</option>
+              {edificios.map(e => <option key={e} value={e}>{e}</option>)}
+            </select>
+          </div>
+          <div className="field">
+            <label>Ubicación {!tieneUbicaciones && <span className="muted" style={{fontSize:10}}>(sin datos)</span>}</label>
+            <select value={ubicacion} onChange={e=>setUbicacion(e.target.value)} disabled={!tieneUbicaciones}>
+              <option value="">{tieneUbicaciones?'Todas':'Sin información'}</option>
+              {UBICACIONES.map(u => <option key={u} value={u}>{u}</option>)}
             </select>
           </div>
           <div className="field">
@@ -6058,15 +6366,15 @@ function ImportarDatos({ data, toast, db, user, onReplaceSabana, onReplaceEvento
   );
 }
 
-function Modal({ title, children, onClose, onSave, saveLabel='Guardar' }){
+function Modal({ title, children, onClose, onSave, saveLabel='Guardar', wide=false }){
   return (
     <div className="modal-back" onClick={onClose}>
-      <div className="modal" onClick={e=>e.stopPropagation()}>
+      <div className={`modal ${wide?'modal-wide':''}`} onClick={e=>e.stopPropagation()}>
         <div className="modal-h"><h3>{title}</h3><button className="btn-icon" onClick={onClose}>{I.x}</button></div>
         <div className="modal-b">{children}</div>
         <div className="modal-f">
-          <button className="btn btn-ghost" onClick={onClose}>Cancelar</button>
-          <button className="btn btn-primary" onClick={onSave}>{saveLabel}</button>
+          <button className="btn btn-ghost" onClick={onClose}>{onSave?'Cancelar':'Cerrar'}</button>
+          {onSave && <button className="btn btn-primary" onClick={onSave}>{saveLabel}</button>}
         </div>
       </div>
     </div>
@@ -6442,7 +6750,7 @@ function App(){
     <>
       <Shell user={user} mode={mode} onReconfigure={reconfigure} onLogout={()=>{ setUser(null); }} view={view} setView={setView} title={title} crumbs={crumbs}
         pendientes={(reservas||[]).filter(r => r.es==='pendiente').length}>
-        {view==='dashboard' && <Dashboard data={data} reservas={reservas} user={user} db={db} onGoView={setView}/>}
+        {view==='dashboard' && <Dashboard data={data} reservas={reservas} user={user} db={db} onGoView={setView} onGoNuevaPrefill={goNueva}/>}
         {view==='horario'   && <Horario data={data} reservas={reservas} onGoNueva={goNueva}/>}
         {view==='reservas'  && <Reservas reservas={reservas} data={data} user={user} toast={setToast} onGoNueva={goNueva} onUpdateEstado={updateReservaEstado}/>}
         {view==='nueva'     && <NuevaReserva data={data} reservas={reservas} user={user} toast={setToast} goReservas={()=>setView('reservas')} prefill={prefillNueva} onCreate={createReserva}/>}
