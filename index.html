@@ -989,7 +989,10 @@ const moduleInTimeRange = (modNum, hi, hf, modulos) => {
    con escuela / asignatura / jornada / docente / inscritos / plazas si el SABANA
    tiene esa sección. */
 const SEC_CODE_RE = /([A-Z]{3,5}\d{3,5}-\d{3})/;
+const SIGLA_RE    = /([A-Z]{3,5}\d{3,5})/;
 const secCodeFrom = (s) => (s||'').toString().toUpperCase().match(SEC_CODE_RE)?.[1] || null;
+// Sigla de la asignatura (sin número de sección): GAA1101-013 → GAA1101
+const siglaFrom   = (s) => (s||'').toString().toUpperCase().match(SIGLA_RE)?.[1] || null;
 const buildSabanaIndex = (programacion) => {
   const idx = new Map();
   for(const p of programacion||[]){
@@ -1670,8 +1673,9 @@ function Shell({ user, mode, onReconfigure, onLogout, view, setView, children, t
       ['docente',   'Horario docente',          I.users,     ['admin','reservador','usuario']],
       ['mapa',      'Mapa de calor',            I.heatmap,   ['admin','reservador','usuario']],
       ['nueva',     'Solicitar reserva',        I.nueva,     ['admin','reservador','usuario']],
-      ['reservas',  'Solicitudes de Reservas',  I.reservas,  ['admin','reservador','usuario']],
+      ['reservas',  user.role==='usuario' ? 'Mis Reservas' : 'Solicitudes de Reservas',  I.reservas,  ['admin','reservador','usuario']],
       ['reportes',  'Reportes',                 I.reports,   ['admin','reservador']],
+      ['repDoc',    'Reporte Docente',          I.reports,   ['admin']],
       ['usuarios',  'Usuarios',                 I.users,     ['admin']],
       ['importar',  'Importar datos',           I.upload,    ['admin']],
     ];
@@ -4238,6 +4242,254 @@ function Reportes({ data, reservas }){
   );
 }
 
+/* ========= REPORTE DOCENTE (solo admin) =========
+   Carga docente agrupada por director de carrera (jefe directo).
+   Para cada jefe lista a sus docentes con: sigla distinta (cantidad
+   de asignaturas únicas que dicta), sesiones, secciones, salas y
+   alumnos atendidos. Datos: docente_jefes ⨯ sesiones consolidadas.
+   Docentes sin jefatura cargada van a un grupo "Sin jefatura asignada". */
+function ReporteDocente({ data }){
+  const [expandido, setExpandido] = useState(null);  // jefe abierto
+
+  // Index: docente (lowercase trim) → jefatura
+  const jefaturaIdx = useMemo(()=>{
+    const m = new Map();
+    for(const j of (data.docente_jefes||[])){
+      const k = (j.docente||'').trim().toLowerCase();
+      if(k && !m.has(k)) m.set(k, j);
+    }
+    return m;
+  }, [data.docente_jefes]);
+
+  const sesiones = useMemo(()=> sesionesConsolidadas(data), [data]);
+
+  // Stats por docente (deduplicado por sesión-instancia)
+  const statsDocente = useMemo(()=>{
+    const m = new Map();
+    const seen = new Set();
+    for(const s of sesiones){
+      if(!s.d) continue;
+      const k = `${s.sc||''}|${s.s||''}|${s.hi}|${s.hf}|${s.fi||s.dw||''}`;
+      if(seen.has(k)) continue;
+      seen.add(k);
+      if(!m.has(s.d)) m.set(s.d, { sesiones:0, alumnos:0, salas:new Set(), secciones:new Set(), siglas:new Set(), escuela:s.es });
+      const e = m.get(s.d);
+      e.sesiones++;
+      e.alumnos += Number(s.i) || 0;
+      if(s.s)  e.salas.add(s.s);
+      if(s.sc) e.secciones.add(s.sc);
+      const sig = siglaFrom(s.sc);
+      if(sig)  e.siglas.add(sig);
+    }
+    return m;
+  }, [sesiones]);
+
+  // Agrupado por jefatura
+  const grupos = useMemo(()=>{
+    const byJefe = new Map();  // jefe → {jefe_correo, escuela, docentes:[]}
+    const sinJefatura = [];
+    for(const [docente, st] of statsDocente){
+      const jefatura = jefaturaIdx.get(docente.trim().toLowerCase());
+      const row = {
+        docente,
+        siglasDistintas: st.siglas.size,
+        sesiones: st.sesiones,
+        secciones: st.secciones.size,
+        salas: st.salas.size,
+        alumnos: st.alumnos,
+        escuela: st.escuela,
+      };
+      if(jefatura){
+        if(!byJefe.has(jefatura.jefe)){
+          byJefe.set(jefatura.jefe, {
+            jefe: jefatura.jefe,
+            jefe_correo: jefatura.jefe_correo || null,
+            escuela: jefatura.escuela || null,
+            docentes:[],
+          });
+        }
+        byJefe.get(jefatura.jefe).docentes.push(row);
+      } else {
+        sinJefatura.push(row);
+      }
+    }
+    const arr = [...byJefe.values()].map(g => ({
+      ...g,
+      docentes: g.docentes.sort((a,b)=> b.alumnos - a.alumnos),
+      totDocentes: g.docentes.length,
+      totSesiones: g.docentes.reduce((a,d)=> a+d.sesiones, 0),
+      totSecciones: g.docentes.reduce((a,d)=> a+d.secciones, 0),
+      totSiglas: new Set(g.docentes.flatMap(d=>{
+        // recompute set por jefe → sumar siglas distintas
+        return [...statsDocente.get(d.docente).siglas];
+      })).size,
+      totAlumnos: g.docentes.reduce((a,d)=> a+d.alumnos, 0),
+    })).sort((a,b)=> b.totAlumnos - a.totAlumnos);
+
+    if(sinJefatura.length){
+      arr.push({
+        jefe:'(Sin jefatura asignada)',
+        jefe_correo:null, escuela:null,
+        docentes: sinJefatura.sort((a,b)=> b.alumnos - a.alumnos),
+        totDocentes: sinJefatura.length,
+        totSesiones: sinJefatura.reduce((a,d)=> a+d.sesiones, 0),
+        totSecciones: sinJefatura.reduce((a,d)=> a+d.secciones, 0),
+        totSiglas: 0,
+        totAlumnos: sinJefatura.reduce((a,d)=> a+d.alumnos, 0),
+      });
+    }
+    return arr;
+  }, [statsDocente, jefaturaIdx]);
+
+  // Exportar CSV plano (1 fila por docente con su jefatura)
+  const toCsv = (rows, headers) => {
+    const escape = (s) => {
+      const str = String(s ?? '');
+      return /[",\n;]/.test(str) ? `"${str.replace(/"/g, '""')}"` : str;
+    };
+    return [
+      headers.map(h => escape(h.label)).join(';'),
+      ...rows.map(r => headers.map(h => escape(typeof h.value==='function' ? h.value(r) : r[h.key])).join(';'))
+    ].join('\n');
+  };
+  const exportarCSV = () => {
+    const filas = [];
+    for(const g of grupos){
+      for(const d of g.docentes){
+        filas.push({
+          jefe: g.jefe, jefe_correo: g.jefe_correo || '', escuela: g.escuela || d.escuela || '',
+          docente: d.docente, siglasDistintas: d.siglasDistintas,
+          sesiones: d.sesiones, secciones: d.secciones, salas: d.salas, alumnos: d.alumnos,
+        });
+      }
+    }
+    const csv = toCsv(filas, [
+      { key:'jefe',           label:'Jefe directo' },
+      { key:'jefe_correo',    label:'Correo jefe' },
+      { key:'escuela',        label:'Escuela' },
+      { key:'docente',        label:'Docente' },
+      { key:'siglasDistintas',label:'Asignaturas distintas (sigla)' },
+      { key:'sesiones',       label:'Sesiones' },
+      { key:'secciones',      label:'Secciones' },
+      { key:'salas',          label:'Salas distintas' },
+      { key:'alumnos',        label:'Alumnos atendidos' },
+    ]);
+    const blob = new Blob(['﻿'+csv], { type:'text/csv;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url; a.download = `reporte_docente_${new Date().toISOString().slice(0,10)}.csv`;
+    document.body.appendChild(a); a.click(); a.remove();
+    URL.revokeObjectURL(url);
+  };
+
+  const noHayJefaturas = !((data.docente_jefes||[]).length);
+
+  return (
+    <div className="stack">
+      {/* Encabezado solo visible al imprimir */}
+      <div className="print-header">
+        <div style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}>
+          <div>
+            <div style={{fontSize:11,color:'#666',textTransform:'uppercase',letterSpacing:.6,fontWeight:700}}>Duoc UC · Sede Viña del Mar</div>
+            <div style={{fontSize:20,fontWeight:800,color:'#003C82',marginTop:4}}>Reporte · Carga docente por director de carrera</div>
+            <div style={{fontSize:11,color:'#888',marginTop:2}}>Portal de Salas · 2026·1</div>
+          </div>
+          <div style={{fontSize:11,color:'#666',textAlign:'right'}}>
+            Generado: {new Date().toLocaleDateString('es-CL',{day:'2-digit',month:'long',year:'numeric'})} · {new Date().toLocaleTimeString('es-CL',{hour:'2-digit',minute:'2-digit'})}
+          </div>
+        </div>
+      </div>
+
+      {noHayJefaturas && (
+        <div className="card" style={{padding:'14px 16px',background:'rgba(255,159,10,.10)',borderColor:'rgba(255,159,10,.32)'}}>
+          <div className="row" style={{gap:10,alignItems:'flex-start'}}>
+            <span style={{fontSize:18}}>⚠</span>
+            <div style={{fontSize:13,lineHeight:1.5,flex:1}}>
+              <b>No hay jefaturas cargadas.</b> Sube un Excel en <b>Importar datos → Jefaturas</b> para que los docentes se agrupen por director de carrera. Mientras tanto se ven todos bajo "Sin jefatura asignada".
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* KPIs globales */}
+      <div className="grid grid-4">
+        <div className="kpi kpi-blue"><span className="label">Jefaturas con docentes</span><span className="value">{grupos.filter(g => g.jefe !== '(Sin jefatura asignada)').length}</span><div className="icon">⭐</div></div>
+        <div className="kpi kpi-green"><span className="label">Docentes totales</span><span className="value">{statsDocente.size.toLocaleString('es-CL')}</span><div className="icon">👨‍🏫</div></div>
+        <div className="kpi kpi-amber"><span className="label">Asignaturas distintas (sigla)</span><span className="value">{(()=>{
+          const all = new Set();
+          for(const st of statsDocente.values()) for(const s of st.siglas) all.add(s);
+          return all.size;
+        })()}</span><div className="icon">📚</div></div>
+        <div className="kpi kpi-blue"><span className="label">Alumnos atendidos total</span><span className="value">{[...statsDocente.values()].reduce((a,st)=> a+st.alumnos, 0).toLocaleString('es-CL')}</span><div className="icon">👥</div></div>
+      </div>
+
+      <div className="card no-print-actions">
+        <div className="card-header">
+          <div>
+            <h3>Resumen por director de carrera (jefatura)</h3>
+            <div className="sub">Click en una jefatura para ver el detalle de sus docentes</div>
+          </div>
+          <div className="row" style={{gap:8}}>
+            <button className="btn btn-ghost" style={{fontSize:12,padding:'6px 12px'}} onClick={exportarCSV}>📥 CSV completo</button>
+            <button className="btn btn-ghost" style={{fontSize:12,padding:'6px 12px'}} onClick={()=>window.print()}>🖨 Imprimir</button>
+          </div>
+        </div>
+
+        {grupos.length === 0 ? (
+          <div className="empty"><span className="emoji">📭</span>Sin datos · cargar SABANA + LISTA DE RECURSOS para que aparezcan docentes.</div>
+        ) : grupos.map(g => {
+          const open = expandido === g.jefe;
+          return (
+            <div key={g.jefe} style={{border:'1px solid var(--border-soft)',borderRadius:8,marginBottom:10,overflow:'hidden'}}>
+              <div className="row between" style={{padding:'12px 14px',cursor:'pointer',background:open?'var(--surface-2)':'transparent'}} onClick={()=>setExpandido(open?null:g.jefe)}>
+                <div style={{minWidth:0,flex:1}}>
+                  <div style={{fontWeight:700,fontSize:14}}>
+                    {open?'▼':'▶'} {g.jefe}
+                    {g.escuela && <span className="chip info" style={{marginLeft:8,fontSize:10}}>{ESCUELAS_FULL[g.escuela]||g.escuela}</span>}
+                  </div>
+                  {g.jefe_correo && <div className="muted" style={{fontSize:11,marginTop:2}}>{g.jefe_correo}</div>}
+                </div>
+                <div className="row" style={{gap:14,flexWrap:'wrap'}}>
+                  <span style={{fontSize:12}}><b>{g.totDocentes}</b> <span className="muted">docentes</span></span>
+                  <span style={{fontSize:12}}><b>{g.totSiglas}</b> <span className="muted">siglas</span></span>
+                  <span style={{fontSize:12}}><b>{g.totSecciones}</b> <span className="muted">secciones</span></span>
+                  <span style={{fontSize:12,color:'var(--primary-2)'}}><b>{g.totAlumnos.toLocaleString('es-CL')}</b> <span className="muted">alumnos</span></span>
+                </div>
+              </div>
+              {open && (
+                <div className="tbl-scroll" style={{borderTop:'1px solid var(--border-soft)',maxHeight:500}}>
+                  <table className="tbl">
+                    <thead><tr>
+                      <th>Docente</th>
+                      <th style={{textAlign:'right'}}>Asignaturas distintas</th>
+                      <th style={{textAlign:'right'}}>Sesiones</th>
+                      <th style={{textAlign:'right'}}>Secciones</th>
+                      <th style={{textAlign:'right'}}>Salas</th>
+                      <th style={{textAlign:'right'}}>Alumnos</th>
+                    </tr></thead>
+                    <tbody>
+                      {g.docentes.map(d => (
+                        <tr key={d.docente}>
+                          <td>{d.docente}</td>
+                          <td style={{textAlign:'right'}}><b>{d.siglasDistintas}</b></td>
+                          <td style={{textAlign:'right'}}>{d.sesiones}</td>
+                          <td style={{textAlign:'right'}}>{d.secciones}</td>
+                          <td style={{textAlign:'right'}}>{d.salas}</td>
+                          <td style={{textAlign:'right'}}><b>{d.alumnos.toLocaleString('es-CL')}</b></td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
 /* ========= MAPA DE CALOR =========
    Grid de 20 módulos × 6 días (Lun-Sáb). Cada celda = suma de alumnos
    inscritos en todas las clases que ocupan ese (módulo, día) después de
@@ -5910,9 +6162,12 @@ function App(){
     dashboard:['Dashboard','Panel de control'],
     horario:['Horario Sala','Disponibilidad física Lun-Dom × Módulos por sala'],
     mapa:['Mapa de calor','Ocupación de la sede por módulo y día'],
-    reservas:['Solicitudes de Reservas','Gestión y búsqueda de disponibilidad'],
+    reservas: user.role==='usuario'
+      ? ['Mis Reservas','Las reservas que has solicitado']
+      : ['Solicitudes de Reservas','Gestión y búsqueda de disponibilidad'],
     nueva:['Solicitar reserva','Nueva solicitud'],
     importar:['Importar datos','SABANA · LISTA DE RECURSOS · Jefaturas'],
+    repDoc:['Reporte Docente','Carga docente agrupada por director de carrera (jefatura)'],
     docente:['Horario docente','Agenda semanal del docente'],
     usuarios:['Usuarios','Administración de cuentas'],
     reportes:['Reportes','Ocupación y métricas'],
@@ -5941,6 +6196,7 @@ function App(){
         {view==='docente'   && <HorarioDocente data={data}/>}
         {view==='usuarios'  && <Usuarios users={users} toast={setToast} onCreate={createUser} onUpdate={updateUser} onDelete={deleteUser}/>}
         {view==='reportes'  && <Reportes data={data} reservas={reservas}/>}
+        {view==='repDoc'    && <ReporteDocente data={data}/>}
         {view==='mapa'      && <MapaCalor data={data} user={user}/>}
       </Shell>
       {toast && <div className="toast">{toast}</div>}
