@@ -192,6 +192,23 @@
       position:relative;
       overflow:hidden;
     }
+    /* Imagen de fondo (campus Duoc Viña). Se ve detrás de los overlays con
+       degradado azul para garantizar legibilidad del texto. Se activa con
+       la class .login-side.has-img cuando hay URL configurada. */
+    .login-side.has-img{
+      background:#001F47;
+    }
+    .login-side .campus-img{
+      position:absolute;inset:0;
+      background-size:cover;background-position:center;
+      filter:saturate(1.05);
+    }
+    .login-side .campus-overlay{
+      position:absolute;inset:0;
+      background:
+        linear-gradient(180deg, rgba(0,31,71,.55) 0%, rgba(14,26,51,.85) 100%),
+        linear-gradient(135deg, rgba(0,42,92,.4) 0%, transparent 60%);
+    }
     .login-side::before{
       content:"";
       position:absolute;
@@ -208,13 +225,15 @@
       background:radial-gradient(circle, rgba(227,6,19,.18), transparent 60%);
       border-radius:50%;
     }
-    .login-side .brand{position:relative;display:flex;align-items:center;gap:14px}
+    .login-side.has-img::before,
+    .login-side.has-img::after{opacity:.5}
+    .login-side .brand{position:relative;display:flex;align-items:center;gap:14px;z-index:3}
     .login-side .brand{background:var(--surface);padding:14px 22px;border-radius:10px;align-self:flex-start;box-shadow:0 4px 14px rgba(0,0,0,.18)}
     .login-side .brand img{height:48px;width:auto;display:block}
-    .login-hero{position:relative}
-    .login-hero h1{font-size:38px;font-weight:800;line-height:1.15;margin-bottom:16px}
-    .login-hero p{color:#B8C2D8;font-size:15px;max-width:440px}
-    .login-meta{position:relative;color:#7E8AA6;font-size:12px}
+    .login-hero{position:relative;z-index:3}
+    .login-hero h1{font-size:38px;font-weight:800;line-height:1.15;margin-bottom:16px;text-shadow:0 2px 12px rgba(0,0,0,.4)}
+    .login-hero p{color:#E5E9F2;font-size:15px;max-width:440px;text-shadow:0 1px 8px rgba(0,0,0,.4)}
+    .login-meta{position:relative;z-index:3;color:#B8C2D8;font-size:12px}
     .login-form-wrap{
       display:flex;align-items:center;justify-content:center;padding:40px;
     }
@@ -824,9 +843,16 @@
       .week-grid .cell{min-height:40px;padding:3px}
       .week-grid .cell .blk{font-size:9.5px;padding:3px 4px}
 
-      /* Login: 1 col, side hero oculto */
-      .login-wrap{grid-template-columns:1fr}
-      .login-side{display:none}
+      /* Login: 1 col. Si hay imagen, se ve como header arriba; si no, se
+         oculta el side para no ocupar espacio. */
+      .login-wrap{grid-template-columns:1fr;grid-template-rows:auto 1fr}
+      .login-side{display:none;padding:24px 22px 22px;min-height:200px;justify-content:flex-end}
+      .login-side.has-img{display:flex}
+      .login-side.has-img .login-meta{display:none}
+      .login-side.has-img .login-hero h1{font-size:22px;margin-bottom:8px}
+      .login-side.has-img .login-hero p{font-size:13px}
+      .login-side .brand{padding:10px 16px}
+      .login-side .brand img{height:36px}
       .login-form-wrap{padding:24px 18px}
 
       /* Botones más grandes para tap */
@@ -1515,7 +1541,20 @@ function SetupScreen({ onConfigured }){
 }
 
 /* ========= LOGIN ========= */
+// URL pública de la imagen del campus Duoc UC Viña del Mar para el login.
+// Cámbiala por el URL directo de la foto (click derecho → "Copiar dirección
+// de imagen"). Si la URL no carga, el login cae al gradient azul original.
+const CAMPUS_IMG_URL = '';  // ← pega aquí el URL de la imagen del campus
+
 function Login({ onLogin, db, mode, onReconfigure }){
+  const [imgOk, setImgOk] = useState(!!CAMPUS_IMG_URL);
+  useEffect(()=>{
+    if(!CAMPUS_IMG_URL){ setImgOk(false); return; }
+    const im = new Image();
+    im.onload = () => setImgOk(true);
+    im.onerror = () => setImgOk(false);
+    im.src = CAMPUS_IMG_URL;
+  }, []);
   const [role, setRole] = useState('admin');
   const [username, setUsername] = useState('admin');
   const [password, setPassword] = useState('');
@@ -1542,7 +1581,13 @@ function Login({ onLogin, db, mode, onReconfigure }){
 
   return (
     <div className="login-wrap">
-      <div className="login-side">
+      <div className={`login-side ${imgOk?'has-img':''}`}>
+        {imgOk && (
+          <>
+            <div className="campus-img" style={{backgroundImage:`url("${CAMPUS_IMG_URL}")`}}/>
+            <div className="campus-overlay"/>
+          </>
+        )}
         <div className="brand">
           <img src="./assets/duoc-uc-oficial.png" alt="Duoc UC · Sede Viña del Mar"/>
         </div>
