@@ -3632,6 +3632,7 @@ function Gestiones({ data, user, db, toast }){
           auditorias={auditorias}
           loading={loadingA}
           onReload={recargar}
+          activo={tab==='panel'}
         />
       )}
     </div>
@@ -3908,18 +3909,33 @@ function ItemAuditoria({ idx, sess, auditoria, now, esHoy, onSave }){
   );
 }
 
-/* ----- Panel de análisis de auditorías ----- */
-function GestionesPanel({ data, auditorias, loading, onReload }){
+/* ----- Panel · Resumen ----- */
+function GestionesPanel({ data, auditorias, loading, onReload, activo }){
   const [escuela, setEscuela] = useState('');
   const [auditor, setAuditor] = useState('');
-  const [desde, setDesde] = useState(()=> isoDate(addDays(new Date(), -30)));
-  const [hasta, setHasta] = useState(()=> isoDate(new Date()));
+  // Por defecto, 90 días hacia atrás y mañana hacia adelante para no
+  // perder registros por zona horaria. El usuario puede acotar manualmente.
+  const [desde, setDesde] = useState(()=> isoDate(addDays(new Date(), -90)));
+  const [hasta, setHasta] = useState(()=> isoDate(addDays(new Date(), 1)));
+
+  // Recarga automática al entrar al panel — garantiza ver registros
+  // guardados en otra sesión / dispositivo / por otro auditor.
+  useEffect(()=>{ if(activo && onReload) onReload(); }, [activo]);
+
+  // Normaliza la fecha del registro a YYYY-MM-DD (Supabase a veces devuelve
+  // DATE como string ISO con tiempo si la columna se modificó por update).
+  const normFecha = (f) => {
+    if(!f) return '';
+    const s = String(f);
+    return s.length >= 10 ? s.slice(0, 10) : s;
+  };
 
   const filtradas = useMemo(()=> auditorias.filter(a => {
+    const fa = normFecha(a.fecha);
     if(escuela && a.escuela !== escuela) return false;
     if(auditor && a.auditor !== auditor) return false;
-    if(desde && a.fecha < desde) return false;
-    if(hasta && a.fecha > hasta) return false;
+    if(desde && fa < desde) return false;
+    if(hasta && fa > hasta) return false;
     return true;
   }), [auditorias, escuela, auditor, desde, hasta]);
 
@@ -4000,7 +4016,11 @@ function GestionesPanel({ data, auditorias, loading, onReload }){
         <div className="card-header">
           <div>
             <h3>📊 Resumen</h3>
-            <div className="sub">{filtradas.length.toLocaleString('es-CL')} registros en el período · {auditorias.length.toLocaleString('es-CL')} totales</div>
+            <div className="sub">
+              <b>{filtradas.length.toLocaleString('es-CL')}</b> registros en el período
+              {auditorias.length !== filtradas.length && <> · <b>{auditorias.length.toLocaleString('es-CL')}</b> totales (los demás están fuera de los filtros)</>}
+              {auditorias.length === 0 && <> · <span style={{color:'var(--danger)'}}>Sin registros guardados aún — prueba en <b>📋 Listado</b></span></>}
+            </div>
           </div>
           <div className="row" style={{gap:6}}>
             <button className="btn btn-ghost" style={{fontSize:12,padding:'6px 12px'}} onClick={onReload}>🔄 Recargar</button>
