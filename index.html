@@ -3911,12 +3911,87 @@ function ItemAuditoria({ idx, sess, auditoria, now, esHoy, onSave }){
   );
 }
 
+/* ----- Gráfico de tendencia (SVG nativo, sin librerías) -----
+   Recibe una serie [{ key, total, conf, noConf, pct }] y dibuja una línea
+   con puntos. Tooltips con título (mousemove). Eje X = etiquetas; eje Y = %.
+*/
+function TendenciaChart({ serie, granul }){
+  const [hover, setHover] = useState(null);
+  if(!serie || !serie.length){
+    return <div className="empty" style={{margin:20}}><span className="emoji">📭</span>Sin datos para graficar.</div>;
+  }
+  const W = 760, H = 240, PAD_L = 44, PAD_R = 16, PAD_T = 16, PAD_B = 36;
+  const innerW = W - PAD_L - PAD_R;
+  const innerH = H - PAD_T - PAD_B;
+  const n = serie.length;
+  const xFor = (i) => n === 1 ? PAD_L + innerW/2 : PAD_L + (i * innerW / (n-1));
+  const yFor = (pct) => PAD_T + innerH - (pct/100) * innerH;
+  const path = serie.map((p, i) => `${i===0?'M':'L'} ${xFor(i).toFixed(1)} ${yFor(p.pct).toFixed(1)}`).join(' ');
+  const area = `${path} L ${xFor(n-1).toFixed(1)} ${yFor(0).toFixed(1)} L ${xFor(0).toFixed(1)} ${yFor(0).toFixed(1)} Z`;
+  // Etiquetas X — máximo 8 visibles para no apretar
+  const stride = Math.max(1, Math.ceil(n / 8));
+  const fmtLabel = (k) => {
+    if(granul === 'mes') return k; // YYYY-MM
+    if(granul === 'semana') return new Date(k+'T00:00:00').toLocaleDateString('es-CL',{day:'2-digit',month:'short'});
+    return new Date(k+'T00:00:00').toLocaleDateString('es-CL',{day:'2-digit',month:'2-digit'});
+  };
+  return (
+    <div style={{overflowX:'auto',position:'relative'}}>
+      <svg viewBox={`0 0 ${W} ${H}`} style={{width:'100%',minWidth:520,height:'auto',display:'block'}}>
+        {/* Grid horizontal: 0, 25, 50, 75, 100 % */}
+        {[0,25,50,75,100].map(p => (
+          <g key={p}>
+            <line x1={PAD_L} y1={yFor(p)} x2={W-PAD_R} y2={yFor(p)} stroke="var(--border-soft)" strokeWidth="1" strokeDasharray={p===0||p===100?'':'2 3'}/>
+            <text x={PAD_L-8} y={yFor(p)+3} fontSize="10" textAnchor="end" fill="var(--text-muted)">{p}%</text>
+          </g>
+        ))}
+        {/* Área bajo la curva */}
+        <path d={area} fill="var(--primary)" opacity="0.10"/>
+        {/* Línea */}
+        <path d={path} fill="none" stroke="var(--primary)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
+        {/* Puntos + hit target */}
+        {serie.map((p,i) => {
+          const x = xFor(i), y = yFor(p.pct);
+          return (
+            <g key={p.key}>
+              <circle cx={x} cy={y} r="3.5" fill="#fff" stroke="var(--primary)" strokeWidth="2"/>
+              <circle cx={x} cy={y} r="14" fill="transparent" style={{cursor:'pointer'}}
+                onMouseEnter={()=> setHover({ p, x, y })}
+                onMouseLeave={()=> setHover(null)}/>
+            </g>
+          );
+        })}
+        {/* Etiquetas X */}
+        {serie.map((p,i) => {
+          if(i % stride !== 0 && i !== n-1) return null;
+          return <text key={p.key} x={xFor(i)} y={H-PAD_B+16} fontSize="10" textAnchor="middle" fill="var(--text-muted)">{fmtLabel(p.key)}</text>;
+        })}
+      </svg>
+      {hover && (
+        <div style={{
+          position:'absolute', left:`${(hover.x/W)*100}%`, top:`${(hover.y/H)*100}%`,
+          transform:'translate(-50%, -120%)', background:'var(--surface)', border:'1px solid var(--border-soft)',
+          padding:'8px 10px', borderRadius:6, boxShadow:'var(--shadow)', fontSize:11.5, pointerEvents:'none', whiteSpace:'nowrap', zIndex:5
+        }}>
+          <b>{fmtLabel(hover.p.key)}</b> · <span style={{color:'var(--primary)'}}>{hover.p.pct}%</span> conformes<br/>
+          <span className="muted">{hover.p.conf} ok · {hover.p.noConf} no conf · {hover.p.total} total</span>
+        </div>
+      )}
+    </div>
+  );
+}
+
 /* ----- Panel · Resumen ----- */
 function GestionesPanel({ data, auditorias, loading, onReload, onSave, onDelete, activo }){
   const [escuela, setEscuela] = useState('');
   const [auditor, setAuditor] = useState('');
-  const [editing, setEditing] = useState(null);     // registro siendo editado
-  const [confirmDel, setConfirmDel] = useState(null); // id pendiente de borrar
+  const [salaF, setSalaF] = useState('');
+  const [estadoF, setEstadoF] = useState('');   // ''|'conformes'|'noConf'|'pendientes'|'mixtos'
+  const [siglaF, setSiglaF] = useState('');
+  const [q, setQ] = useState('');               // texto libre
+  const [granul, setGranul] = useState('semana'); // 'dia'|'semana'|'mes'
+  const [editing, setEditing] = useState(null);
+  const [confirmDel, setConfirmDel] = useState(null);
   // Por defecto, 90 días hacia atrás y mañana hacia adelante para no
   // perder registros por zona horaria. El usuario puede acotar manualmente.
   const [desde, setDesde] = useState(()=> isoDate(addDays(new Date(), -90)));
@@ -3934,14 +4009,36 @@ function GestionesPanel({ data, auditorias, loading, onReload, onSave, onDelete,
     return s.length >= 10 ? s.slice(0, 10) : s;
   };
 
-  const filtradas = useMemo(()=> auditorias.filter(a => {
-    const fa = normFecha(a.fecha);
-    if(escuela && a.escuela !== escuela) return false;
-    if(auditor && a.auditor !== auditor) return false;
-    if(desde && fa < desde) return false;
-    if(hasta && fa > hasta) return false;
-    return true;
-  }), [auditorias, escuela, auditor, desde, hasta]);
+  const filtradas = useMemo(()=> {
+    const qn = q.trim().toLowerCase();
+    return auditorias.filter(a => {
+      const fa = normFecha(a.fecha);
+      if(escuela && a.escuela !== escuela) return false;
+      if(auditor && a.auditor !== auditor) return false;
+      if(salaF && a.sala !== salaF) return false;
+      if(siglaF && siglaFrom(a.seccion) !== siglaF) return false;
+      if(desde && fa < desde) return false;
+      if(hasta && fa > hasta) return false;
+      if(estadoF){
+        const hasIni = !!a.llego_a_hora, hasFin = !!a.termino_a_hora;
+        const allOk = a.llego_a_hora==='si' && a.termino_a_hora==='si';
+        const someNo = a.llego_a_hora==='no' || a.termino_a_hora==='no';
+        const completos = hasIni && hasFin;
+        if(estadoF==='conformes' && !allOk) return false;
+        if(estadoF==='noConf' && !someNo) return false;
+        if(estadoF==='pendientes' && completos) return false;
+        if(estadoF==='mixtos'){
+          // un bloque sí y el otro no (no ambos sí ni ambos no)
+          if(!(completos && a.llego_a_hora !== a.termino_a_hora)) return false;
+        }
+      }
+      if(qn){
+        const blob = `${a.docente||''} ${a.seccion||''} ${a.asignatura||''} ${a.obs_inicio||''} ${a.obs_fin||''} ${a.sala||''}`.toLowerCase();
+        if(!blob.includes(qn)) return false;
+      }
+      return true;
+    });
+  }, [auditorias, escuela, auditor, salaF, siglaF, estadoF, q, desde, hasta]);
 
   const kpis = useMemo(()=>{
     const total = filtradas.length;
@@ -3998,6 +4095,63 @@ function GestionesPanel({ data, auditorias, loading, onReload, onSave, onDelete,
 
   const escuelas = useMemo(()=> [...new Set(auditorias.map(a=>a.escuela).filter(Boolean))].sort(), [auditorias]);
   const auditores = useMemo(()=> [...new Set(auditorias.map(a=>a.auditor).filter(Boolean))].sort(), [auditorias]);
+  const salasEnReg = useMemo(()=> [...new Set(auditorias.map(a=>a.sala).filter(Boolean))].sort(), [auditorias]);
+  const siglasEnReg = useMemo(()=> [...new Set(auditorias.map(a=> siglaFrom(a.seccion)).filter(Boolean))].sort(), [auditorias]);
+
+  // Reincidencias: ≥3 no conformidades en el período filtrado
+  const reincidentes = useMemo(()=>{
+    const m = new Map();
+    for(const a of filtradas){
+      if(!a.docente) continue;
+      if(!m.has(a.docente)) m.set(a.docente, { docente:a.docente, escuela:a.escuela, visitas:0, noConf:0, ultima:null });
+      const x = m.get(a.docente);
+      x.visitas++;
+      if(a.llego_a_hora==='no' || a.termino_a_hora==='no'){
+        x.noConf++;
+        const fa = normFecha(a.fecha);
+        if(!x.ultima || fa > x.ultima) x.ultima = fa;
+      }
+    }
+    return [...m.values()]
+      .filter(x => x.noConf >= 3)
+      .map(x => ({ ...x, pct: x.visitas>0 ? Math.round((x.noConf/x.visitas)*100) : 0 }))
+      .sort((a,b)=> b.noConf - a.noConf || b.pct - a.pct);
+  }, [filtradas]);
+
+  // Serie temporal: % conformidad agrupado por día / semana / mes
+  const serie = useMemo(()=>{
+    const bucket = (iso) => {
+      if(!iso) return null;
+      const d = new Date(iso+'T00:00:00');
+      if(granul==='dia')   return iso;
+      if(granul==='semana'){
+        const m = new Date(d);
+        const dw = m.getDay()===0 ? 6 : m.getDay()-1;
+        m.setDate(m.getDate() - dw);
+        return isoDate(m);
+      }
+      if(granul==='mes')  return iso.slice(0,7);
+      return iso;
+    };
+    const map = new Map();
+    for(const a of filtradas){
+      const k = bucket(normFecha(a.fecha));
+      if(!k) continue;
+      if(!map.has(k)) map.set(k, { key:k, total:0, conf:0, noConf:0 });
+      const x = map.get(k);
+      x.total++;
+      // Conforme = ambos sí. No conforme = al menos uno no. Pendiente = falta dato.
+      if(a.llego_a_hora==='si' && a.termino_a_hora==='si') x.conf++;
+      else if(a.llego_a_hora==='no' || a.termino_a_hora==='no') x.noConf++;
+    }
+    const arr = [...map.values()].sort((a,b)=> a.key.localeCompare(b.key));
+    return arr.map(x => ({ ...x, pct: x.total>0 ? Math.round((x.conf / x.total)*100) : 0 }));
+  }, [filtradas, granul]);
+
+  const limpiarFiltros = () => {
+    setEscuela(''); setAuditor(''); setSalaF(''); setEstadoF(''); setSiglaF(''); setQ('');
+  };
+  const filtroActivo = !!(escuela||auditor||salaF||estadoF||siglaF||q);
 
   const exportarCSV = () => {
     const esc = (s) => {
@@ -4054,6 +4208,40 @@ function GestionesPanel({ data, auditorias, loading, onReload, onSave, onDelete,
               {auditores.map(au => <option key={au} value={au}>{au}</option>)}
             </select>
           </div>
+          <div className="field">
+            <label>Recinto {salasEnReg.length===0 && <span className="muted" style={{fontSize:10}}>(sin datos)</span>}</label>
+            <select value={salaF} onChange={e=>setSalaF(e.target.value)} disabled={salasEnReg.length===0}>
+              <option value="">Todos</option>
+              {salasEnReg.map(s => <option key={s} value={s}>{s}</option>)}
+            </select>
+          </div>
+          <div className="field">
+            <label>Estado</label>
+            <select value={estadoF} onChange={e=>setEstadoF(e.target.value)}>
+              <option value="">Todos</option>
+              <option value="conformes">✓ Conformes (ambos sí)</option>
+              <option value="noConf">✗ Con alguna no conformidad</option>
+              <option value="mixtos">↔ Mixtos (uno sí, otro no)</option>
+              <option value="pendientes">⏳ Pendientes (incompletos)</option>
+            </select>
+          </div>
+          <div className="field">
+            <label>Sigla {siglasEnReg.length===0 && <span className="muted" style={{fontSize:10}}>(sin datos)</span>}</label>
+            <select value={siglaF} onChange={e=>setSiglaF(e.target.value)} disabled={siglasEnReg.length===0}>
+              <option value="">Todas</option>
+              {siglasEnReg.map(s => <option key={s} value={s}>{s}</option>)}
+            </select>
+          </div>
+          <div className="field" style={{flex:'1 1 220px'}}>
+            <label>Buscar texto {q && <span className="chip success" style={{marginLeft:6,fontSize:10}}>activo</span>}</label>
+            <input value={q} onChange={e=>setQ(e.target.value)} placeholder="Nombre, sección, asignatura, observación…"/>
+          </div>
+          {filtroActivo && (
+            <div className="field" style={{justifyContent:'flex-end'}}>
+              <label>&nbsp;</label>
+              <button className="btn btn-ghost btn-sm" onClick={limpiarFiltros}>✕ Limpiar filtros</button>
+            </div>
+          )}
         </div>
       </div>
 
@@ -4083,6 +4271,51 @@ function GestionesPanel({ data, auditorias, loading, onReload, onSave, onDelete,
           <div className="icon">⚠</div>
         </div>
       </div>
+
+      {/* Tendencia temporal · % conformidad */}
+      <div className="card">
+        <div className="card-header">
+          <div>
+            <h3>📈 Tendencia · % conforme inicio + término</h3>
+            <div className="sub">Cada punto = grupo de {granul==='dia'?'1 día':granul==='semana'?'1 semana (lunes)':'1 mes'}. Pasa el cursor por encima para ver el detalle.</div>
+          </div>
+          <div className="seg">
+            <button className={granul==='dia'?'active':''} onClick={()=>setGranul('dia')}>Día</button>
+            <button className={granul==='semana'?'active':''} onClick={()=>setGranul('semana')}>Semana</button>
+            <button className={granul==='mes'?'active':''} onClick={()=>setGranul('mes')}>Mes</button>
+          </div>
+        </div>
+        <TendenciaChart serie={serie} granul={granul}/>
+      </div>
+
+      {/* Reincidencias */}
+      {reincidentes.length > 0 && (
+        <div className="card" style={{padding:0,borderLeft:'4px solid var(--danger)'}}>
+          <div className="card-header" style={{padding:'14px 18px'}}>
+            <div>
+              <h3>🔁 Reincidencias · personas con ≥3 no conformidades</h3>
+              <div className="sub">{reincidentes.length} {reincidentes.length===1?'persona detectada':'personas detectadas'} en el período. Recomendable conversación formal con director de carrera.</div>
+            </div>
+          </div>
+          <div className="tbl-scroll">
+            <table className="tbl">
+              <thead><tr><th>Persona</th><th>Área</th><th style={{textAlign:'right'}}>Visitas</th><th style={{textAlign:'right'}}>No conformes</th><th style={{textAlign:'right'}}>% No conf.</th><th>Última observación</th></tr></thead>
+              <tbody>
+                {reincidentes.map((r,i)=>(
+                  <tr key={i}>
+                    <td><b>{r.docente}</b></td>
+                    <td className="muted">{ESCUELAS_FULL[r.escuela]||r.escuela||'—'}</td>
+                    <td style={{textAlign:'right'}}>{r.visitas}</td>
+                    <td style={{textAlign:'right'}}><span className="chip danger">{r.noConf}</span></td>
+                    <td style={{textAlign:'right',fontWeight:700,color:'var(--danger)'}}>{r.pct}%</td>
+                    <td className="muted" style={{fontSize:12}}>{r.ultima||'—'}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
 
       {/* Ranking personas con más observaciones */}
       <div className="card" style={{padding:0}}>
