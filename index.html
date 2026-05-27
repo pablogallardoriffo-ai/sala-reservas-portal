@@ -3443,11 +3443,70 @@ function Gestiones({ data, user, db, toast }){
   }, [unlocked, data, fecha, cfg.modIni, cfg.modFin, now, reroll]);
 
   // Sorteo determinístico: misma muestra para mismo (fecha + auditor)
+  // Sample estratificado: maximiza diversidad de escuelas en la muestra y,
+  // dentro de cada escuela, evita repetir la misma sigla de asignatura.
+  // Round-robin sobre los grupos por escuela: en cada vuelta se toma una
+  // clase de cada escuela (con preferencia por siglas que aún no salieron).
+  // Si el round-robin se agota antes de llegar a N, se completa con las
+  // sobrantes en orden aleatorio. Cuando hay menos escuelas distintas que N
+  // (caso típico: pocas escuelas con clases hoy), se permite repetir escuela
+  // pero siempre con sigla diferente — sólo si tampoco alcanza, se repite.
   const muestra = useMemo(()=>{
     if(!candidatas.length) return [];
+    const N = Number(cfg.n)||10;
     const seedKey = `${fecha}|${user.username}|${reroll}`;
     const rng = seedFromString(seedKey);
-    return shuffleSeeded(candidatas, rng).slice(0, Number(cfg.n)||10);
+
+    // 1) Barajar TODA la lista para que las "rondas" no respeten el orden
+    //    de entrada (que correspondería a orden de horario).
+    const baraja = shuffleSeeded(candidatas, rng);
+    // 2) Agrupar por escuela. Las sin escuela van a un grupo "OTROS".
+    const porEscuela = new Map();
+    for(const s of baraja){
+      const k = s.es || 'OTROS';
+      if(!porEscuela.has(k)) porEscuela.set(k, []);
+      porEscuela.get(k).push(s);
+    }
+    // 3) Orden de escuelas: barajado deterministicamente
+    const escuelas = shuffleSeeded([...porEscuela.keys()], rng);
+
+    const seleccion = [];
+    const siglasUsadas = new Set();      // siglas ya elegidas (asignatura)
+    const dedupKey = (s) => `${s.sc||''}|${s.s||''}|${s.hi}|${s.hf}`;
+    const yaTomada = new Set();
+
+    // 4) Pasada 1: una clase por escuela, preferentemente sigla nueva
+    for(const es of escuelas){
+      if(seleccion.length >= N) break;
+      const lista = porEscuela.get(es);
+      // Primero intentar una clase con sigla aún no usada
+      let pick = lista.find(s => !yaTomada.has(dedupKey(s)) && !siglasUsadas.has(siglaFrom(s.sc)||''));
+      if(!pick) pick = lista.find(s => !yaTomada.has(dedupKey(s)));
+      if(pick){
+        seleccion.push(pick);
+        yaTomada.add(dedupKey(pick));
+        const sig = siglaFrom(pick.sc); if(sig) siglasUsadas.add(sig);
+      }
+    }
+    // 5) Pasadas siguientes: rotar de nuevo por escuela tomando clases
+    //    todavía no elegidas, siempre prefiriendo siglas frescas.
+    let cambioEnPasada = true;
+    while(seleccion.length < N && cambioEnPasada){
+      cambioEnPasada = false;
+      for(const es of escuelas){
+        if(seleccion.length >= N) break;
+        const lista = porEscuela.get(es);
+        let pick = lista.find(s => !yaTomada.has(dedupKey(s)) && !siglasUsadas.has(siglaFrom(s.sc)||''));
+        if(!pick) pick = lista.find(s => !yaTomada.has(dedupKey(s)));
+        if(pick){
+          seleccion.push(pick);
+          yaTomada.add(dedupKey(pick));
+          const sig = siglaFrom(pick.sc); if(sig) siglasUsadas.add(sig);
+          cambioEnPasada = true;
+        }
+      }
+    }
+    return seleccion;
   }, [candidatas, fecha, user.username, cfg.n, reroll]);
 
   // === 8) Índice de auditorías existentes para esta fecha + auditor ===
@@ -3585,6 +3644,18 @@ function GestionesRecorrido({ data, user, fecha, setFecha, cfg, guardarCfg, mues
   const ahoraMin = now.getHours()*60 + now.getMinutes();
   const esHoy = fecha === todayIso;
 
+  // Diversidad efectiva de la muestra (para visualizar el sample
+  // estratificado: cuántas escuelas y siglas distintas tocó el sorteo).
+  const diversidad = (()=>{
+    const esc = new Set(), sig = new Set();
+    for(const s of muestra){
+      if(s.es) esc.add(s.es);
+      const g = siglaFrom(s.sc); if(g) sig.add(g);
+    }
+    return { escuelas:esc.size, siglas:sig.size };
+  })();
+  const escUniverso = new Set(candidatas.map(s=>s.es).filter(Boolean)).size;
+
   // Estado del módulo actual (para destacar)
   const modActivo = data.modulos.find(m => {
     const a = toMin(m.inicio), b = toMin(m.fin);
@@ -3626,7 +3697,8 @@ function GestionesRecorrido({ data, user, fecha, setFecha, cfg, guardarCfg, mues
           <div className="field" style={{justifyContent:'flex-end'}}>
             <label>&nbsp;</label>
             <div className="muted" style={{fontSize:12.5}}>
-              Universo: <b>{candidatas.length.toLocaleString('es-CL')}</b> clases candidatas{esHoy?' · de hoy':''}{modActivo?` · estás en Mód.${modActivo.num}`:''}
+              Universo: <b>{candidatas.length.toLocaleString('es-CL')}</b> clases candidatas{esHoy?' · de hoy':''}{modActivo?` · Mód.${modActivo.num} activo`:''}
+              {muestra.length>0 && <> · Diversidad muestra: <b>{diversidad.escuelas}</b> {diversidad.escuelas===1?'escuela':'escuelas'} (de {escUniverso}) · <b>{diversidad.siglas}</b> {diversidad.siglas===1?'asignatura':'asignaturas'}</>}
             </div>
           </div>
         </div>
