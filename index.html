@@ -589,6 +589,62 @@
     }
     @keyframes fadeIn{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:translateY(0)}}
 
+    /* === "Sucediendo ahora" — animación corporativa, sin parpadeo agresivo ===
+       Pulsación sutil del halo (box-shadow) sincronizada con un destello suave
+       en el borde. Frecuencia: 2.2s. Usa color institucional (var(--primary)). */
+    @keyframes pulseNow {
+      0%,100% { box-shadow:0 0 0 0 rgba(10,132,255,.55), 0 0 0 1px rgba(10,132,255,.0) inset; }
+      50%     { box-shadow:0 0 0 6px rgba(10,132,255,0),  0 0 0 1px rgba(10,132,255,.4) inset; }
+    }
+    @keyframes nowDot {
+      0%,100% { transform:scale(1);   opacity:1;   }
+      50%     { transform:scale(1.6); opacity:.55; }
+    }
+    .now-cell{
+      position:relative;
+      background:linear-gradient(180deg, rgba(10,132,255,.10), rgba(10,132,255,.04)) !important;
+      box-shadow:inset 0 0 0 2px var(--primary);
+      animation:pulseNow 2.2s ease-in-out infinite;
+      z-index:1;
+    }
+    .now-cell::after{
+      content:'';position:absolute;top:5px;right:5px;width:8px;height:8px;border-radius:50%;
+      background:var(--primary);box-shadow:0 0 0 3px rgba(10,132,255,.25);
+      animation:nowDot 2.2s ease-in-out infinite;pointer-events:none;
+    }
+    .blk.now, .blk-ac.now{
+      background:linear-gradient(135deg,#0A84FF 0%,#0064D2 100%) !important;
+      box-shadow:0 0 0 2px #fff inset, 0 0 0 3px var(--primary), 0 2px 10px rgba(10,132,255,.45);
+      position:relative;
+    }
+    .blk.now::before, .blk-ac.now::before{
+      content:'● EN CURSO';position:absolute;top:-9px;left:6px;
+      background:var(--primary);color:#fff;font-size:8.5px;font-weight:800;letter-spacing:.5px;
+      padding:1px 6px;border-radius:8px;line-height:1.4;
+      box-shadow:0 1px 3px rgba(10,132,255,.4);
+      animation:pulseNow 2.2s ease-in-out infinite;
+    }
+    .hgrid .mod.now{
+      background:linear-gradient(180deg,#0A84FF,#0064D2);color:#fff;
+    }
+    .hgrid .mod.now b{color:#fff}
+    .week-grid .row-h.now{
+      background:linear-gradient(180deg,#0A84FF,#0064D2);color:#fff;
+    }
+    .heat-tbl tbody tr.now-row td.lab{
+      background:linear-gradient(180deg,#0A84FF,#0064D2);color:#fff;
+    }
+    .heat-tbl tbody tr.now-row td.lab b{color:#fff}
+    .heat-tbl tbody tr.now-row td.now-cell{
+      outline:3px solid var(--primary);outline-offset:-3px;
+    }
+    :root[data-theme="dark"] .now-cell{
+      background:linear-gradient(180deg, rgba(10,132,255,.20), rgba(10,132,255,.08)) !important;
+    }
+    @media (prefers-reduced-motion: reduce){
+      .now-cell, .blk.now::before, .blk-ac.now::before { animation:none !important }
+    }
+
     /* Horario físico */
     .hgrid{
       display:grid;grid-template-columns:120px repeat(7,minmax(120px,1fr));
@@ -1008,6 +1064,30 @@ const moduleInTimeRange = (modNum, hi, hf, modulos) => {
   if(!m) return false;
   return toMin(m.inicio) < toMin(hf) && toMin(hi) < toMin(m.fin);
 };
+
+// "Ahora" — minuto del día actual. Hook que actualiza cada 30s para que el
+// indicador de "clase en curso" parpadee y avance solo durante una sesión.
+const nowMinutes = () => { const d = new Date(); return d.getHours()*60 + d.getMinutes(); };
+function useNowMinutes(){
+  const [n, setN] = useState(nowMinutes());
+  useEffect(()=>{
+    const tick = () => setN(nowMinutes());
+    tick();
+    const t = setInterval(tick, 30000);
+    return ()=> clearInterval(t);
+  },[]);
+  return n;
+}
+// ¿La fecha ISO YYYY-MM-DD es hoy?
+const isTodayIso = (iso) => iso === isoDate(new Date());
+// ¿Un rango horario HH:MM-HH:MM contiene el minuto del día `n`?
+const inRangeNow = (hi, hf, n) => {
+  if(!hi || !hf) return false;
+  const a = toMin(hi), b = toMin(hf);
+  return n >= a && n < b;
+};
+// ¿El módulo `mod` está corriendo ahora? (hoy + hora dentro de inicio-fin)
+const moduleRunningNow = (mod, n) => mod && inRangeNow(mod.inicio, mod.fin, n);
 
 /* ========= CONSOLIDACIÓN DE FUENTES =========
    Cruza eventos (LISTA DE RECURSOS, por fecha) con programación (SABANA viejo,
@@ -2694,6 +2774,7 @@ function Horario({ data, reservas, onGoNueva }){
   const today = isoDate(new Date());
   const [fecha, setFecha] = useState(today);
   const [sala, setSala] = useState(data.salas[0]?.codigo || '');
+  const now = useNowMinutes();
 
   const monday = useMemo(()=> getMonday(fecha), [fecha]);
   const week = useMemo(()=> [0,1,2,3,4,5,6].map(i => addDays(monday, i)), [monday]);
@@ -2770,36 +2851,48 @@ function Horario({ data, reservas, onGoNueva }){
               </div>
             );
           })}
-          {data.modulos.map((mod, mi) => (
+          {data.modulos.map((mod, mi) => {
+            const modIsNow = moduleRunningNow(mod, now);
+            return (
             <React.Fragment key={mod.num}>
-              <div className="mod"><b>Mód. {mod.num}</b>{mod.inicio}<br/>{mod.fin}</div>
+              <div className={`mod ${modIsNow?'now':''}`}><b>Mód. {mod.num}</b>{mod.inicio}<br/>{mod.fin}</div>
               {grid[mi].map((cell, di) => {
                 const isWeekend = di>=5;
+                const dIso = isoDate(week[di]);
+                const cellIsNow = isTodayIso(dIso) && modIsNow;
                 if(cell.acads.length===0 && cell.ress.length===0){
                   return (
-                    <div key={di} className={`cl libre ${isWeekend?'weekend':''}`} title="Espacio disponible">
+                    <div key={di} className={`cl libre ${isWeekend?'weekend':''} ${cellIsNow?'now-cell':''}`} title="Espacio disponible">
                       <div className="blk-libre">LIBRE</div>
                     </div>
                   );
                 }
                 return (
-                  <div key={di} className={`cl ${isWeekend?'weekend':''}`}>
-                    {cell.acads.map((p,i)=>(
-                      <div key={'a'+i} className="blk blk-ac" title={`${p.a} · ${p.d||''} · ${p.hi}-${p.hf}`}>
-                        <b>{p.sc}</b><div style={{opacity:.85}}>{(p.a||'').slice(0,26)}</div>
-                      </div>
-                    ))}
-                    {cell.ress.map((r,i)=>(
-                      <div key={'r'+i} className={`blk ${r.es==='pendiente'?'blk-pen':'blk-rs'}`} title={`${r.mo} · ${r.do||''} · Mód.${r.mi}-${r.mf}`}>
-                        <b>{r.es==='pendiente'?'⏳ ':'📌 '}{(r.mo||'').slice(0,24)}</b>
-                        <div style={{opacity:.85}}>{r.do||r.co||''}</div>
-                      </div>
-                    ))}
+                  <div key={di} className={`cl ${isWeekend?'weekend':''} ${cellIsNow?'now-cell':''}`}>
+                    {cell.acads.map((p,i)=>{
+                      const enCurso = isTodayIso(dIso) && inRangeNow(p.hi, p.hf, now);
+                      return (
+                        <div key={'a'+i} className={`blk blk-ac ${enCurso?'now':''}`} title={`${p.a} · ${p.d||''} · ${p.hi}-${p.hf}${enCurso?' · EN CURSO':''}`}>
+                          <b>{p.sc}</b><div style={{opacity:.85}}>{(p.a||'').slice(0,26)}</div>
+                        </div>
+                      );
+                    })}
+                    {cell.ress.map((r,i)=>{
+                      const mIni = moduloInfo(data.modulos, r.mi);
+                      const mFin = moduloInfo(data.modulos, r.mf);
+                      const enCurso = isTodayIso(dIso) && mIni && mFin && inRangeNow(mIni.inicio, mFin.fin, now);
+                      return (
+                        <div key={'r'+i} className={`blk ${r.es==='pendiente'?'blk-pen':'blk-rs'} ${enCurso?'now':''}`} title={`${r.mo} · ${r.do||''} · Mód.${r.mi}-${r.mf}${enCurso?' · EN CURSO':''}`}>
+                          <b>{r.es==='pendiente'?'⏳ ':'📌 '}{(r.mo||'').slice(0,24)}</b>
+                          <div style={{opacity:.85}}>{r.do||r.co||''}</div>
+                        </div>
+                      );
+                    })}
                   </div>
                 );
               })}
             </React.Fragment>
-          ))}
+          );})}
         </div>
       </div>
     </div>
@@ -2815,6 +2908,7 @@ function HorarioDocente({ data }){
   const [docente, setDocente] = useState('');
   const [q, setQ] = useState('');
   const [fecha, setFecha] = useState(isoDate(new Date()));
+  const now = useNowMinutes();
 
   const usaEventos = hasEventos(data);
   const sesiones = useMemo(()=> sesionesConsolidadas(data), [data]);
@@ -2966,21 +3060,27 @@ function HorarioDocente({ data }){
                 {data.modulos.map((mod, mi) => {
                   const tieneAlgo = grid[mi].some(arr => arr.length>0);
                   if(!tieneAlgo) return null;
+                  const modIsNow = moduleRunningNow(mod, now);
                   return (
                     <React.Fragment key={mod.num}>
-                      <div className="row-h"><b>M{mod.num}</b><br/>{mod.inicio}<br/>{mod.fin}</div>
+                      <div className={`row-h ${modIsNow?'now':''}`}><b>M{mod.num}</b><br/>{mod.inicio}<br/>{mod.fin}</div>
                       {[0,1,2,3,4,5].map(dw => {
                         const items = grid[mi][dw];
+                        const dIso = isoDate(week[dw]);
+                        const cellIsNow = isTodayIso(dIso) && modIsNow;
                         return (
-                          <div key={dw} className="cell">
-                            {items.map((s,i) => (
-                              <div key={i} className="blk acad" title={`${s.a||''} · sección ${s.sc||''} · sala ${s.s} · ${s.hi}-${s.hf} · ${s.i||0} inscritos`}>
-                                <b>{s.s}</b>
-                                <div style={{opacity:.92,fontSize:10.5,marginTop:2}}>{(s.a||s.de||'').slice(0,32)}</div>
-                                <div style={{opacity:.78,fontSize:10}}>{s.sc}</div>
-                                <div style={{opacity:.92,fontSize:10,marginTop:2}}>👥 {s.i||0}</div>
-                              </div>
-                            ))}
+                          <div key={dw} className={`cell ${cellIsNow?'now-cell':''}`}>
+                            {items.map((s,i) => {
+                              const enCurso = isTodayIso(dIso) && inRangeNow(s.hi, s.hf, now);
+                              return (
+                                <div key={i} className={`blk acad ${enCurso?'now':''}`} title={`${s.a||''} · sección ${s.sc||''} · sala ${s.s} · ${s.hi}-${s.hf} · ${s.i||0} inscritos${enCurso?' · EN CURSO':''}`}>
+                                  <b>{s.s}</b>
+                                  <div style={{opacity:.92,fontSize:10.5,marginTop:2}}>{(s.a||s.de||'').slice(0,32)}</div>
+                                  <div style={{opacity:.78,fontSize:10}}>{s.sc}</div>
+                                  <div style={{opacity:.92,fontSize:10,marginTop:2}}>👥 {s.i||0}</div>
+                                </div>
+                              );
+                            })}
                           </div>
                         );
                       })}
@@ -2997,21 +3097,56 @@ function HorarioDocente({ data }){
 }
 
 /* ========= SALAS ========= */
+const TIPOS_RECINTO_BASE = ['Sala','Laboratorio','Taller','Auditorio','Gimnasio','Estudio','Reunion','Cancha','Piscina'];
+
 function Salas({ data, user, toast, onCreate, onUpdate, onDelete }){
   const [q, setQ] = useState('');
   const [tipo, setTipo] = useState('');
   const [modal, setModal] = useState(null);
   const [form, setForm] = useState({codigo:'',nombre:'',capacidad:'',tipo:'Sala',responsable:''});
   const [busy, setBusy] = useState(false);
+  const [tipoCustom, setTipoCustom] = useState('');
+  const [creandoTipo, setCreandoTipo] = useState(false);
   const canEdit = user.role==='admin';
 
   const tipos = useMemo(()=> [...new Set(data.salas.map(s=>s.tipo))].sort(), [data]);
+  // Catálogo de tipos seleccionables = base + los que ya existan en el catálogo.
+  const tiposCatalogo = useMemo(()=> {
+    const set = new Set([...TIPOS_RECINTO_BASE, ...tipos.filter(Boolean)]);
+    return [...set].sort();
+  }, [tipos]);
   const filtered = useMemo(()=> data.salas.filter(s =>
     (!q || s.codigo.toLowerCase().includes(q.toLowerCase()) || (s.nombre||'').toLowerCase().includes(q.toLowerCase())) &&
     (!tipo || s.tipo===tipo)
   ), [data, q, tipo]);
 
-  const resetForm = () => setForm({codigo:'',nombre:'',capacidad:'',tipo:'Sala',responsable:''});
+  const resetForm = () => { setForm({codigo:'',nombre:'',capacidad:'',tipo:'Sala',responsable:''}); setTipoCustom(''); setCreandoTipo(false); };
+
+  const handleTipoSelect = (v) => {
+    if(v === '__nuevo__'){
+      setCreandoTipo(true);
+      setTipoCustom('');
+    } else {
+      setCreandoTipo(false);
+      setForm(f => ({...f, tipo:v}));
+    }
+  };
+  const confirmarNuevoTipo = () => {
+    const nuevo = (tipoCustom||'').trim();
+    if(!nuevo){ toast('Escribe el nombre del nuevo tipo de recinto.'); return; }
+    if(nuevo.length > 40){ toast('Máximo 40 caracteres.'); return; }
+    const yaExiste = tiposCatalogo.some(t => t.toLowerCase() === nuevo.toLowerCase());
+    if(yaExiste){
+      const canonico = tiposCatalogo.find(t => t.toLowerCase() === nuevo.toLowerCase());
+      setForm(f => ({...f, tipo:canonico}));
+      setCreandoTipo(false); setTipoCustom('');
+      toast(`"${canonico}" ya existe — se selecciona el existente.`);
+      return;
+    }
+    setForm(f => ({...f, tipo:nuevo}));
+    setCreandoTipo(false); setTipoCustom('');
+    toast(`Tipo "${nuevo}" listo. Se guardará al confirmar la sala.`);
+  };
 
   const add = async () => {
     if(!form.codigo || !form.nombre){ toast('Completa código y nombre.'); return; }
@@ -3094,10 +3229,28 @@ function Salas({ data, user, toast, onCreate, onUpdate, onDelete }){
           </div>
           <div className="field"><label>Denominación</label><input value={form.nombre} onChange={e=>setForm({...form,nombre:e.target.value})}/></div>
           <div className="col-2">
-            <div className="field"><label>Tipo</label>
-              <select value={form.tipo} onChange={e=>setForm({...form,tipo:e.target.value})}>
-                {['Sala','Laboratorio','Taller','Auditorio','Gimnasio','Estudio','Reunion','Cancha','Piscina'].map(t=><option key={t}>{t}</option>)}
-              </select>
+            <div className="field">
+              <label>Tipo de recinto</label>
+              {creandoTipo ? (
+                <div className="row" style={{gap:6}}>
+                  <input
+                    autoFocus
+                    value={tipoCustom}
+                    onChange={e=>setTipoCustom(e.target.value)}
+                    onKeyDown={e=>{ if(e.key==='Enter'){ e.preventDefault(); confirmarNuevoTipo(); } if(e.key==='Escape'){ setCreandoTipo(false); setTipoCustom(''); } }}
+                    placeholder="Ej. Sala de cómputo, Pabellón…"
+                    style={{flex:1}}
+                  />
+                  <button type="button" className="btn btn-sm btn-primary" onClick={confirmarNuevoTipo}>OK</button>
+                  <button type="button" className="btn btn-sm btn-ghost" onClick={()=>{ setCreandoTipo(false); setTipoCustom(''); }}>✕</button>
+                </div>
+              ) : (
+                <select value={form.tipo} onChange={e=>handleTipoSelect(e.target.value)}>
+                  {tiposCatalogo.map(t => <option key={t} value={t}>{t}</option>)}
+                  {!tiposCatalogo.includes(form.tipo) && form.tipo && <option value={form.tipo}>{form.tipo}</option>}
+                  <option value="__nuevo__">＋ Crear nuevo tipo…</option>
+                </select>
+              )}
             </div>
             <div className="field"><label>Responsable</label><input value={form.responsable} onChange={e=>setForm({...form,responsable:e.target.value})}/></div>
           </div>
@@ -4552,6 +4705,8 @@ function MapaCalor({ data, user }){
   const [nivel, setNivel]     = useState('');
   const [docente, setDocente] = useState('');
   const [seccion, setSeccion] = useState('');
+  const now = useNowMinutes();
+  const todayDw = (() => { const d = new Date().getDay(); return d===0 ? 6 : d-1; })();
 
   const usaEventos = hasEventos(data);
   const sesiones = useMemo(()=> sesionesConsolidadas(data), [data]);
@@ -4844,23 +4999,29 @@ function MapaCalor({ data, user }){
               </tr>
             </thead>
             <tbody>
-              {data.modulos.map((mod, mi) => (
-                <tr key={mod.num}>
+              {data.modulos.map((mod, mi) => {
+                const modIsNow = moduleRunningNow(mod, now);
+                return (
+                <tr key={mod.num} className={modIsNow?'now-row':''}>
                   <td className="lab"><b>{mod.num}</b></td>
                   <td className="lab">{mod.inicio}</td>
                   <td className="lab">{mod.fin}</td>
                   {[0,1,2,3,4,5].map(dw => {
                     const v = mapa[mi][dw];
+                    const cellIsNow = modIsNow && dw === todayDw;
                     return (
                       <td key={dw}
-                        style={{background:colorFor(v),color:textFor(v),fontWeight:v>0?700:500,textAlign:'center',padding:'10px 4px'}}
-                        title={`${DIA_NOMBRES[dw]} · Mód ${mod.num} (${mod.inicio}-${mod.fin}): ${v.toLocaleString('es-CL')} alumnos`}>
+                        className={cellIsNow?'now-cell':''}
+                        style={cellIsNow
+                          ? {color:textFor(v),fontWeight:800,textAlign:'center',padding:'10px 4px'}
+                          : {background:colorFor(v),color:textFor(v),fontWeight:v>0?700:500,textAlign:'center',padding:'10px 4px'}}
+                        title={`${DIA_NOMBRES[dw]} · Mód ${mod.num} (${mod.inicio}-${mod.fin}): ${v.toLocaleString('es-CL')} alumnos${cellIsNow?' · EN CURSO':''}`}>
                         {v ? v.toLocaleString('es-CL') : 0}
                       </td>
                     );
                   })}
                 </tr>
-              ))}
+              );})}
             </tbody>
           </table>
         </div>
