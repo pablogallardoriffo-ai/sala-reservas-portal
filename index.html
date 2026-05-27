@@ -3632,6 +3632,8 @@ function Gestiones({ data, user, db, toast }){
           auditorias={auditorias}
           loading={loadingA}
           onReload={recargar}
+          onSave={async (row) => { try { const saved = await db.saveAuditoria(row); setAuditorias(list => { const i = list.findIndex(x => x.id === saved.id); if(i>=0){ const n = list.slice(); n[i] = saved; return n; } return [...list, saved]; }); toast('Registro actualizado.'); return saved; } catch(e){ toast(`Error: ${e.message}`); throw e; } }}
+          onDelete={async (id) => { try { await db.deleteAuditoria(id); setAuditorias(list => list.filter(x => x.id !== id)); toast('Registro eliminado.'); } catch(e){ toast(`Error: ${e.message}`); } }}
           activo={tab==='panel'}
         />
       )}
@@ -3910,9 +3912,11 @@ function ItemAuditoria({ idx, sess, auditoria, now, esHoy, onSave }){
 }
 
 /* ----- Panel · Resumen ----- */
-function GestionesPanel({ data, auditorias, loading, onReload, activo }){
+function GestionesPanel({ data, auditorias, loading, onReload, onSave, onDelete, activo }){
   const [escuela, setEscuela] = useState('');
   const [auditor, setAuditor] = useState('');
+  const [editing, setEditing] = useState(null);     // registro siendo editado
+  const [confirmDel, setConfirmDel] = useState(null); // id pendiente de borrar
   // Por defecto, 90 días hacia atrás y mañana hacia adelante para no
   // perder registros por zona horaria. El usuario puede acotar manualmente.
   const [desde, setDesde] = useState(()=> isoDate(addDays(new Date(), -90)));
@@ -4157,7 +4161,144 @@ function GestionesPanel({ data, auditorias, loading, onReload, activo }){
           </table>
         </div>
       </div>
+
+      {/* Listado completo · editar / eliminar */}
+      <div className="card" style={{padding:0}}>
+        <div className="card-header" style={{padding:'14px 18px'}}>
+          <div>
+            <h3>📋 Registros del período</h3>
+            <div className="sub">{filtradas.length.toLocaleString('es-CL')} {filtradas.length===1?'registro':'registros'} · click ✎ para modificar, 🗑 para eliminar</div>
+          </div>
+        </div>
+        <div className="tbl-scroll" style={{maxHeight:500}}>
+          <table className="tbl">
+            <thead>
+              <tr>
+                <th>Fecha</th><th>Recinto</th><th>Sección</th><th>Persona</th><th>Área</th>
+                <th style={{textAlign:'center'}}>Inicio</th><th style={{textAlign:'center'}}>Término</th>
+                <th>Usuario</th><th></th>
+              </tr>
+            </thead>
+            <tbody>
+              {[...filtradas].sort((a,b)=> (b.fecha||'').localeCompare(a.fecha||'') || (b.hora_inicio||'').localeCompare(a.hora_inicio||'')).map(a => (
+                <tr key={a.id}>
+                  <td className="muted" style={{fontSize:12}}>{normFecha(a.fecha)}<br/><small>{a.hora_inicio}–{a.hora_fin}</small></td>
+                  <td><b style={{color:'var(--primary)'}}>{a.sala||'—'}</b></td>
+                  <td><span className="chip">{a.seccion||'—'}</span></td>
+                  <td style={{maxWidth:200,fontSize:12.5}}>{a.docente||'—'}<br/><small className="muted">{(a.asignatura||'').slice(0,40)}</small></td>
+                  <td className="muted" style={{fontSize:12}}>{ESCUELAS_FULL[a.escuela]||a.escuela||'—'}</td>
+                  <td style={{textAlign:'center'}}>
+                    {a.llego_a_hora==='si' && <span className="chip success" title={a.obs_inicio||''}>✓ {a.hora_llegada||''}</span>}
+                    {a.llego_a_hora==='no' && <span className="chip danger" title={a.obs_inicio||''}>✗ {a.hora_llegada||''}</span>}
+                    {!a.llego_a_hora && <span className="muted">—</span>}
+                  </td>
+                  <td style={{textAlign:'center'}}>
+                    {a.termino_a_hora==='si' && <span className="chip success" title={a.obs_fin||''}>✓ {a.hora_salida||''}</span>}
+                    {a.termino_a_hora==='no' && <span className="chip danger" title={a.obs_fin||''}>✗ {a.hora_salida||''}</span>}
+                    {!a.termino_a_hora && <span className="muted">—</span>}
+                  </td>
+                  <td className="muted" style={{fontSize:12}}>{a.auditor}</td>
+                  <td className="nowrap" style={{textAlign:'right'}}>
+                    <button className="btn-icon" title="Modificar" onClick={()=>setEditing(a)}>{I.edit}</button>
+                    <button className="btn-icon" title="Eliminar" onClick={()=>setConfirmDel(a)}>{I.trash}</button>
+                  </td>
+                </tr>
+              ))}
+              {filtradas.length===0 && <tr><td colSpan="9"><div className="empty"><span className="emoji">📭</span>Sin registros en el período.</div></td></tr>}
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      {/* Modal · Modificar registro */}
+      {editing && (
+        <ModalEditarRegistro
+          row={editing}
+          onClose={()=>setEditing(null)}
+          onSave={async (patch) => {
+            try { await onSave({ ...editing, ...patch }); setEditing(null); }
+            catch {}
+          }}
+        />
+      )}
+
+      {/* Modal · Confirmar eliminación */}
+      {confirmDel && (
+        <Modal
+          title="¿Eliminar registro?"
+          onClose={()=>setConfirmDel(null)}
+          onSave={async ()=>{ await onDelete(confirmDel.id); setConfirmDel(null); }}
+          saveLabel="Sí, eliminar"
+        >
+          <div style={{fontSize:14,lineHeight:1.55}}>
+            Se eliminará permanentemente el registro de <b>{confirmDel.sala}</b> · sección <b>{confirmDel.seccion||'—'}</b> · {normFecha(confirmDel.fecha)} a las <b>{confirmDel.hora_inicio}</b>.
+            <div className="muted" style={{marginTop:8,fontSize:12}}>Esta acción no se puede deshacer.</div>
+          </div>
+        </Modal>
+      )}
     </>
+  );
+}
+
+/* ----- Modal de edición de un registro de Gestiones ----- */
+function ModalEditarRegistro({ row, onClose, onSave }){
+  const [llego, setLlego] = useState(row.llego_a_hora || '');
+  const [horaLleg, setHoraLleg] = useState(row.hora_llegada || '');
+  const [obsIni, setObsIni] = useState(row.obs_inicio || '');
+  const [termino, setTermino] = useState(row.termino_a_hora || '');
+  const [horaSal, setHoraSal] = useState(row.hora_salida || '');
+  const [obsFin, setObsFin] = useState(row.obs_fin || '');
+
+  const handleSave = () => onSave({
+    llego_a_hora:   llego || null,
+    hora_llegada:   horaLleg || null,
+    obs_inicio:     obsIni || null,
+    termino_a_hora: termino || null,
+    hora_salida:    horaSal || null,
+    obs_fin:        obsFin || null,
+  });
+
+  return (
+    <Modal title={`Modificar registro · ${row.sala} · ${row.seccion||''}`} onClose={onClose} onSave={handleSave} wide>
+      <div className="muted" style={{fontSize:12.5,marginBottom:14,padding:'10px 12px',background:'var(--surface-2)',borderRadius:8}}>
+        <b>{row.docente||'—'}</b> · {(row.asignatura||'').slice(0,80)}<br/>
+        {row.hora_inicio}–{row.hora_fin} · {row.escuela ? (ESCUELAS_FULL[row.escuela]||row.escuela) : '—'}
+      </div>
+      <div className="col-2">
+        <div>
+          <div style={{fontSize:11,fontWeight:700,letterSpacing:.4,textTransform:'uppercase',color:'var(--text-muted)',marginBottom:8}}>▶ Inicio · Hora prevista {row.hora_inicio}</div>
+          <div className="row" style={{gap:8,flexWrap:'wrap',marginBottom:8}}>
+            <button type="button" className={`btn btn-sm ${llego==='si'?'btn-primary':'btn-ghost'}`} onClick={()=>setLlego('si')}>✓ Conforme</button>
+            <button type="button" className={`btn btn-sm ${llego==='no'?'btn-danger':'btn-ghost'}`} onClick={()=>setLlego('no')}>✗ No conforme</button>
+            <button type="button" className="btn btn-sm btn-ghost" onClick={()=>{ setLlego(''); setHoraLleg(''); setObsIni(''); }}>Limpiar</button>
+          </div>
+          <div className="field">
+            <label>Hora real de inicio</label>
+            <input type="time" value={horaLleg} onChange={e=>setHoraLleg(e.target.value)}/>
+          </div>
+          <div className="field" style={{marginTop:8}}>
+            <label>Observación</label>
+            <textarea rows="3" value={obsIni} onChange={e=>setObsIni(e.target.value)}/>
+          </div>
+        </div>
+        <div>
+          <div style={{fontSize:11,fontWeight:700,letterSpacing:.4,textTransform:'uppercase',color:'var(--text-muted)',marginBottom:8}}>■ Término · Hora prevista {row.hora_fin}</div>
+          <div className="row" style={{gap:8,flexWrap:'wrap',marginBottom:8}}>
+            <button type="button" className={`btn btn-sm ${termino==='si'?'btn-primary':'btn-ghost'}`} onClick={()=>setTermino('si')}>✓ Conforme</button>
+            <button type="button" className={`btn btn-sm ${termino==='no'?'btn-danger':'btn-ghost'}`} onClick={()=>setTermino('no')}>✗ No conforme</button>
+            <button type="button" className="btn btn-sm btn-ghost" onClick={()=>{ setTermino(''); setHoraSal(''); setObsFin(''); }}>Limpiar</button>
+          </div>
+          <div className="field">
+            <label>Hora real de término</label>
+            <input type="time" value={horaSal} onChange={e=>setHoraSal(e.target.value)}/>
+          </div>
+          <div className="field" style={{marginTop:8}}>
+            <label>Observación</label>
+            <textarea rows="3" value={obsFin} onChange={e=>setObsFin(e.target.value)}/>
+          </div>
+        </div>
+      </div>
+    </Modal>
   );
 }
 
