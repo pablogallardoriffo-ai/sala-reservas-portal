@@ -3637,21 +3637,41 @@ function GestionesRecorrido({ data, user, fecha, setFecha, cfg, guardarCfg, mues
         <div className="card"><div className="loader"><div className="spinner"/><div>Cargando auditorías…</div></div></div>
       ) : muestra.length === 0 ? (
         <div className="card"><div className="empty"><span className="emoji">🔍</span>Sin clases candidatas con esta configuración. Prueba ampliar el rango de módulos o cambiar la fecha.</div></div>
-      ) : (
-        <div className="stack" style={{gap:10}}>
-          {muestra.map((s, i) => (
-            <ItemAuditoria
-              key={`${s.sc||''}|${s.s||''}|${s.hi}|${s.hf}`}
-              idx={i+1}
-              sess={s}
-              auditoria={auditIdx.get(`${s.sc||''}|${s.s||''}|${s.hi}|${s.hf}`)}
-              now={now}
-              esHoy={esHoy}
-              onSave={onSave}
-            />
-          ))}
-        </div>
-      )}
+      ) : (() => {
+        // Filtra del recorrido las clases con AMBOS bloques registrados —
+        // su detalle vive en el "Panel de análisis". Las parcialmente
+        // auditadas siguen visibles para completarlas.
+        const pendientes = muestra.filter(s => {
+          const a = auditIdx.get(`${s.sc||''}|${s.s||''}|${s.hi}|${s.hf}`);
+          if(!a) return true;
+          return !(a.llego_a_hora && a.termino_a_hora);
+        });
+        const completas = muestra.length - pendientes.length;
+        return (
+          <>
+            {completas > 0 && (
+              <div className="chip success" style={{padding:'8px 12px',fontSize:12.5,alignSelf:'flex-start'}}>
+                ✅ {completas} {completas===1?'clase auditada':'clases auditadas'} esta sesión — ya están en el <b>Panel de análisis</b>.
+              </div>
+            )}
+            <div className="stack" style={{gap:10}}>
+              {pendientes.length === 0 ? (
+                <div className="card"><div className="empty"><span className="emoji">🎉</span>Recorrido completado. Todas las clases sorteadas fueron auditadas.</div></div>
+              ) : pendientes.map((s, i) => (
+                <ItemAuditoria
+                  key={`${s.sc||''}|${s.s||''}|${s.hi}|${s.hf}`}
+                  idx={i+1}
+                  sess={s}
+                  auditoria={auditIdx.get(`${s.sc||''}|${s.s||''}|${s.hi}|${s.hf}`)}
+                  now={now}
+                  esHoy={esHoy}
+                  onSave={onSave}
+                />
+              ))}
+            </div>
+          </>
+        );
+      })()}
     </>
   );
 }
@@ -3704,10 +3724,41 @@ function ItemAuditoria({ idx, sess, auditoria, now, esHoy, onSave }){
     obs_fin: obsFin || null,
   });
 
-  // Indicadores visuales
+  // Una vez registrado, el bloque correspondiente desaparece para no
+  // estorbar. Si AMBOS están registrados la card no llega a esta vista
+  // (la filtra GestionesRecorrido y queda solo en el Panel de análisis).
   const inicioCompleto = !!a.llego_a_hora;
   const finCompleto = !!a.termino_a_hora;
   const cardCls = estado==='enCurso' ? 'card now-card' : 'card';
+  // Si quedó solo uno por hacer, el bloque pendiente ocupa todo el ancho
+  const cols = (inicioCompleto !== finCompleto) ? 'grid-1' : 'grid-2';
+
+  // Sub-vista resumen del bloque ya guardado (para que el auditor pueda
+  // revisar lo que dejó registrado sin necesidad de ir al Panel).
+  const ResumenInicio = () => (
+    <div style={{padding:'10px 14px',background:'var(--surface-2)',borderRadius:8,border:'1px solid var(--border-soft)'}}>
+      <div style={{fontSize:11,fontWeight:700,letterSpacing:.4,textTransform:'uppercase',color:'var(--text-muted)',marginBottom:6}}>🚪 Inicio registrado</div>
+      <div className="row" style={{gap:10,alignItems:'center',flexWrap:'wrap',fontSize:13}}>
+        {a.llego_a_hora==='si'
+          ? <span className="chip success">✓ Llegó a la hora</span>
+          : <span className="chip danger">✗ No llegó a la hora</span>}
+        {a.hora_llegada && <span className="muted">Hora real: <b>{a.hora_llegada}</b></span>}
+        {a.obs_inicio && <span className="muted" style={{fontStyle:'italic'}}>"{a.obs_inicio}"</span>}
+      </div>
+    </div>
+  );
+  const ResumenFin = () => (
+    <div style={{padding:'10px 14px',background:'var(--surface-2)',borderRadius:8,border:'1px solid var(--border-soft)'}}>
+      <div style={{fontSize:11,fontWeight:700,letterSpacing:.4,textTransform:'uppercase',color:'var(--text-muted)',marginBottom:6}}>🏁 Término registrado</div>
+      <div className="row" style={{gap:10,alignItems:'center',flexWrap:'wrap',fontSize:13}}>
+        {a.termino_a_hora==='si'
+          ? <span className="chip success">✓ Terminó a la hora</span>
+          : <span className="chip danger">✗ Se fue antes / después</span>}
+        {a.hora_salida && <span className="muted">Hora real: <b>{a.hora_salida}</b></span>}
+        {a.obs_fin && <span className="muted" style={{fontStyle:'italic'}}>"{a.obs_fin}"</span>}
+      </div>
+    </div>
+  );
 
   return (
     <div className={cardCls} style={{padding:0,overflow:'hidden'}}>
@@ -3734,47 +3785,52 @@ function ItemAuditoria({ idx, sess, auditoria, now, esHoy, onSave }){
         </div>
       </div>
 
-      <div className="grid grid-2" style={{padding:'14px 18px',gap:16,borderTop:'1px solid var(--border-soft)'}}>
-        {/* Bloque INICIO */}
-        <div>
-          <div style={{fontSize:11,fontWeight:700,letterSpacing:.4,textTransform:'uppercase',color:'var(--text-muted)',marginBottom:8}}>🚪 Inicio · Programado {sess.hi}</div>
-          <div className="row" style={{gap:8,flexWrap:'wrap',marginBottom:8}}>
-            <button type="button" className={`btn btn-sm ${llego==='si'?'btn-primary':'btn-ghost'}`} onClick={()=>setLlego('si')}>✓ Llegó a la hora</button>
-            <button type="button" className={`btn btn-sm ${llego==='no'?'btn-danger':'btn-ghost'}`} onClick={()=>setLlego('no')}>✗ No llegó a la hora</button>
-          </div>
-          <div className="row" style={{gap:8,alignItems:'flex-end'}}>
-            <div className="field" style={{flex:1}}>
-              <label>Hora real de llegada</label>
-              <input type="time" value={horaLleg} onChange={e=>setHoraLleg(e.target.value)}/>
+      <div className={`grid ${cols}`} style={{padding:'14px 18px',gap:16,borderTop:'1px solid var(--border-soft)'}}>
+        {/* Bloque INICIO — solo si aún no se guardó */}
+        {!inicioCompleto ? (
+          <div>
+            <div style={{fontSize:11,fontWeight:700,letterSpacing:.4,textTransform:'uppercase',color:'var(--text-muted)',marginBottom:8}}>🚪 Inicio · Programado {sess.hi}</div>
+            <div className="row" style={{gap:8,flexWrap:'wrap',marginBottom:8}}>
+              <button type="button" className={`btn btn-sm ${llego==='si'?'btn-primary':'btn-ghost'}`} onClick={()=>setLlego('si')}>✓ Llegó a la hora</button>
+              <button type="button" className={`btn btn-sm ${llego==='no'?'btn-danger':'btn-ghost'}`} onClick={()=>setLlego('no')}>✗ No llegó a la hora</button>
             </div>
-            <button type="button" className="btn btn-sm btn-ghost" onClick={marcarLlegadaAhora}>Ahora</button>
-          </div>
-          <div className="field" style={{marginTop:8}}>
-            <label>Observación de inicio</label>
-            <textarea rows="2" value={obsIni} onChange={e=>setObsIni(e.target.value)} placeholder="Notas sobre el inicio…"/>
-          </div>
-          <button type="button" className="btn btn-sm btn-primary" style={{marginTop:8}} onClick={guardarInicio}>💾 Guardar inicio</button>
-        </div>
-        {/* Bloque FIN */}
-        <div>
-          <div style={{fontSize:11,fontWeight:700,letterSpacing:.4,textTransform:'uppercase',color:'var(--text-muted)',marginBottom:8}}>🏁 Término · Programado {sess.hf}</div>
-          <div className="row" style={{gap:8,flexWrap:'wrap',marginBottom:8}}>
-            <button type="button" className={`btn btn-sm ${termino==='si'?'btn-primary':'btn-ghost'}`} onClick={()=>setTermino('si')}>✓ Terminó a la hora</button>
-            <button type="button" className={`btn btn-sm ${termino==='no'?'btn-danger':'btn-ghost'}`} onClick={()=>setTermino('no')}>✗ Se fue antes / después</button>
-          </div>
-          <div className="row" style={{gap:8,alignItems:'flex-end'}}>
-            <div className="field" style={{flex:1}}>
-              <label>Hora real de salida</label>
-              <input type="time" value={horaSal} onChange={e=>setHoraSal(e.target.value)}/>
+            <div className="row" style={{gap:8,alignItems:'flex-end'}}>
+              <div className="field" style={{flex:1}}>
+                <label>Hora real de llegada</label>
+                <input type="time" value={horaLleg} onChange={e=>setHoraLleg(e.target.value)}/>
+              </div>
+              <button type="button" className="btn btn-sm btn-ghost" onClick={marcarLlegadaAhora}>Ahora</button>
             </div>
-            <button type="button" className="btn btn-sm btn-ghost" onClick={marcarSalidaAhora}>Ahora</button>
+            <div className="field" style={{marginTop:8}}>
+              <label>Observación de inicio</label>
+              <textarea rows="2" value={obsIni} onChange={e=>setObsIni(e.target.value)} placeholder="Notas sobre el inicio…"/>
+            </div>
+            <button type="button" className="btn btn-sm btn-primary" style={{marginTop:8}} onClick={guardarInicio}>💾 Guardar inicio</button>
           </div>
-          <div className="field" style={{marginTop:8}}>
-            <label>Observación de término</label>
-            <textarea rows="2" value={obsFin} onChange={e=>setObsFin(e.target.value)} placeholder="Notas sobre el término…"/>
+        ) : (finCompleto ? null : <ResumenInicio/>)}
+
+        {/* Bloque FIN — solo si aún no se guardó */}
+        {!finCompleto ? (
+          <div>
+            <div style={{fontSize:11,fontWeight:700,letterSpacing:.4,textTransform:'uppercase',color:'var(--text-muted)',marginBottom:8}}>🏁 Término · Programado {sess.hf}</div>
+            <div className="row" style={{gap:8,flexWrap:'wrap',marginBottom:8}}>
+              <button type="button" className={`btn btn-sm ${termino==='si'?'btn-primary':'btn-ghost'}`} onClick={()=>setTermino('si')}>✓ Terminó a la hora</button>
+              <button type="button" className={`btn btn-sm ${termino==='no'?'btn-danger':'btn-ghost'}`} onClick={()=>setTermino('no')}>✗ Se fue antes / después</button>
+            </div>
+            <div className="row" style={{gap:8,alignItems:'flex-end'}}>
+              <div className="field" style={{flex:1}}>
+                <label>Hora real de salida</label>
+                <input type="time" value={horaSal} onChange={e=>setHoraSal(e.target.value)}/>
+              </div>
+              <button type="button" className="btn btn-sm btn-ghost" onClick={marcarSalidaAhora}>Ahora</button>
+            </div>
+            <div className="field" style={{marginTop:8}}>
+              <label>Observación de término</label>
+              <textarea rows="2" value={obsFin} onChange={e=>setObsFin(e.target.value)} placeholder="Notas sobre el término…"/>
+            </div>
+            <button type="button" className="btn btn-sm btn-primary" style={{marginTop:8}} onClick={guardarFin}>💾 Guardar fin</button>
           </div>
-          <button type="button" className="btn btn-sm btn-primary" style={{marginTop:8}} onClick={guardarFin}>💾 Guardar fin</button>
-        </div>
+        ) : (inicioCompleto ? null : <ResumenFin/>)}
       </div>
     </div>
   );
