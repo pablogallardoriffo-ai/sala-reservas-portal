@@ -93,6 +93,35 @@ CREATE TABLE IF NOT EXISTS import_log (
   importado_por TEXT
 );
 
+-- AUDITORÍAS EN TERRENO — sólo admin (sección "Gestiones")
+-- Registra cada visita de un auditor a una sala para verificar puntualidad
+-- del docente al inicio y al término de la clase.
+CREATE TABLE IF NOT EXISTS auditorias (
+  id              BIGSERIAL PRIMARY KEY,
+  auditor         TEXT NOT NULL,        -- username del admin que registra
+  fecha           DATE NOT NULL,        -- fecha de la clase
+  sala            TEXT,                 -- código de sala
+  seccion         TEXT,                 -- código de sección (ej. ABC1234-001)
+  asignatura      TEXT,                 -- denominación
+  docente         TEXT,
+  escuela         TEXT,                 -- escuela (3 letras)
+  modulo_ini      INT,
+  modulo_fin      INT,
+  hora_inicio     TEXT,                 -- programada HH:MM
+  hora_fin        TEXT,                 -- programada HH:MM
+  llego_a_hora    TEXT,                 -- 'si' | 'no' | NULL (sin registrar)
+  hora_llegada    TEXT,                 -- HH:MM real
+  obs_inicio      TEXT,
+  termino_a_hora  TEXT,                 -- 'si' | 'no' | NULL
+  hora_salida     TEXT,                 -- HH:MM real
+  obs_fin         TEXT,
+  created_at      TIMESTAMPTZ DEFAULT NOW(),
+  updated_at      TIMESTAMPTZ DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_audit_fecha ON auditorias(fecha);
+CREATE INDEX IF NOT EXISTS idx_audit_auditor ON auditorias(auditor);
+CREATE INDEX IF NOT EXISTS idx_audit_seccion ON auditorias(seccion);
+
 -- RESERVAS
 CREATE TABLE IF NOT EXISTS reservas (
   id            BIGSERIAL PRIMARY KEY,

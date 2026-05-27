@@ -1566,6 +1566,51 @@ function createDb({ mode, supabase }){
     return { rows };
   };
 
+  /* ----- AUDITORÍAS (Gestiones, sólo admin) ----- */
+  const loadAuditorias = async () => {
+    if(isCloud) return await fetchAllSafe('auditorias', { order:'id' });
+    const st = loadStore();
+    return st.auditorias || [];
+  };
+  const saveAuditoria = async (a) => {
+    const row = { ...a, updated_at: new Date().toISOString() };
+    if(isCloud){
+      if(row.id){
+        const { id, ...patch } = row;
+        const { data, error } = await supabase.from('auditorias').update(patch).eq('id', id).select().single();
+        if(error) throw new Error(error.message);
+        return data;
+      }
+      const { data, error } = await supabase.from('auditorias').insert(row).select().single();
+      if(error) throw new Error(error.message);
+      return data;
+    }
+    // Local: mantiene su propio array, id basado en timestamp
+    const st = loadStore();
+    const lista = st.auditorias || [];
+    if(row.id){
+      const i = lista.findIndex(x => x.id === row.id);
+      if(i >= 0) lista[i] = { ...lista[i], ...row };
+    } else {
+      row.id = Date.now();
+      row.created_at = new Date().toISOString();
+      lista.push(row);
+    }
+    saveStore({ ...st, auditorias:lista });
+    return row;
+  };
+  const deleteAuditoria = async (id) => {
+    if(isCloud){
+      const { error } = await supabase.from('auditorias').delete().eq('id', id);
+      if(error) throw new Error(error.message);
+      return true;
+    }
+    const st = loadStore();
+    const lista = (st.auditorias || []).filter(x => x.id !== id);
+    saveStore({ ...st, auditorias:lista });
+    return true;
+  };
+
   return {
     isCloud, mode,
     loadAll, login,
@@ -1575,6 +1620,7 @@ function createDb({ mode, supabase }){
     replaceProgramacion, replaceEventos, replaceJefes, seedFromBundle,
     createJefe, updateJefe, deleteJefe, logImport,
     subscribe, getStats, fetchAll, fetchAllSafe,
+    loadAuditorias, saveAuditoria, deleteAuditoria,
   };
 }
 
@@ -1835,6 +1881,7 @@ function Shell({ user, mode, onReconfigure, onLogout, view, setView, children, t
       ['reservas',  user.role==='usuario' ? 'Mis Reservas' : 'Solicitudes de Reservas',  I.reservas,  ['admin','reservador','usuario']],
       ['reportes',  'Reportes',                 I.reports,   ['admin','reservador']],
       ['repDoc',    'Reporte Docente',          I.reports,   ['admin']],
+      ['gestiones', '🔒 Gestiones',             I.users,     ['admin']],
       ['usuarios',  'Usuarios',                 I.users,     ['admin']],
       ['importar',  'Importar datos',           I.upload,    ['admin']],
     ];
@@ -3248,6 +3295,721 @@ function HorarioDocente({ data }){
         </>
       )}
     </div>
+  );
+}
+
+/* ========= GESTIONES — AUDITORÍAS EN TERRENO =========
+   Pestaña privada (admin + password). Sortea N clases del día desde el
+   módulo X al Y para que un auditor las visite presencialmente y registre
+   si el docente llegó/se fue a la hora. Persistencia en Supabase tabla
+   'auditorias'. Incluye dashboard agregado de cumplimiento.
+
+   Decisiones:
+   - Sorteo estable por (fecha + auditor + sede) usando hash mulberry32.
+   - Universo: clases con docente asignado, en sala presencial (no
+     virtual/cancha/piscina/gimnasio externo), futuras o en curso del día.
+   - Config persistida en localStorage: modIni, modFin, n (cantidad).
+*/
+const GESTIONES_PASSWORD = '010203';
+const GESTIONES_CFG_KEY = 'sr_gestiones_cfg_v1';
+const GESTIONES_AUTH_KEY = 'sr_gestiones_auth_v1'; // sessionStorage
+
+// PRNG determinístico para que dos cargas del mismo día con el mismo
+// auditor produzcan exactamente la misma muestra. mulberry32 de tomas-vergara.
+const seedFromString = (s) => {
+  let h = 1779033703 ^ s.length;
+  for(let i=0; i<s.length; i++){
+    h = Math.imul(h ^ s.charCodeAt(i), 3432918353);
+    h = (h << 13) | (h >>> 19);
+  }
+  return () => {
+    h = Math.imul(h ^ (h >>> 16), 2246822507);
+    h = Math.imul(h ^ (h >>> 13), 3266489909);
+    h ^= h >>> 16;
+    return (h >>> 0) / 4294967296;
+  };
+};
+const shuffleSeeded = (arr, rng) => {
+  const a = arr.slice();
+  for(let i = a.length - 1; i > 0; i--){
+    const j = Math.floor(rng() * (i + 1));
+    [a[i], a[j]] = [a[j], a[i]];
+  }
+  return a;
+};
+
+// Tipos de sala considerados "no presenciales / no auditables a pie"
+const TIPOS_NO_AUDITABLES = new Set(['Piscina','Cancha']);
+const esSalaAuditable = (sala) => {
+  if(!sala) return false;
+  if(isSalaVirtual(sala)) return false;
+  if(TIPOS_NO_AUDITABLES.has(sala.tipo)) return false;
+  if((sala.ubicacion||'Sede') === 'Fuera de Sede') return false;
+  return true;
+};
+
+function Gestiones({ data, user, db, toast }){
+  // === 1) Bloqueo por contraseña (memorizado en sessionStorage) ===
+  const [unlocked, setUnlocked] = useState(()=> sessionStorage.getItem(GESTIONES_AUTH_KEY)==='1');
+  const [pw, setPw] = useState('');
+  const [pwErr, setPwErr] = useState(false);
+  const tryUnlock = (e) => {
+    if(e) e.preventDefault();
+    if(pw === GESTIONES_PASSWORD){
+      sessionStorage.setItem(GESTIONES_AUTH_KEY, '1');
+      setUnlocked(true);
+      setPw(''); setPwErr(false);
+    } else {
+      setPwErr(true);
+    }
+  };
+  const lock = () => { sessionStorage.removeItem(GESTIONES_AUTH_KEY); setUnlocked(false); };
+
+  // === 2) Configuración persistida ===
+  const [cfg, setCfg] = useState(()=>{
+    try {
+      const raw = localStorage.getItem(GESTIONES_CFG_KEY);
+      if(raw) return { ...{ modIni:3, modFin:13, n:10 }, ...JSON.parse(raw) };
+    } catch {}
+    return { modIni:3, modFin:13, n:10 };
+  });
+  const guardarCfg = (patch) => {
+    setCfg(prev => {
+      const next = { ...prev, ...patch };
+      localStorage.setItem(GESTIONES_CFG_KEY, JSON.stringify(next));
+      return next;
+    });
+  };
+
+  // === 3) Auditorías cargadas desde DB ===
+  const [auditorias, setAuditorias] = useState([]);
+  const [loadingA, setLoadingA] = useState(false);
+  const recargar = async () => {
+    if(!db) return;
+    setLoadingA(true);
+    try {
+      const data = await db.loadAuditorias();
+      setAuditorias(data);
+    } catch(e){ console.error('loadAuditorias:', e); toast(`Error cargando auditorías: ${e.message}`); }
+    finally { setLoadingA(false); }
+  };
+  useEffect(()=>{ if(unlocked) recargar(); }, [unlocked, db]);
+
+  // === 4) Reloj reactivo (cuenta regresiva por clase) ===
+  const [now, setNow] = useState(new Date());
+  useEffect(()=>{
+    if(!unlocked) return;
+    const t = setInterval(()=> setNow(new Date()), 30000);
+    return ()=> clearInterval(t);
+  }, [unlocked]);
+
+  // === 5) Fecha del recorrido (default hoy, editable) ===
+  const [fecha, setFecha] = useState(isoDate(new Date()));
+  // Bump para re-sortear cuando el admin hace click en "Re-sortear"
+  const [reroll, setReroll] = useState(0);
+
+  // === 6) Sub-pestaña: 'recorrido' | 'panel' ===
+  const [tab, setTab] = useState('recorrido');
+
+  // === 7) Sorteo de N clases ===
+  const candidatas = useMemo(()=>{
+    if(!unlocked) return [];
+    const salaInfoMap = new Map(data.salas.map(s => [s.codigo, s]));
+    const modIni = Number(cfg.modIni)||3;
+    const modFin = Number(cfg.modFin)||13;
+    const modIniInfo = data.modulos.find(m => m.num === modIni);
+    const modFinInfo = data.modulos.find(m => m.num === modFin);
+    if(!modIniInfo || !modFinInfo) return [];
+    const hLimIni = modIniInfo.inicio;
+    const hLimFin = modFinInfo.fin;
+    const sess = sesionesEnFecha(data, fecha);
+    const dedup = new Set();
+    const esHoy = fecha === isoDate(new Date());
+    const ahoraHM = `${String(now.getHours()).padStart(2,'0')}:${String(now.getMinutes()).padStart(2,'0')}`;
+    const out = [];
+    for(const s of sess){
+      if(!s.d) continue; // sin docente identificado
+      const sala = salaInfoMap.get(s.s);
+      if(!esSalaAuditable(sala)) continue;
+      if(s.hi < hLimIni || s.hf > hLimFin) continue;
+      // Si es hoy, solo clases que aún no terminaron
+      if(esHoy && s.hf <= ahoraHM) continue;
+      const k = `${s.sc||''}|${s.s||''}|${s.hi}|${s.hf}|${fecha}`;
+      if(dedup.has(k)) continue;
+      dedup.add(k);
+      out.push(s);
+    }
+    return out;
+  }, [unlocked, data, fecha, cfg.modIni, cfg.modFin, now, reroll]);
+
+  // Sorteo determinístico: misma muestra para mismo (fecha + auditor)
+  const muestra = useMemo(()=>{
+    if(!candidatas.length) return [];
+    const seedKey = `${fecha}|${user.username}|${reroll}`;
+    const rng = seedFromString(seedKey);
+    return shuffleSeeded(candidatas, rng).slice(0, Number(cfg.n)||10);
+  }, [candidatas, fecha, user.username, cfg.n, reroll]);
+
+  // === 8) Índice de auditorías existentes para esta fecha + auditor ===
+  // Clave única por (fecha, sección, sala, hora_inicio, hora_fin) — sólo
+  // del auditor actual (cada auditor lleva su propio recorrido).
+  const auditIdx = useMemo(()=>{
+    const idx = new Map();
+    for(const a of auditorias){
+      if(a.fecha !== fecha) continue;
+      if(a.auditor !== user.username) continue;
+      const k = `${a.seccion||''}|${a.sala||''}|${a.hora_inicio||''}|${a.hora_fin||''}`;
+      idx.set(k, a);
+    }
+    return idx;
+  }, [auditorias, fecha, user.username]);
+
+  // === 9) Guardar parcial / completo ===
+  const guardarItem = async (sess, patch) => {
+    const mods = (()=>{
+      const a = data.modulos.find(m => m.inicio <= sess.hi);
+      const b = data.modulos.find(m => m.fin >= sess.hf);
+      let mi = null, mf = null;
+      // El módulo de inicio = el módulo cuyo rango contiene s.hi
+      for(const m of data.modulos){
+        if(m.inicio <= sess.hi && sess.hi < m.fin){ mi = m.num; break; }
+      }
+      for(let i=data.modulos.length-1; i>=0; i--){
+        const m = data.modulos[i];
+        if(m.inicio < sess.hf && sess.hf <= m.fin){ mf = m.num; break; }
+      }
+      return { mi, mf };
+    })();
+    const k = `${sess.sc||''}|${sess.s||''}|${sess.hi}|${sess.hf}`;
+    const prev = auditIdx.get(k);
+    const row = {
+      ...(prev || {}),
+      auditor: user.username,
+      fecha,
+      sala: sess.s||null,
+      seccion: sess.sc||null,
+      asignatura: sess.a || sess.de || null,
+      docente: sess.d || null,
+      escuela: sess.es || null,
+      modulo_ini: mods.mi,
+      modulo_fin: mods.mf,
+      hora_inicio: sess.hi,
+      hora_fin: sess.hf,
+      ...patch,
+    };
+    try {
+      const saved = await db.saveAuditoria(row);
+      // refrescar lista local sin recargar todo
+      setAuditorias(list => {
+        const i = list.findIndex(x => x.id === saved.id);
+        if(i >= 0){ const next = list.slice(); next[i] = saved; return next; }
+        return [...list, saved];
+      });
+      toast('Auditoría guardada.');
+    } catch(e){ console.error('saveAuditoria:', e); toast(`Error: ${e.message}`); }
+  };
+
+  if(!unlocked){
+    return (
+      <div className="stack">
+        <div className="card" style={{maxWidth:520,margin:'40px auto',padding:'30px 28px'}}>
+          <div style={{textAlign:'center',marginBottom:16}}>
+            <div style={{fontSize:42,marginBottom:6}}>🔒</div>
+            <h3 style={{fontSize:18}}>Acceso restringido</h3>
+            <div className="sub" style={{marginTop:6}}>Pestaña <b>Gestiones</b> · auditorías en terreno.<br/>Solo administradores con la contraseña asignada.</div>
+          </div>
+          <form onSubmit={tryUnlock} className="stack" style={{gap:12}}>
+            <div className="field">
+              <label>Contraseña de Gestiones</label>
+              <input
+                type="password" value={pw}
+                onChange={e=>{ setPw(e.target.value); setPwErr(false); }}
+                placeholder="●●●●●●"
+                autoFocus
+                style={pwErr?{borderColor:'var(--danger)'}:{}}
+              />
+              {pwErr && <div style={{color:'var(--danger)',fontSize:12,marginTop:4}}>Contraseña incorrecta.</div>}
+            </div>
+            <button type="submit" className="btn btn-primary btn-block">Ingresar</button>
+          </form>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="stack">
+      {/* Header con sub-tabs y botón lock */}
+      <div className="card">
+        <div className="card-header">
+          <div>
+            <h3>🔒 Gestiones · Auditorías en terreno</h3>
+            <div className="sub">Auditor: <b>{user.nombre || user.username}</b> · Las auditorías quedan registradas con tu cuenta.</div>
+          </div>
+          <div className="row" style={{gap:8}}>
+            <button className="btn btn-ghost" style={{fontSize:12,padding:'6px 12px'}} onClick={lock}>🔒 Bloquear</button>
+          </div>
+        </div>
+        <div className="seg" style={{marginTop:4}}>
+          <button className={tab==='recorrido'?'active':''} onClick={()=>setTab('recorrido')}>🚶 Recorrido</button>
+          <button className={tab==='panel'?'active':''} onClick={()=>setTab('panel')}>📊 Panel de análisis</button>
+        </div>
+      </div>
+
+      {tab==='recorrido' && (
+        <GestionesRecorrido
+          data={data} user={user} fecha={fecha} setFecha={setFecha}
+          cfg={cfg} guardarCfg={guardarCfg}
+          muestra={muestra} candidatas={candidatas}
+          auditIdx={auditIdx} now={now}
+          onSave={guardarItem}
+          onReroll={()=> setReroll(r => r+1)}
+          loading={loadingA}
+        />
+      )}
+      {tab==='panel' && (
+        <GestionesPanel
+          data={data}
+          auditorias={auditorias}
+          loading={loadingA}
+          onReload={recargar}
+        />
+      )}
+    </div>
+  );
+}
+
+/* ----- SUB-COMPONENTE: Recorrido (lista de auditorías por hacer) ----- */
+function GestionesRecorrido({ data, user, fecha, setFecha, cfg, guardarCfg, muestra, candidatas, auditIdx, now, onSave, onReroll, loading }){
+  const todayIso = isoDate(new Date());
+  const ahoraMin = now.getHours()*60 + now.getMinutes();
+  const esHoy = fecha === todayIso;
+
+  // Estado del módulo actual (para destacar)
+  const modActivo = data.modulos.find(m => {
+    const a = toMin(m.inicio), b = toMin(m.fin);
+    return ahoraMin >= a && ahoraMin < b;
+  });
+
+  return (
+    <>
+      {/* Configuración del sorteo */}
+      <div className="card">
+        <div className="card-header">
+          <div>
+            <h3>⚙ Configuración del recorrido</h3>
+            <div className="sub">Edita los parámetros del sorteo. El sorteo es estable por <b>fecha + auditor</b> (no cambia al recargar).</div>
+          </div>
+          <button className="btn btn-ghost" style={{fontSize:12,padding:'6px 12px'}} onClick={onReroll}>🔀 Re-sortear</button>
+        </div>
+        <div className="filters">
+          <div className="field" style={{maxWidth:170}}>
+            <label>Fecha del recorrido</label>
+            <input type="date" value={fecha} onChange={e=>setFecha(e.target.value)}/>
+          </div>
+          <div className="field" style={{maxWidth:120}}>
+            <label>Módulo desde</label>
+            <select value={cfg.modIni} onChange={e=>guardarCfg({modIni:Number(e.target.value)})}>
+              {data.modulos.map(m => <option key={m.num} value={m.num}>Mód. {m.num} ({m.inicio})</option>)}
+            </select>
+          </div>
+          <div className="field" style={{maxWidth:120}}>
+            <label>Módulo hasta</label>
+            <select value={cfg.modFin} onChange={e=>guardarCfg({modFin:Number(e.target.value)})}>
+              {data.modulos.map(m => <option key={m.num} value={m.num}>Mód. {m.num} ({m.fin})</option>)}
+            </select>
+          </div>
+          <div className="field" style={{maxWidth:120}}>
+            <label>Cantidad</label>
+            <input type="number" min="1" max="50" value={cfg.n} onChange={e=>guardarCfg({n:Math.max(1, Math.min(50, Number(e.target.value)||10))})}/>
+          </div>
+          <div className="field" style={{justifyContent:'flex-end'}}>
+            <label>&nbsp;</label>
+            <div className="muted" style={{fontSize:12.5}}>
+              Universo: <b>{candidatas.length.toLocaleString('es-CL')}</b> clases candidatas{esHoy?' · de hoy':''}{modActivo?` · estás en Mód.${modActivo.num}`:''}
+            </div>
+          </div>
+        </div>
+      </div>
+
+      {/* Lista de clases sorteadas */}
+      {loading ? (
+        <div className="card"><div className="loader"><div className="spinner"/><div>Cargando auditorías…</div></div></div>
+      ) : muestra.length === 0 ? (
+        <div className="card"><div className="empty"><span className="emoji">🔍</span>Sin clases candidatas con esta configuración. Prueba ampliar el rango de módulos o cambiar la fecha.</div></div>
+      ) : (
+        <div className="stack" style={{gap:10}}>
+          {muestra.map((s, i) => (
+            <ItemAuditoria
+              key={`${s.sc||''}|${s.s||''}|${s.hi}|${s.hf}`}
+              idx={i+1}
+              sess={s}
+              auditoria={auditIdx.get(`${s.sc||''}|${s.s||''}|${s.hi}|${s.hf}`)}
+              now={now}
+              esHoy={esHoy}
+              onSave={onSave}
+            />
+          ))}
+        </div>
+      )}
+    </>
+  );
+}
+
+/* ----- Ítem individual de auditoría ----- */
+function ItemAuditoria({ idx, sess, auditoria, now, esHoy, onSave }){
+  const a = auditoria || {};
+  const ahoraMin = now.getHours()*60 + now.getMinutes();
+  const hiMin = toMin(sess.hi), hfMin = toMin(sess.hf);
+  // Estado temporal del módulo de inicio
+  const estado = !esHoy ? 'plan'
+    : ahoraMin < hiMin ? 'porIniciar'
+    : ahoraMin < hfMin ? 'enCurso'
+    : 'finalizada';
+  // Contador
+  const minFalta = hiMin - ahoraMin;
+  const minRestan = hfMin - ahoraMin;
+  const fmtMin = (m) => {
+    if(m < 0) return '—';
+    if(m < 60) return `${m} min`;
+    const h = Math.floor(m/60), mm = m%60;
+    return mm > 0 ? `${h}h ${mm}m` : `${h}h`;
+  };
+
+  // Estado local del formulario (sin guardar todavía)
+  const [llego, setLlego] = useState(a.llego_a_hora || '');
+  const [horaLleg, setHoraLleg] = useState(a.hora_llegada || '');
+  const [obsIni, setObsIni] = useState(a.obs_inicio || '');
+  const [termino, setTermino] = useState(a.termino_a_hora || '');
+  const [horaSal, setHoraSal] = useState(a.hora_salida || '');
+  const [obsFin, setObsFin] = useState(a.obs_fin || '');
+  useEffect(()=>{
+    setLlego(a.llego_a_hora||''); setHoraLleg(a.hora_llegada||''); setObsIni(a.obs_inicio||'');
+    setTermino(a.termino_a_hora||''); setHoraSal(a.hora_salida||''); setObsFin(a.obs_fin||'');
+  // eslint-disable-next-line
+  }, [a.id]);
+
+  const nowHHMM = () => `${String(now.getHours()).padStart(2,'0')}:${String(now.getMinutes()).padStart(2,'0')}`;
+  const marcarLlegadaAhora = () => { setHoraLleg(nowHHMM()); setLlego(sess.hi >= nowHHMM() ? 'si' : 'no'); };
+  const marcarSalidaAhora  = () => { setHoraSal(nowHHMM()); setTermino(nowHHMM() >= sess.hf ? 'si' : 'no'); };
+
+  const guardarInicio = () => onSave(sess, {
+    llego_a_hora: llego || null,
+    hora_llegada: horaLleg || null,
+    obs_inicio: obsIni || null,
+  });
+  const guardarFin = () => onSave(sess, {
+    termino_a_hora: termino || null,
+    hora_salida: horaSal || null,
+    obs_fin: obsFin || null,
+  });
+
+  // Indicadores visuales
+  const inicioCompleto = !!a.llego_a_hora;
+  const finCompleto = !!a.termino_a_hora;
+  const cardCls = estado==='enCurso' ? 'card now-card' : 'card';
+
+  return (
+    <div className={cardCls} style={{padding:0,overflow:'hidden'}}>
+      <div className="card-header" style={{padding:'14px 18px',background:estado==='enCurso'?'rgba(10,132,255,.06)':'transparent'}}>
+        <div style={{flex:1}}>
+          <div className="row" style={{gap:10,alignItems:'center',flexWrap:'wrap'}}>
+            <span className="chip info" style={{fontSize:12}}>#{idx}</span>
+            <b style={{fontSize:15,color:'var(--primary)'}}>{sess.s}</b>
+            <span style={{fontSize:14,fontWeight:600}}>{(sess.a || sess.de || '').slice(0,60)}</span>
+            <span className="chip">{sess.sc||'—'}</span>
+            {estado==='porIniciar' && <span className="chip warn">⏳ Inicia en {fmtMin(minFalta)}</span>}
+            {estado==='enCurso' && <span className="chip success" style={{background:'var(--primary)',color:'#fff'}}>● EN CURSO · {fmtMin(minRestan)} restantes</span>}
+            {estado==='finalizada' && <span className="chip">Finalizada</span>}
+            {estado==='plan' && <span className="chip">Planificación</span>}
+          </div>
+          <div style={{marginTop:6,fontSize:12.5,color:'var(--text-muted)'}}>
+            👨‍🏫 <b>{sess.d || '—'}</b> · {sess.hi}–{sess.hf} · {(sess.i||0)} alumnos {sess.es?`· ${ESCUELAS_FULL[sess.es]||sess.es}`:''}
+          </div>
+        </div>
+        <div className="row" style={{gap:6,alignItems:'center'}}>
+          <span style={{fontSize:11,color:'var(--text-muted)'}}>
+            {inicioCompleto?'✅':'⬜'} Inicio · {finCompleto?'✅':'⬜'} Fin
+          </span>
+        </div>
+      </div>
+
+      <div className="grid grid-2" style={{padding:'14px 18px',gap:16,borderTop:'1px solid var(--border-soft)'}}>
+        {/* Bloque INICIO */}
+        <div>
+          <div style={{fontSize:11,fontWeight:700,letterSpacing:.4,textTransform:'uppercase',color:'var(--text-muted)',marginBottom:8}}>🚪 Inicio · Programado {sess.hi}</div>
+          <div className="row" style={{gap:8,flexWrap:'wrap',marginBottom:8}}>
+            <button type="button" className={`btn btn-sm ${llego==='si'?'btn-primary':'btn-ghost'}`} onClick={()=>setLlego('si')}>✓ Llegó a la hora</button>
+            <button type="button" className={`btn btn-sm ${llego==='no'?'btn-danger':'btn-ghost'}`} onClick={()=>setLlego('no')}>✗ No llegó a la hora</button>
+          </div>
+          <div className="row" style={{gap:8,alignItems:'flex-end'}}>
+            <div className="field" style={{flex:1}}>
+              <label>Hora real de llegada</label>
+              <input type="time" value={horaLleg} onChange={e=>setHoraLleg(e.target.value)}/>
+            </div>
+            <button type="button" className="btn btn-sm btn-ghost" onClick={marcarLlegadaAhora}>Ahora</button>
+          </div>
+          <div className="field" style={{marginTop:8}}>
+            <label>Observación de inicio</label>
+            <textarea rows="2" value={obsIni} onChange={e=>setObsIni(e.target.value)} placeholder="Notas sobre el inicio…"/>
+          </div>
+          <button type="button" className="btn btn-sm btn-primary" style={{marginTop:8}} onClick={guardarInicio}>💾 Guardar inicio</button>
+        </div>
+        {/* Bloque FIN */}
+        <div>
+          <div style={{fontSize:11,fontWeight:700,letterSpacing:.4,textTransform:'uppercase',color:'var(--text-muted)',marginBottom:8}}>🏁 Término · Programado {sess.hf}</div>
+          <div className="row" style={{gap:8,flexWrap:'wrap',marginBottom:8}}>
+            <button type="button" className={`btn btn-sm ${termino==='si'?'btn-primary':'btn-ghost'}`} onClick={()=>setTermino('si')}>✓ Terminó a la hora</button>
+            <button type="button" className={`btn btn-sm ${termino==='no'?'btn-danger':'btn-ghost'}`} onClick={()=>setTermino('no')}>✗ Se fue antes / después</button>
+          </div>
+          <div className="row" style={{gap:8,alignItems:'flex-end'}}>
+            <div className="field" style={{flex:1}}>
+              <label>Hora real de salida</label>
+              <input type="time" value={horaSal} onChange={e=>setHoraSal(e.target.value)}/>
+            </div>
+            <button type="button" className="btn btn-sm btn-ghost" onClick={marcarSalidaAhora}>Ahora</button>
+          </div>
+          <div className="field" style={{marginTop:8}}>
+            <label>Observación de término</label>
+            <textarea rows="2" value={obsFin} onChange={e=>setObsFin(e.target.value)} placeholder="Notas sobre el término…"/>
+          </div>
+          <button type="button" className="btn btn-sm btn-primary" style={{marginTop:8}} onClick={guardarFin}>💾 Guardar fin</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* ----- Panel de análisis de auditorías ----- */
+function GestionesPanel({ data, auditorias, loading, onReload }){
+  const [escuela, setEscuela] = useState('');
+  const [auditor, setAuditor] = useState('');
+  const [desde, setDesde] = useState(()=> isoDate(addDays(new Date(), -30)));
+  const [hasta, setHasta] = useState(()=> isoDate(new Date()));
+
+  const filtradas = useMemo(()=> auditorias.filter(a => {
+    if(escuela && a.escuela !== escuela) return false;
+    if(auditor && a.auditor !== auditor) return false;
+    if(desde && a.fecha < desde) return false;
+    if(hasta && a.fecha > hasta) return false;
+    return true;
+  }), [auditorias, escuela, auditor, desde, hasta]);
+
+  const kpis = useMemo(()=>{
+    const total = filtradas.length;
+    const llegoSi = filtradas.filter(a => a.llego_a_hora === 'si').length;
+    const llegoNo = filtradas.filter(a => a.llego_a_hora === 'no').length;
+    const termSi = filtradas.filter(a => a.termino_a_hora === 'si').length;
+    const termNo = filtradas.filter(a => a.termino_a_hora === 'no').length;
+    const pctInicio = (llegoSi+llegoNo) > 0 ? Math.round((llegoSi / (llegoSi+llegoNo))*100) : null;
+    const pctFin = (termSi+termNo) > 0 ? Math.round((termSi / (termSi+termNo))*100) : null;
+    return { total, llegoSi, llegoNo, termSi, termNo, pctInicio, pctFin };
+  }, [filtradas]);
+
+  // Ranking docentes con incumplimientos
+  const rankingDocentes = useMemo(()=>{
+    const m = new Map();
+    for(const a of filtradas){
+      if(!a.docente) continue;
+      if(!m.has(a.docente)) m.set(a.docente, { docente:a.docente, escuela:a.escuela, visitas:0, incInicio:0, incFin:0 });
+      const x = m.get(a.docente);
+      x.visitas++;
+      if(a.llego_a_hora === 'no') x.incInicio++;
+      if(a.termino_a_hora === 'no') x.incFin++;
+    }
+    return [...m.values()].map(x => ({ ...x, total:x.incInicio+x.incFin })).sort((a,b)=> b.total - a.total).slice(0, 20);
+  }, [filtradas]);
+
+  // Por escuela
+  const porEscuela = useMemo(()=>{
+    const m = new Map();
+    for(const a of filtradas){
+      const es = a.escuela || 'Sin escuela';
+      if(!m.has(es)) m.set(es, { escuela:es, visitas:0, llegoSi:0, llegoNo:0, termSi:0, termNo:0 });
+      const x = m.get(es);
+      x.visitas++;
+      if(a.llego_a_hora === 'si') x.llegoSi++;
+      if(a.llego_a_hora === 'no') x.llegoNo++;
+      if(a.termino_a_hora === 'si') x.termSi++;
+      if(a.termino_a_hora === 'no') x.termNo++;
+    }
+    return [...m.values()].sort((a,b)=> b.visitas - a.visitas);
+  }, [filtradas]);
+
+  // Por auditor
+  const porAuditor = useMemo(()=>{
+    const m = new Map();
+    for(const a of filtradas){
+      if(!m.has(a.auditor)) m.set(a.auditor, { auditor:a.auditor, visitas:0, completas:0 });
+      const x = m.get(a.auditor);
+      x.visitas++;
+      if(a.llego_a_hora && a.termino_a_hora) x.completas++;
+    }
+    return [...m.values()].sort((a,b)=> b.visitas - a.visitas);
+  }, [filtradas]);
+
+  const escuelas = useMemo(()=> [...new Set(auditorias.map(a=>a.escuela).filter(Boolean))].sort(), [auditorias]);
+  const auditores = useMemo(()=> [...new Set(auditorias.map(a=>a.auditor).filter(Boolean))].sort(), [auditorias]);
+
+  const exportarCSV = () => {
+    const esc = (s) => {
+      const str = String(s ?? '');
+      return /[",\n;]/.test(str) ? `"${str.replace(/"/g, '""')}"` : str;
+    };
+    const headers = ['fecha','auditor','sala','seccion','asignatura','docente','escuela','hora_inicio','hora_fin','llego_a_hora','hora_llegada','obs_inicio','termino_a_hora','hora_salida','obs_fin'];
+    const lines = [headers.join(';'), ...filtradas.map(a => headers.map(h => esc(a[h])).join(';'))];
+    const blob = new Blob(['﻿'+lines.join('\n')], { type:'text/csv;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url; link.download = `auditorias_${new Date().toISOString().slice(0,10)}.csv`;
+    document.body.appendChild(link); link.click(); link.remove();
+    URL.revokeObjectURL(url);
+  };
+
+  return (
+    <>
+      <div className="card">
+        <div className="card-header">
+          <div>
+            <h3>📊 Panel · Análisis de auditorías</h3>
+            <div className="sub">{filtradas.length.toLocaleString('es-CL')} auditorías en el período · {auditorias.length.toLocaleString('es-CL')} totales en sistema</div>
+          </div>
+          <div className="row" style={{gap:6}}>
+            <button className="btn btn-ghost" style={{fontSize:12,padding:'6px 12px'}} onClick={onReload}>🔄 Recargar</button>
+            <button className="btn btn-ghost" style={{fontSize:12,padding:'6px 12px'}} onClick={exportarCSV}>📥 CSV</button>
+          </div>
+        </div>
+        <div className="filters">
+          <div className="field" style={{maxWidth:160}}>
+            <label>Desde</label>
+            <input type="date" value={desde} onChange={e=>setDesde(e.target.value)}/>
+          </div>
+          <div className="field" style={{maxWidth:160}}>
+            <label>Hasta</label>
+            <input type="date" value={hasta} onChange={e=>setHasta(e.target.value)}/>
+          </div>
+          <div className="field">
+            <label>Escuela</label>
+            <select value={escuela} onChange={e=>setEscuela(e.target.value)}>
+              <option value="">Todas</option>
+              {escuelas.map(es => <option key={es} value={es}>{ESCUELAS_FULL[es]||es}</option>)}
+            </select>
+          </div>
+          <div className="field">
+            <label>Auditor</label>
+            <select value={auditor} onChange={e=>setAuditor(e.target.value)}>
+              <option value="">Todos</option>
+              {auditores.map(au => <option key={au} value={au}>{au}</option>)}
+            </select>
+          </div>
+        </div>
+      </div>
+
+      <div className="grid grid-4">
+        <div className="kpi kpi-blue">
+          <span className="label">Auditorías totales</span>
+          <span className="value">{kpis.total.toLocaleString('es-CL')}</span>
+          <span className="delta">en el período filtrado</span>
+          <div className="icon">📋</div>
+        </div>
+        <div className="kpi kpi-green">
+          <span className="label">% llegan a la hora</span>
+          <span className="value">{kpis.pctInicio!=null ? `${kpis.pctInicio}%` : '—'}</span>
+          <span className="delta">{kpis.llegoSi}/{kpis.llegoSi+kpis.llegoNo} registros</span>
+          <div className="icon">✓</div>
+        </div>
+        <div className="kpi kpi-amber">
+          <span className="label">% terminan a la hora</span>
+          <span className="value">{kpis.pctFin!=null ? `${kpis.pctFin}%` : '—'}</span>
+          <span className="delta">{kpis.termSi}/{kpis.termSi+kpis.termNo} registros</span>
+          <div className="icon">🏁</div>
+        </div>
+        <div className="kpi kpi-red">
+          <span className="label">Incumplimientos</span>
+          <span className="value">{(kpis.llegoNo + kpis.termNo).toLocaleString('es-CL')}</span>
+          <span className="delta">{kpis.llegoNo} inicio · {kpis.termNo} término</span>
+          <div className="icon">⚠</div>
+        </div>
+      </div>
+
+      {/* Ranking docentes con más incumplimientos */}
+      <div className="card" style={{padding:0}}>
+        <div className="card-header" style={{padding:'14px 18px'}}>
+          <div>
+            <h3>🚩 Docentes con más incumplimientos</h3>
+            <div className="sub">Top 20 docentes con mayor cantidad de incumplimientos (inicio + término) en el período</div>
+          </div>
+        </div>
+        <div className="tbl-scroll" style={{maxHeight:400}}>
+          <table className="tbl">
+            <thead><tr><th>Docente</th><th>Escuela</th><th style={{textAlign:'right'}}>Visitas</th><th style={{textAlign:'right'}}>No inicio</th><th style={{textAlign:'right'}}>No fin</th><th style={{textAlign:'right'}}>Total</th></tr></thead>
+            <tbody>
+              {rankingDocentes.map((r,i)=>(
+                <tr key={i}>
+                  <td><b>{r.docente}</b></td>
+                  <td className="muted">{ESCUELAS_FULL[r.escuela]||r.escuela||'—'}</td>
+                  <td style={{textAlign:'right'}}>{r.visitas}</td>
+                  <td style={{textAlign:'right'}}>{r.incInicio>0 ? <span className="chip danger">{r.incInicio}</span> : 0}</td>
+                  <td style={{textAlign:'right'}}>{r.incFin>0 ? <span className="chip danger">{r.incFin}</span> : 0}</td>
+                  <td style={{textAlign:'right',fontWeight:700,color:r.total>0?'var(--danger)':'inherit'}}>{r.total}</td>
+                </tr>
+              ))}
+              {rankingDocentes.length===0 && <tr><td colSpan="6"><div className="empty"><span className="emoji">📭</span>Sin auditorías registradas en el período.</div></td></tr>}
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      {/* Por escuela */}
+      <div className="card" style={{padding:0}}>
+        <div className="card-header" style={{padding:'14px 18px'}}>
+          <div><h3>🏛 Cumplimiento por escuela</h3></div>
+        </div>
+        <div className="tbl-scroll">
+          <table className="tbl">
+            <thead><tr><th>Escuela</th><th style={{textAlign:'right'}}>Visitas</th><th style={{textAlign:'right'}}>Llegan</th><th style={{textAlign:'right'}}>No llegan</th><th style={{textAlign:'right'}}>% Cumplimiento</th></tr></thead>
+            <tbody>
+              {porEscuela.map((r,i)=>{
+                const tot = r.llegoSi + r.llegoNo;
+                const pct = tot>0 ? Math.round((r.llegoSi/tot)*100) : null;
+                return (
+                  <tr key={i}>
+                    <td><b>{ESCUELAS_FULL[r.escuela]||r.escuela}</b></td>
+                    <td style={{textAlign:'right'}}>{r.visitas}</td>
+                    <td style={{textAlign:'right'}}>{r.llegoSi}</td>
+                    <td style={{textAlign:'right'}}>{r.llegoNo>0 ? <span className="chip danger">{r.llegoNo}</span> : 0}</td>
+                    <td style={{textAlign:'right',fontWeight:700,color:pct!=null ? (pct>=80?'var(--success)':pct>=60?'var(--warn)':'var(--danger)') : 'inherit'}}>{pct!=null ? `${pct}%` : '—'}</td>
+                  </tr>
+                );
+              })}
+              {porEscuela.length===0 && <tr><td colSpan="5"><div className="empty"><span className="emoji">📭</span>Sin datos.</div></td></tr>}
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      {/* Por auditor */}
+      <div className="card" style={{padding:0}}>
+        <div className="card-header" style={{padding:'14px 18px'}}>
+          <div><h3>👤 Auditorías por recorredor</h3></div>
+        </div>
+        <div className="tbl-scroll">
+          <table className="tbl">
+            <thead><tr><th>Auditor</th><th style={{textAlign:'right'}}>Visitas</th><th style={{textAlign:'right'}}>Completas (inicio+fin)</th></tr></thead>
+            <tbody>
+              {porAuditor.map((r,i)=>(
+                <tr key={i}>
+                  <td><b>{r.auditor}</b></td>
+                  <td style={{textAlign:'right'}}>{r.visitas}</td>
+                  <td style={{textAlign:'right',fontWeight:700}}>{r.completas} / {r.visitas}</td>
+                </tr>
+              ))}
+              {porAuditor.length===0 && <tr><td colSpan="3"><div className="empty"><span className="emoji">📭</span>Sin datos.</div></td></tr>}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </>
   );
 }
 
@@ -6740,6 +7502,7 @@ function App(){
     nueva:['Solicitar reserva','Nueva solicitud'],
     importar:['Importar datos','SABANA · LISTA DE RECURSOS · Jefaturas'],
     repDoc:['Reporte Docente','Carga docente agrupada por director de carrera (jefatura)'],
+    gestiones:['Gestiones','Auditorías en terreno · sólo administradores'],
     docente:['Horario docente','Agenda semanal del docente'],
     usuarios:['Usuarios','Administración de cuentas'],
     reportes:['Reportes','Ocupación y métricas'],
@@ -6769,6 +7532,7 @@ function App(){
         {view==='usuarios'  && <Usuarios users={users} toast={setToast} onCreate={createUser} onUpdate={updateUser} onDelete={deleteUser}/>}
         {view==='reportes'  && <Reportes data={data} reservas={reservas}/>}
         {view==='repDoc'    && <ReporteDocente data={data}/>}
+        {view==='gestiones' && <Gestiones data={data} user={user} db={db} toast={setToast}/>}
         {view==='mapa'      && <MapaCalor data={data} user={user}/>}
       </Shell>
       {toast && <div className="toast">{toast}</div>}
