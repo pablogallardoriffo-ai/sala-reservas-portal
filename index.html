@@ -1149,6 +1149,39 @@ const dowFromIso = (iso) => {
   return d.getDay()===0 ? 6 : d.getDay()-1;
 };
 
+// ¿Una reserva ocupa la sala en la fecha ISO dada?
+// - Recurrente (tiene patrón dw de días "LMMJVSD"): ocurre si la fecha cae en
+//   el rango [fi, ff] Y ese día de la semana está marcado en dw.
+// - Puntual/legacy (sin dw): ocupa el rango contiguo [fi, ff]; si ff está
+//   vacío, solo el día fi.
+const reservaOcurreEn = (r, iso) => {
+  if(!r || !iso || !r.fi) return false;
+  const ff = r.ff || r.fi;
+  if(iso < r.fi || iso > ff) return false;
+  if(r.dw && /1/.test(r.dw)) return r.dw[dowFromIso(iso)] === '1';
+  return true;
+};
+
+// Fechas ISO en que ocurre una reserva recurrente con patrón dw ("LMMJVSD")
+// entre fi y ff (inclusive). Si dw es vacío, devuelve todos los días del rango.
+const ocurrenciasEntre = (fi, ff, dw) => {
+  const out = [];
+  if(!fi) return out;
+  const endD = new Date((ff || fi) + 'T00:00:00');
+  let cur = new Date(fi + 'T00:00:00');
+  let guard = 0;
+  while(cur <= endD && guard++ < 500){
+    const iso = isoDate(cur);
+    if(!dw || !/1/.test(dw) || dw[dowFromIso(iso)] === '1') out.push(iso);
+    cur = addDays(cur, 1);
+  }
+  return out;
+};
+
+// Etiqueta corta de los días de un patrón dw. "1010100" → "Lun, Mié, Vie"
+const DOW_LBL = ['Lun','Mar','Mié','Jue','Vie','Sáb','Dom'];
+const dwLabel = (dw) => !dw ? '' : [...dw].map((c,i)=> c==='1'?DOW_LBL[i]:null).filter(Boolean).join(', ');
+
 // ¿Hay eventos (LISTA DE RECURSOS) cargados? — define la fuente de verdad.
 const hasEventos = (data) => !!(data?.eventos && data.eventos.length);
 
@@ -2177,7 +2210,7 @@ function Dashboard({ data, reservas, user, db, onGoView, onGoNuevaPrefill }){
   const stats = useMemo(()=>{
     const totalSalas = data.salas.length;
     const clasesHoy  = sesionesEnFecha(data, todayIso, null, sabanaIdx).length;
-    const reservasHoy = reservas.filter(r => r.fi===todayIso).length;
+    const reservasHoy = reservas.filter(r => reservaOcurreEn(r, todayIso)).length;
     const pendientes  = reservas.filter(r => r.es==='pendiente').length;
     return { totalSalas, clasesHoy, reservasHoy, pendientes };
   },[data.salas, data.programacion, data.eventos, sabanaIdx, reservas, todayIso]);
@@ -2280,7 +2313,7 @@ function Dashboard({ data, reservas, user, db, onGoView, onGoNuevaPrefill }){
 
   // === SOLICITUDES QUE PARTEN EN ≤1 DÍA ===
   const solicitudesProximas = useMemo(()=> reservas
-    .filter(r => (r.fi === todayIso || r.fi === mañanaIso) && r.es !== 'rechazada')
+    .filter(r => (reservaOcurreEn(r, todayIso) || reservaOcurreEn(r, mañanaIso)) && r.es !== 'rechazada')
     .sort((a,b)=> (a.fi||'').localeCompare(b.fi||'') || (a.hi||'').localeCompare(b.hi||''))
     .slice(0, 8)
   ,[reservas, todayIso, mañanaIso]);
@@ -3026,7 +3059,7 @@ function Horario({ data, reservas, onGoNueva }){
     const sesPorDia = week.map(d => sesionesEnFecha(data, isoDate(d), sala, sabanaIdx));
     const resPorDia = week.map(d => {
       const dIso = isoDate(d);
-      return reservas.filter(r => r.r === sala && r.fi === dIso && r.es !== 'rechazada');
+      return reservas.filter(r => r.r === sala && reservaOcurreEn(r, dIso) && r.es !== 'rechazada');
     });
     return data.modulos.map(mod => {
       return week.map((d, dw) => {
@@ -5670,7 +5703,11 @@ function Reservas({ reservas, data, user, toast, onGoNueva, onUpdateEstado }){
                   const timeCls = decidedMs==null ? '' : (decidedMs <= SLA_MS/2 ? 'fast' : (decidedMs <= SLA_MS ? 'slow' : 'over'));
                   return (
                   <tr key={r.id} className={r.es==='pendiente' ? 'row-pending' : ''}>
-                    <td className="nowrap">{fmtFecha(r.fi)}{r.ff && r.ff!==r.fi ? ' → '+fmtFecha(r.ff) : ''}</td>
+                    <td className="nowrap">
+                      {r.dw && /1/.test(r.dw)
+                        ? <><span className="chip" style={{fontSize:9,padding:'1px 6px'}} title="Reserva recurrente">🔁 {dwLabel(r.dw)}</span><div className="muted" style={{fontSize:11}}>{fmtFecha(r.fi)} → {fmtFecha(r.ff)}</div></>
+                        : <>{fmtFecha(r.fi)}{r.ff && r.ff!==r.fi ? ' → '+fmtFecha(r.ff) : ''}</>}
+                    </td>
                     <td className="nowrap">{r.hi}–{r.hf}<div className="muted" style={{fontSize:11}}>Mód. {r.mi}–{r.mf}</div></td>
                     <td><b style={{color:'var(--primary)'}}>{r.r}</b></td>
                     <td style={{maxWidth:340}}>{r.mo}</td>
@@ -5747,7 +5784,7 @@ function BuscarLibres({ data, reservas, onGoNueva }){
         );
         if(acadConflict) return null;
         const resConflict = reservas.some(r =>
-          r.r===s.codigo && r.fi===fecha && r.es!=='rechazada' &&
+          r.r===s.codigo && reservaOcurreEn(r, fecha) && r.es!=='rechazada' &&
           miN <= Number(r.mf||0) && Number(r.mi||0) <= mfN
         );
         return resConflict ? null : s;
@@ -5846,9 +5883,17 @@ function NuevaReserva({ data, reservas, user, toast, goReservas, prefill, onCrea
     ff: '',
     sala: prefill?.sala || '',
     mi: prefill?.mi || 1, mf: prefill?.mf || 2,
-    motivo:'', todoSemestre:'NO', observacion:'',
+    motivo:'', observacion:'',
+    recurrente:false, dw:'',   // recurrencia semanal: dw = patrón "LMMJVSD"
     docente:user.nombre, correo:user.email, rut:''
   });
+  // Fin de semestre por defecto: 18 semanas desde la primera fecha.
+  const finSemestreIso = (fi) => fi ? isoDate(addDays(new Date(fi+'T00:00:00'), 7*18 - 1)) : '';
+  // Ocurrencias de la reserva actual (recurrente o puntual) para previsualizar.
+  const ocurrencias = useMemo(
+    ()=> f.recurrente ? ocurrenciasEntre(f.fi, f.ff, f.dw) : (f.fi ? [f.fi] : []),
+    [f.recurrente, f.fi, f.ff, f.dw]
+  );
   const [filtros, setFiltros] = useState({ tipo:'', capMin:'', mostrarTodas:false });
 
   const tipos = useMemo(()=> [...new Set(data.salas.map(s=>s.tipo))].sort(), [data]);
@@ -5867,7 +5912,7 @@ function NuevaReserva({ data, reservas, user, toast, goReservas, prefill, onCrea
         rangeOverlapsModules(p.hi, p.hf, miN, mfN, data.modulos)
       );
       const res = reservas.find(r =>
-        r.r===s.codigo && r.fi===f.fi && r.es!=='rechazada' &&
+        r.r===s.codigo && reservaOcurreEn(r, f.fi) && r.es!=='rechazada' &&
         miN <= Number(r.mf||0) && Number(r.mi||0) <= mfN
       );
       if(acad || res){
@@ -5902,7 +5947,29 @@ function NuevaReserva({ data, reservas, user, toast, goReservas, prefill, onCrea
     if(!f.sala) return toast('Selecciona una sala disponible.');
     if(!f.motivo) return toast('Indica el motivo de la reserva.');
     if(Number(f.mi) > Number(f.mf)) return toast('El módulo inicio debe ser ≤ módulo fin.');
-    if(conflictoSel){
+
+    if(f.recurrente){
+      // Validaciones de la recurrencia
+      if(!/1/.test(f.dw||'')) return toast('Marca al menos un día de la semana para la repetición.');
+      if(!f.ff) return toast('Indica hasta cuándo se repite la reserva.');
+      if(f.ff < f.fi) return toast('La fecha "Repetir hasta" debe ser igual o posterior a la primera fecha.');
+      if(!ocurrencias.length) return toast('El rango elegido no genera ninguna clase en esos días.');
+      // Conflicto en CADA ocurrencia (clases académicas + otras reservas)
+      const sabanaIdx = buildSabanaIndex(data.programacion);
+      const miN = Number(f.mi), mfN = Number(f.mf);
+      const conflictos = ocurrencias.filter(iso => {
+        const acad = sesionesEnFecha(data, iso, f.sala, sabanaIdx).some(p => rangeOverlapsModules(p.hi, p.hf, miN, mfN, data.modulos));
+        if(acad) return true;
+        return reservas.some(r => r.r===f.sala && r.es!=='rechazada' && reservaOcurreEn(r, iso) && miN <= Number(r.mf||0) && Number(r.mi||0) <= mfN);
+      });
+      if(conflictos.length){
+        const muestra = conflictos.slice(0,6).map(fmtFecha).join(', ') + (conflictos.length>6?'…':'');
+        if(user.role==='usuario'){
+          return toast(`No se puede: la sala ya está ocupada en ${conflictos.length} de ${ocurrencias.length} fechas (${muestra}).`);
+        }
+        if(!window.confirm(`⚠ La sala tiene conflicto en ${conflictos.length} de ${ocurrencias.length} fechas:\n${muestra}\n\n¿Reservar igualmente toda la serie? (acción excepcional)`)) return;
+      }
+    } else if(conflictoSel){
       // Hard-block para usuario; pendientes bloquean a TODOS los roles para evitar topes
       if(conflictoSel.esPendiente){
         if(conflictoSel.esPropia){
@@ -5916,21 +5983,29 @@ function NuevaReserva({ data, reservas, user, toast, goReservas, prefill, onCrea
       // admin/reservador: solo conflictos con clase regular o reserva aprobada pueden forzarse
       if(!window.confirm(`⚠ Conflicto detectado: ${conflictoSel.motivo}\n\n¿Deseas forzar la reserva de todas formas? (acción excepcional)`)) return;
     }
+
     const nuevo = {
-      fi: f.fi, ff: f.ff || f.fi,
+      fi: f.fi, ff: f.recurrente ? f.ff : f.fi,
       hi: modIni?.inicio || '',
       hf: modFin?.fin || '',
       mi: Number(f.mi), mf: Number(f.mf),
-      r: f.sala, ts: f.todoSemestre,
+      r: f.sala, ts: f.recurrente ? 'SI' : 'NO',
       mo: f.motivo, do: f.docente, ru: f.rut, co: f.correo,
       observacion: f.observacion,
       es: user.role==='admin' || user.role==='reservador' ? 'aprobada' : 'pendiente',
       creado_por: user.username, creado_en: new Date().toISOString(),
     };
+    // dw sólo se envía en reservas recurrentes (las puntuales no dependen de la
+    // columna nueva, así siguen funcionando aunque no se haya corrido la migración).
+    if(f.recurrente) nuevo.dw = f.dw;
+    const nClases = f.recurrente ? ocurrencias.length : 1;
     (async () => {
       try {
         await onCreate(nuevo);
-        toast(nuevo.es==='aprobada' ? 'Reserva creada y aprobada.' : 'Solicitud enviada. Pendiente de autorización.');
+        const aprob = nuevo.es==='aprobada';
+        toast(f.recurrente
+          ? (aprob ? `Reserva recurrente creada y aprobada (${nClases} clases).` : `Solicitud recurrente enviada (${nClases} clases). Pendiente de autorización.`)
+          : (aprob ? 'Reserva creada y aprobada.' : 'Solicitud enviada. Pendiente de autorización.'));
         goReservas?.();
       } catch(e){ console.error('crear reserva:', e); toast(`No se pudo crear la reserva: ${e.message}`); }
     })();
@@ -5947,8 +6022,7 @@ function NuevaReserva({ data, reservas, user, toast, goReservas, prefill, onCrea
           </div>
         </div>
         <div className="grid" style={{gridTemplateColumns:'repeat(auto-fit,minmax(160px,1fr))',gap:12}}>
-          <div className="field"><label>Fecha</label><input type="date" value={f.fi} onChange={e=>setF({...f,fi:e.target.value,sala:''})}/></div>
-          <div className="field"><label>Hasta (opcional)</label><input type="date" value={f.ff} onChange={e=>setF({...f,ff:e.target.value})}/></div>
+          <div className="field"><label>{f.recurrente ? 'Primera fecha' : 'Fecha'}</label><input type="date" value={f.fi} onChange={e=>setF({...f,fi:e.target.value,sala:''})}/></div>
           <div className="field"><label>Módulo inicio</label>
             <select value={f.mi} onChange={e=>setF({...f,mi:Number(e.target.value),sala:''})}>
               {data.modulos.map(m=> <option key={m.num} value={m.num}>Mód. {m.num} ({m.inicio})</option>)}
@@ -5967,8 +6041,41 @@ function NuevaReserva({ data, reservas, user, toast, goReservas, prefill, onCrea
           </div>
           <div className="field"><label>Capacidad mínima</label><input type="number" value={filtros.capMin} onChange={e=>setFiltros({...filtros,capMin:e.target.value})} placeholder="Ej: 30"/></div>
         </div>
+
+        {/* Repetición: puntual vs recurrente semanal */}
+        <div style={{marginTop:14,paddingTop:14,borderTop:'1px solid var(--border-soft)'}}>
+          <div className="row" style={{gap:18,alignItems:'center',flexWrap:'wrap'}}>
+            <b style={{fontSize:13}}>Repetición:</b>
+            <label style={{cursor:'pointer',fontSize:13}}><input type="radio" name="recurr" checked={!f.recurrente} onChange={()=>setF({...f, recurrente:false, dw:'', sala:''})}/> Puntual (un día)</label>
+            <label style={{cursor:'pointer',fontSize:13}}><input type="radio" name="recurr" checked={f.recurrente} onChange={()=>{ const d=[...'0000000']; d[fechaToDow(f.fi)]='1'; setF({...f, recurrente:true, dw:d.join(''), ff: f.ff||finSemestreIso(f.fi), sala:''}); }}/> Semanal (se repite)</label>
+          </div>
+          {f.recurrente && (
+            <div className="stack" style={{gap:10,marginTop:12}}>
+              <div>
+                <div className="muted" style={{fontSize:11,marginBottom:5}}>Días de la semana</div>
+                <div className="row" style={{gap:6,flexWrap:'wrap'}}>
+                  {DOW_LBL.map((lbl,i)=>{
+                    const on = (f.dw||'')[i]==='1';
+                    return <button key={i} type="button" className={on?'btn btn-sm btn-primary':'btn btn-sm btn-ghost'} style={{padding:'4px 12px'}} onClick={()=>{ const arr=[...(f.dw||'0000000')]; arr[i]= on?'0':'1'; setF({...f, dw:arr.join(''), sala:''}); }}>{lbl}</button>;
+                  })}
+                </div>
+              </div>
+              <div className="row" style={{gap:12,alignItems:'flex-end',flexWrap:'wrap'}}>
+                <div className="field" style={{maxWidth:200,marginBottom:0}}><label>Repetir hasta</label><input type="date" value={f.ff} min={f.fi} onChange={e=>setF({...f,ff:e.target.value,sala:''})}/></div>
+                <button type="button" className="btn btn-ghost btn-sm" style={{fontSize:11}} onClick={()=>setF({...f, ff: finSemestreIso(f.fi), sala:''})}>Todo el semestre (18 sem)</button>
+                <span style={{flex:1}}/>
+                <div className="muted" style={{fontSize:11.5,textAlign:'right'}}>
+                  {!/1/.test(f.dw||'') ? '⚠ Marca al menos un día.'
+                    : !f.ff ? '⚠ Indica "Repetir hasta".'
+                    : `📅 ${ocurrencias.length} clase${ocurrencias.length!==1?'s':''}: ${dwLabel(f.dw)}`}
+                </div>
+              </div>
+            </div>
+          )}
+        </div>
+
         <div className="row" style={{gap:12,fontSize:13,marginTop:14,paddingTop:14,borderTop:'1px solid var(--border-soft)',flexWrap:'wrap'}}>
-          <span className="muted">Disponibilidad para</span>
+          <span className="muted">Disponibilidad para{f.recurrente?' la 1ª fecha':''}</span>
           <b>{DIA_NOMBRES[dow]}, {fmtFecha(f.fi)}</b>
           <span className="muted">·</span>
           <b>{modIni?.inicio} – {modFin?.fin}</b>
@@ -6093,14 +6200,14 @@ function NuevaReserva({ data, reservas, user, toast, goReservas, prefill, onCrea
               <div className="field"><label>Responsable / Docente</label><input value={f.docente} onChange={e=>setF({...f,docente:e.target.value})} placeholder="Nombre de quien reserva"/></div>
               <div className="field"><label>Correo</label><input type="email" value={f.correo} onChange={e=>setF({...f,correo:e.target.value})} placeholder="correo@duoc.cl"/></div>
             </div>
-            <div className="field" style={{maxWidth:260}}><label>¿Todo el semestre?</label>
-              <select value={f.todoSemestre} onChange={e=>setF({...f,todoSemestre:e.target.value})}>
-                <option>NO</option><option>SI</option>
-              </select>
+            <div className="card" style={{padding:'10px 14px',background:'var(--surface-2)',fontSize:12.5,marginTop:4}}>
+              {f.recurrente
+                ? <><b>🔁 Reserva recurrente:</b> {dwLabel(f.dw)} · {fmtFecha(f.fi)} → {fmtFecha(f.ff)} · <b>{ocurrencias.length}</b> clase{ocurrencias.length!==1?'s':''} · Mód. {f.mi}–{f.mf}</>
+                : <><b>📌 Reserva puntual:</b> {fmtFecha(f.fi)} · Mód. {f.mi}–{f.mf}</>}
             </div>
             <div className="row" style={{justifyContent:'flex-end',marginTop:14,gap:10}}>
               <button className="btn btn-ghost" onClick={()=>setF({...f,sala:''})}>Cambiar sala</button>
-              <button className="btn btn-primary" onClick={submit}>{I.check}Enviar solicitud</button>
+              <button className="btn btn-primary" onClick={submit}>{I.check}{f.recurrente?`Reservar ${ocurrencias.length} clases`:'Enviar solicitud'}</button>
             </div>
           </div>
         </>);

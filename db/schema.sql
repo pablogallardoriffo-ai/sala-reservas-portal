@@ -156,7 +156,8 @@ CREATE TABLE IF NOT EXISTS reservas (
   mi            INT,
   mf            INT,
   r             TEXT NOT NULL,        -- recinto
-  ts            TEXT DEFAULT 'NO',    -- todo el semestre
+  ts            TEXT DEFAULT 'NO',    -- 'SI' si es recurrente / todo el semestre
+  dw            CHAR(7),              -- patrón de días recurrente "LMMJVSD" (null = puntual)
   mo            TEXT,                 -- motivo
   observacion   TEXT,
   "do"          TEXT,                 -- docente (entre comillas porque DO es palabra reservada)
@@ -170,6 +171,8 @@ CREATE TABLE IF NOT EXISTS reservas (
 );
 CREATE INDEX IF NOT EXISTS idx_reservas_fi_r ON reservas(fi, r);
 CREATE INDEX IF NOT EXISTS idx_reservas_es   ON reservas(es);
+-- Migración idempotente para BDs ya creadas (reservas recurrentes):
+ALTER TABLE reservas ADD COLUMN IF NOT EXISTS dw CHAR(7);
 
 -- ============================================================
 -- DATOS INICIALES (usuarios demo + módulos)
