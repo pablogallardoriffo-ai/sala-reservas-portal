@@ -5368,7 +5368,7 @@ function ListadoDocentes({ docentes, onSave, onDelete, toast }){
       if(generoF && (d.genero||'') !== generoF) return false;
       if(bandaF && d.banda_salarial !== bandaF) return false;
       if(qn){
-        const blob = `${d.nombre||''} ${d.rut||''} ${d.correo||''} ${d.jefe||''} ${d.categoria||''}`.toLowerCase();
+        const blob = `${d.nombre||''} ${d.rut||''} ${d.duoc_id||''} ${d.correo||''} ${d.jefe||''} ${d.categoria||''}`.toLowerCase();
         if(!blob.includes(qn)) return false;
       }
       return true;
@@ -5382,7 +5382,7 @@ function ListadoDocentes({ docentes, onSave, onDelete, toast }){
 
   const exportarCSV = () => {
     const esc = (s) => { const str = String(s??''); return /[",\n;]/.test(str) ? `"${str.replace(/"/g,'""')}"` : str; };
-    const cols = ['rut','nombre','correo','telefono','genero','categoria','banda_salarial','hora_docente','valor_mensual','jmg_semanal','jmg_horas','plazo_contractual','jefe','estado','region','ciudad','comuna','asignatura_activa'];
+    const cols = ['duoc_id','rut','nombre','correo','telefono','genero','categoria','banda_salarial','hora_docente','valor_mensual','jmg_semanal','jmg_horas','plazo_contractual','jefe','jefe_id','estado','region','ciudad','comuna','asignatura_activa'];
     const lines = [cols.join(';'), ...filtradas.map(d => cols.map(c => esc(d[c])).join(';'))];
     const blob = new Blob(['﻿'+lines.join('\n')], { type:'text/csv;charset=utf-8' });
     const url = URL.createObjectURL(blob);
@@ -5408,7 +5408,7 @@ function ListadoDocentes({ docentes, onSave, onDelete, toast }){
         <div className="filters">
           <div className="field" style={{flex:'1 1 220px'}}>
             <label>Buscar</label>
-            <input value={q} onChange={e=>setQ(e.target.value)} placeholder="Nombre, RUT, correo…"/>
+            <input value={q} onChange={e=>setQ(e.target.value)} placeholder="Nombre, ID, RUT, correo…"/>
           </div>
           <div className="field"><label>Categoría</label><select value={catF} onChange={e=>setCatF(e.target.value)}><option value="">Todas</option>{cats.map(c=><option key={c}>{c}</option>)}</select></div>
           <div className="field"><label>Jefatura</label><select value={jefeF} onChange={e=>setJefeF(e.target.value)}><option value="">Todas</option>{jefes.map(j=><option key={j}>{j}</option>)}</select></div>
@@ -5423,7 +5423,7 @@ function ListadoDocentes({ docentes, onSave, onDelete, toast }){
         <div className="tbl-scroll" style={{maxHeight:600}}>
           <table className="tbl">
             <thead><tr>
-              <th>Nombre</th><th>RUT</th><th>Categoría</th><th>Banda</th>
+              <th>ID</th><th>Nombre</th><th>RUT</th><th>Categoría</th><th>Banda</th>
               <th style={{textAlign:'right'}}>Hora</th><th style={{textAlign:'right'}}>Mensual</th>
               <th style={{textAlign:'right'}}>JMG sem</th>
               <th>Jefe</th><th>Estado</th><th>Activa</th><th></th>
@@ -5431,6 +5431,7 @@ function ListadoDocentes({ docentes, onSave, onDelete, toast }){
             <tbody>
               {filtradas.map(d => (
                 <tr key={d.id || d.rut}>
+                  <td className="muted" style={{fontFamily:'monospace',fontSize:12}}>{d.duoc_id||'—'}</td>
                   <td><b>{d.nombre}</b><br/><small className="muted">{d.correo||''}</small></td>
                   <td className="muted" style={{fontSize:12}}>{d.rut||'—'}</td>
                   <td><span className="chip">{d.categoria||'—'}</span></td>
@@ -5447,7 +5448,7 @@ function ListadoDocentes({ docentes, onSave, onDelete, toast }){
                   </td>
                 </tr>
               ))}
-              {filtradas.length===0 && <tr><td colSpan="11"><div className="empty"><span className="emoji">📭</span>{docentes.length===0 ? 'Sin docentes cargados. Importa un Excel en la pestaña 📥 Importar.' : 'Sin resultados con esos filtros.'}</div></td></tr>}
+              {filtradas.length===0 && <tr><td colSpan="12"><div className="empty"><span className="emoji">📭</span>{docentes.length===0 ? 'Sin docentes cargados. Importa un Excel en la pestaña 📥 Importar.' : 'Sin resultados con esos filtros.'}</div></td></tr>}
             </tbody>
           </table>
         </div>
@@ -5494,9 +5495,10 @@ function ModalEditarDocente({ row, onClose, onSave, catalogos }){
   return (
     <Modal title={titulo} onClose={onClose} onSave={handleSave} wide>
       <div className="col-2">
-        <div className="field"><label>Nombre completo *</label><input value={f.nombre||''} onChange={e=>upd('nombre', e.target.value)} autoFocus/></div>
+        <div className="field"><label>ID Docente (DUOC)</label><input value={f.duoc_id||''} onChange={e=>upd('duoc_id', e.target.value)} placeholder="ej. 60009805"/></div>
         <div className="field"><label>RUT</label><input value={f.rut||''} onChange={e=>upd('rut', e.target.value)} placeholder="sin guión"/></div>
       </div>
+      <div className="field"><label>Nombre completo *</label><input value={f.nombre||''} onChange={e=>upd('nombre', e.target.value)} autoFocus/></div>
       <div className="col-2">
         <div className="field"><label>Apellido 1</label><input value={f.apellido1||''} onChange={e=>upd('apellido1', e.target.value)}/></div>
         <div className="field"><label>Apellido 2</label><input value={f.apellido2||''} onChange={e=>upd('apellido2', e.target.value)}/></div>
@@ -5793,10 +5795,11 @@ function ImportarDocentes({ db, toast, onDone, docentes }){
             </div>
             <div className="tbl-scroll" style={{maxHeight:300}}>
               <table className="tbl">
-                <thead><tr><th>RUT</th><th>Nombre</th><th>Categoría</th><th>Banda</th><th>Jefe</th><th>Hora</th></tr></thead>
+                <thead><tr><th>ID</th><th>RUT</th><th>Nombre</th><th>Categoría</th><th>Banda</th><th>Jefe</th><th>Hora</th></tr></thead>
                 <tbody>
                   {preview.slice(0,30).map((r,i) => (
                     <tr key={i}>
+                      <td className="muted" style={{fontFamily:'monospace',fontSize:12}}>{r.duoc_id||'—'}</td>
                       <td className="muted" style={{fontSize:12}}>{r.rut||'—'}</td>
                       <td><b>{r.nombre}</b></td>
                       <td><span className="chip">{r.categoria||'—'}</span></td>
