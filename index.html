@@ -5441,14 +5441,14 @@ function ListadoDocentes({ docentes, onSave, onDelete, toast, horasRealesMap }){
             <thead><tr>
               <th>ID</th><th>Nombre</th><th>RUT</th><th>Categoría</th><th>Banda</th>
               <th style={{textAlign:'right'}}>Hora</th>
-              <th style={{textAlign:'right'}} title="Horas semanales según SABANA / LISTA DE RECURSOS (lo que realmente dicta)">Hrs/sem (real)</th>
+              <th style={{textAlign:'right'}} title="Horas pedagógicas semanales (módulos de 40 min) según SABANA / LISTA DE RECURSOS — lo que realmente dicta">Hrs pedag./sem</th>
               <th style={{textAlign:'right'}} title="Horas semanales según Excel (col P JMG Semanal)">JMG Excel</th>
               <th style={{textAlign:'right'}} title="Calculado: hora × 19/5 × hrs semanales reales (tope 40)">Sueldo bruto</th>
               <th>Jefe</th><th>Estado</th><th></th>
             </tr></thead>
             <tbody>
               {filtradas.map(d => {
-                const det = lookupDocenteEnMap(d, horasRealesMap?._detallado, horasRealesMap?._idIdx);
+                const det = lookupDocenteEnMap(d, horasRealesMap?._detallado, horasRealesMap?._resolver);
                 const hrsReal = det?.horasSem || 0;
                 const hrsExcel = Number(d.jmg_semanal)||0;
                 const difHoras = hrsReal > 0 && Math.abs(hrsReal - hrsExcel) >= 1;
@@ -5460,7 +5460,7 @@ function ListadoDocentes({ docentes, onSave, onDelete, toast, horasRealesMap }){
                   <td><span className="chip">{d.categoria||'—'}</span></td>
                   <td className="muted">{d.banda_salarial||'—'}</td>
                   <td style={{textAlign:'right',fontFamily:'monospace'}}>{fmtCLP(d.hora_docente)}</td>
-                  <td style={{textAlign:'right',fontFamily:'monospace',color: hrsReal>0?'var(--success)':'var(--text-muted)'}}>{hrsReal>0 ? hrsReal.toFixed(1) : '—'}</td>
+                  <td style={{textAlign:'right',fontFamily:'monospace',color: hrsReal>0?'var(--success)':'var(--text-muted)'}}>{hrsReal>0 ? hrsReal : '—'}</td>
                   <td style={{textAlign:'right',color: difHoras?'var(--danger)':'inherit'}} title={difHoras?'⚠ El Excel y SABANA difieren significativamente':''}>{hrsExcel||'—'}{difHoras && <span style={{fontSize:10}}> ⚠</span>}</td>
                   <td style={{textAlign:'right',fontFamily:'monospace'}} title="Calculado: hora × 19/5 × hrs semanales reales (tope 40)">{fmtCLP(calcSueldoMensual(d, horasRealesMap))}</td>
                   <td style={{fontSize:12}}>{d.jefe||'—'}</td>
@@ -5863,6 +5863,13 @@ function ImportarDocentes({ db, toast, onDone, docentes }){
 const SEMANAS_SEMESTRE = 18;
 const HORAS_MAX_SEMANALES = 40;
 const FACTOR_MENSUAL = 19 / 5; // 3.8
+// En Duoc la carga docente se cuenta en HORAS PEDAGÓGICAS (módulos de 40 min),
+// no en horas de reloj. La SABANA registra el rango horario de cada bloque
+// (con micro-recreos de ~10 min entre módulos), así que el nº de módulos de un
+// bloque se recupera redondeando su duración a múltiplos de 40 min. Ej:
+// 19:01-20:20 = 79 min ≈ 2 módulos; 17:01-19:00 = 119 min ≈ 3 módulos.
+const MIN_POR_MODULO = 40;
+const modulosEntre = (hi, hf) => Math.max(0, Math.round((toMin(hf) - toMin(hi)) / MIN_POR_MODULO));
 
 // Normaliza nombre de docente para matching robusto: uppercase, sin acentos,
 // espacios colapsados. "Álcaino  Fernández" → "ALCAINO FERNANDEZ"
@@ -5911,72 +5918,105 @@ const buildDocenteIdIndex = (data) => {
   return idx;
 };
 
-// Resuelve el duoc_id estable de un docente a partir de su nombre.
-// Estrategia: match exacto, sino match por overlap de tokens (≥2 comunes).
-const resolveDocenteId = (nombreDocente, idIdx) => {
-  if(!nombreDocente || !idIdx) return null;
-  const norm = normalizeDocenteNombre(nombreDocente);
-  if(idIdx.has(norm)) return idIdx.get(norm);
-  const tokensA = new Set(tokenizeDocente(nombreDocente));
-  if(tokensA.size < 2) return null;
-  let mejorId = null, mejorScore = 0;
-  for(const [k, id] of idIdx){
-    const tokensB = new Set(tokenizeDocente(k));
-    if(tokensB.size < 2) continue;
-    let comunes = 0;
-    for(const t of tokensA) if(tokensB.has(t)) comunes++;
-    if(comunes >= 2 && comunes > mejorScore){ mejorId = id; mejorScore = comunes; }
+// Resolver de docentes con caché. Construye el índice nombre→ID UNA sola vez,
+// pre-tokeniza sus entradas, y memoiza cada resolución por nombre normalizado.
+// Sin esto, con 70k+ eventos × cientos de nombres el matching O(filas×índice)
+// colgaba la app. Con caché: O(nombres_únicos×índice) y el resto son hits.
+const buildDocenteResolver = (data) => {
+  const idx = buildDocenteIdIndex(data);
+  const entries = [];
+  for(const [k, id] of idx){
+    const toks = tokenizeDocente(k);
+    if(toks.length >= 2) entries.push({ id, toks });
   }
-  return mejorId;
+  const cache = new Map(); // nombre normalizado → id|null (resuelto una vez)
+  const resolve = (nombre) => {
+    if(!nombre) return null;
+    const norm = normalizeDocenteNombre(nombre);
+    const direct = idx.get(norm);
+    if(direct) return direct;
+    if(cache.has(norm)) return cache.get(norm);
+    let res = null;
+    const toksA = tokenizeDocente(nombre);
+    if(toksA.length >= 2){
+      let best = null, bestScore = 0;
+      for(const e of entries){
+        let c = 0;
+        for(const t of toksA) if(e.toks.includes(t)) c++;
+        if(c >= 2 && c > bestScore){ best = e.id; bestScore = c; }
+      }
+      res = best;
+    }
+    cache.set(norm, res);
+    return res;
+  };
+  // Clave canónica para indexar al docente. Prefiere ID DUOC estable; si no
+  // se puede resolver, cae al nombre normalizado.
+  const keyFor = (nombre, duocId) => {
+    if(duocId) return `ID:${String(duocId)}`;
+    const id = resolve(nombre);
+    if(id) return `ID:${id}`;
+    return `NOM:${normalizeDocenteNombre(nombre||'')}`;
+  };
+  return { idx, entries, cache, resolve, keyFor };
 };
 
-// Devuelve la clave canónica para indexar al docente. Prefiere ID DUOC; si
-// no hay forma de resolverlo, cae al nombre normalizado como fallback.
-const getDocenteKey = (nombre, duocId, idIdx) => {
-  if(duocId) return `ID:${duocId}`;
-  const id = resolveDocenteId(nombre, idIdx);
-  if(id) return `ID:${id}`;
-  return `NOM:${normalizeDocenteNombre(nombre||'')}`;
+// Resuelve un ID a partir de un nombre. Acepta un resolver (con caché) o un
+// Map nombre→id crudo (compatibilidad). Estrategia: exacto, luego tokens (≥2).
+const resolveDocenteId = (nombreDocente, idxOrResolver) => {
+  if(!nombreDocente || !idxOrResolver) return null;
+  if(typeof idxOrResolver.resolve === 'function') return idxOrResolver.resolve(nombreDocente);
+  const norm = normalizeDocenteNombre(nombreDocente);
+  if(idxOrResolver.has(norm)) return idxOrResolver.get(norm);
+  const toksA = tokenizeDocente(nombreDocente);
+  if(toksA.length < 2) return null;
+  let best = null, score = 0;
+  for(const [k, id] of idxOrResolver){
+    const toksB = tokenizeDocente(k);
+    if(toksB.length < 2) continue;
+    let c = 0;
+    for(const t of toksA) if(toksB.includes(t)) c++;
+    if(c >= 2 && c > score){ best = id; score = c; }
+  }
+  return best;
 };
 
-// Busca un docente en el map de horas usando matching robusto. Prioriza
-// match por ID DUOC (fuente única); si no, intenta por nombre exacto o
-// por tokens. Acepta tanto un objeto docente como un nombre suelto.
-const lookupDocenteEnMap = (docenteONombre, mapDetallado, idIdx) => {
+// Busca un docente en el map de horas. Prioriza ID DUOC (fuente única); si no,
+// resuelve el ID vía resolver y, como último recurso, hace match por nombre o
+// tokens sobre el (pequeño) map de salida. Acepta objeto docente o nombre.
+const lookupDocenteEnMap = (docenteONombre, mapDetallado, resolver) => {
   if(!mapDetallado) return null;
   const esObj = typeof docenteONombre === 'object' && docenteONombre !== null;
   const nombre = esObj ? docenteONombre.nombre : docenteONombre;
   const duocId = esObj ? docenteONombre.duoc_id : null;
   if(!nombre && !duocId) return null;
-  // 1) Match por ID directo
   if(duocId){
-    const v = mapDetallado.get(`ID:${duocId}`);
+    const v = mapDetallado.get(`ID:${String(duocId)}`);
     if(v) return v;
   }
-  // 2) Resolver ID por nombre via índice
-  if(idIdx && nombre){
-    const id = resolveDocenteId(nombre, idIdx);
+  if(resolver && nombre){
+    const id = resolveDocenteId(nombre, resolver);
     if(id){
       const v = mapDetallado.get(`ID:${id}`);
       if(v) return v;
     }
   }
-  // 3) Fallback por nombre normalizado
   if(!nombre) return null;
   const norm = normalizeDocenteNombre(nombre);
   const vFb = mapDetallado.get(`NOM:${norm}`);
   if(vFb) return vFb;
-  // 4) Fallback por tokens (último recurso)
-  const tokensA = new Set(tokenizeDocente(nombre));
-  if(tokensA.size < 2) return null;
-  let mejor = null, mejorScore = 0;
+  // Fallback por tokens sobre el map (pequeño): cubre el caso sin ID donde el
+  // orden del nombre difiere entre catálogo y SABANA.
+  const toksA = tokenizeDocente(nombre);
+  if(toksA.length < 2) return null;
+  let mejor = null, score = 0;
   for(const [k, v] of mapDetallado){
-    if(!k.startsWith('NOM:')) continue;
-    const tokensB = new Set(tokenizeDocente(k.slice(4)));
-    if(tokensB.size < 2) continue;
-    let comunes = 0;
-    for(const t of tokensA) if(tokensB.has(t)) comunes++;
-    if(comunes >= 2 && comunes > mejorScore){ mejor = v; mejorScore = comunes; }
+    if(k[0] !== 'N') continue; // sólo claves NOM:
+    const toksB = tokenizeDocente(k.slice(4));
+    if(toksB.length < 2) continue;
+    let c = 0;
+    for(const t of toksA) if(toksB.includes(t)) c++;
+    if(c >= 2 && c > score){ mejor = v; score = c; }
   }
   return mejor;
 };
@@ -6013,40 +6053,45 @@ const calcHorasSemanales = (d) => {
      instEsporadicas,  // # asignaturas distintas esporádicas
    }>
 */
-const calcHorasDocenteMap = (data) => {
+const calcHorasDocenteMap = (data, resolver) => {
+  const res = resolver || buildDocenteResolver(data);
   const sabanaIdx = buildSabanaIndex(data.programacion);
-  const idIdx = buildDocenteIdIndex(data);
   const porDocRec = new Map(); // key (ID:xx o NOM:xx) → recurrentes
   const porDocEsp = new Map(); // idem → esporádicas
   const nombres = new Map();   // key → nombre representativo para mostrar
 
   // 1) Recurrentes: SABANA. Si la fila tiene did (col AH del Excel "Rut
-  // Docente" = ID DUOC), lo usamos directo. Sino, resolvemos via índice.
+  // Docente" = ID DUOC), lo usamos directo. Sino, resolvemos via resolver.
+  // Las horas se cuentan en MÓDULOS pedagógicos (no reloj): módulos × días.
   for(const p of (data.programacion||[])){
     if(!p.d || !p.hi || !p.hf) continue;
-    const dur = (toMin(p.hf) - toMin(p.hi)) / 60;
-    if(dur <= 0) continue;
+    const mods = modulosEntre(p.hi, p.hf);
+    if(mods <= 0) continue;
     const dias = [...String(p.dw||'')].filter(c => c === '1').length;
     if(!dias) continue;
-    const key = getDocenteKey(p.d, p.did, idIdx);
+    const horasReloj = (toMin(p.hf) - toMin(p.hi)) / 60;
+    const key = res.keyFor(p.d, p.did);
     if(!nombres.has(key)) nombres.set(key, p.d.trim());
     const aKey = `${p.sc||''}|${p.s||''}|${p.hi}|${p.hf}|${p.dw}`;
     let st = porDocRec.get(key);
-    if(!st){ st = { hrsSem: 0, claves: new Set(), asigs: new Set() }; porDocRec.set(key, st); }
+    if(!st){ st = { mods: 0, clock: 0, claves: new Set(), asigs: new Set(), filas: [] }; porDocRec.set(key, st); }
     if(!st.claves.has(aKey)){
       st.claves.add(aKey);
-      st.hrsSem += dur * dias;
+      st.mods += mods * dias;
+      st.clock += horasReloj * dias;
       if(p.sc) st.asigs.add(p.sc);
+      st.filas.push({ sc: p.sc || '—', a: p.a || '', dw: p.dw || '', hi: p.hi, hf: p.hf, dias, mods });
     }
   }
 
   // 2) Esporádicas: eventos. Si tiene dpid usamos el ID directo. Si no,
-  // usamos el docente del SABANA y resolvemos su ID.
+  // usamos el docente del SABANA y resolvemos su ID. Se cuentan en módulos
+  // por clase dictada (no se mensualizan con el factor 19/5).
   if(hasEventos(data)){
     for(const ev of data.eventos){
       if(!ev.hi || !ev.hf) continue;
-      const dur = (toMin(ev.hf) - toMin(ev.hi)) / 60;
-      if(dur <= 0) continue;
+      const mods = modulosEntre(ev.hi, ev.hf);
+      if(mods <= 0) continue;
       const code = secCodeFrom(ev.sc);
       const sabanaRow = code ? sabanaIdx.get(code) : null;
       const docTitular = sabanaRow?.d || '';
@@ -6061,8 +6106,8 @@ const calcHorasDocenteMap = (data) => {
         docRealId = idTitular;
       }
       if(!docRealNombre && !docRealId) continue;
-      const keyReal = getDocenteKey(docRealNombre, docRealId, idIdx);
-      const keyTitular = sabanaRow ? getDocenteKey(docTitular, idTitular, idIdx) : null;
+      const keyReal = res.keyFor(docRealNombre, docRealId);
+      const keyTitular = sabanaRow ? res.keyFor(docTitular, idTitular) : null;
 
       if(sabanaRow && keyReal === keyTitular){
         // Mismo docente que el titular del SABANA: instancia recurrente,
@@ -6071,8 +6116,8 @@ const calcHorasDocenteMap = (data) => {
       }
       if(!nombres.has(keyReal)) nombres.set(keyReal, docRealNombre);
       let st = porDocEsp.get(keyReal);
-      if(!st){ st = { hrsTot: 0, instancias: 0, asigs: new Set() }; porDocEsp.set(keyReal, st); }
-      st.hrsTot += dur;
+      if(!st){ st = { mods: 0, instancias: 0, asigs: new Set() }; porDocEsp.set(keyReal, st); }
+      st.mods += mods;
       st.instancias++;
       if(ev.sc) st.asigs.add(ev.sc);
     }
@@ -6081,33 +6126,38 @@ const calcHorasDocenteMap = (data) => {
   const out = new Map();
   const allKeys = new Set([...porDocRec.keys(), ...porDocEsp.keys()]);
   for(const k of allKeys){
-    const r = porDocRec.get(k) || { hrsSem: 0, asigs: new Set() };
-    const e = porDocEsp.get(k) || { hrsTot: 0, instancias: 0, asigs: new Set() };
+    const r = porDocRec.get(k) || { mods: 0, clock: 0, asigs: new Set(), filas: [] };
+    const e = porDocEsp.get(k) || { mods: 0, instancias: 0, asigs: new Set() };
     out.set(k, {
       key: k,
       duocId: k.startsWith('ID:') ? k.slice(3) : null,
       nombre: nombres.get(k) || '',
-      horasSem: r.hrsSem,
-      recurrentes: r.hrsSem,
-      esporadicasTotal: e.hrsTot,
+      horasSem: r.mods,            // módulos/sem recurrentes (entran al sueldo fijo)
+      recurrentes: r.mods,
+      horasRelojSem: r.clock,      // referencia: horas de reloj semanales
+      esporadicasTotal: e.mods,    // módulos esporádicos del semestre (pago aparte)
       esporadicasInst: e.instancias,
-      totalSemestre: r.hrsSem * SEMANAS_SEMESTRE + e.hrsTot,
+      totalSemestre: r.mods * SEMANAS_SEMESTRE + e.mods,
       instRecurrentes: r.asigs.size,
       instEsporadicas: e.asigs.size,
       asignaturas: r.asigs.size + e.asigs.size,
+      filas: (r.filas || []).sort((a,b)=> (a.sc||'').localeCompare(b.sc||'')),
     });
   }
   return out;
 };
 
 // Compatibilidad: nombre→horasSem recurrentes (las que entran al sueldo fijo).
-// Mantiene _detallado y _idIdx para que las vistas hagan lookups robustos.
+// Construye el resolver UNA vez y lo reutiliza (evita el doble índice que
+// colgaba la app). Mantiene _detallado, _resolver y _idIdx para las vistas.
 const calcHorasSemanalesRealesMap = (data) => {
-  const detallado = calcHorasDocenteMap(data);
+  const resolver = buildDocenteResolver(data);
+  const detallado = calcHorasDocenteMap(data, resolver);
   const out = new Map();
   for(const [k, v] of detallado) out.set(k, v.horasSem);
   out._detallado = detallado;
-  out._idIdx = buildDocenteIdIndex(data);
+  out._resolver = resolver;
+  out._idIdx = resolver.idx; // compat: algunas vistas aún leen el Map crudo
   return out;
 };
 
@@ -6116,7 +6166,7 @@ const calcHorasSemanalesRealesMap = (data) => {
 // Si el docente no tiene ID o no aparece en SABANA, cae al campo del Excel.
 const horasSemanalesEfectivas = (d, horasRealesMap) => {
   if(horasRealesMap && horasRealesMap._detallado){
-    const det = lookupDocenteEnMap(d, horasRealesMap._detallado, horasRealesMap._idIdx);
+    const det = lookupDocenteEnMap(d, horasRealesMap._detallado, horasRealesMap._resolver);
     if(det && det.horasSem > 0) return Math.min(det.horasSem, HORAS_MAX_SEMANALES);
   }
   return calcHorasSemanales(d);
@@ -6154,10 +6204,10 @@ function SimuladorSueldo({ docentes, horasRealesMap }){
     if(d){
       setDocSel(d);
       setHoraInput(d.hora_docente || '');
-      const det = lookupDocenteEnMap(d, horasRealesMap?._detallado, horasRealesMap?._idIdx);
+      const det = lookupDocenteEnMap(d, horasRealesMap?._detallado, horasRealesMap?._resolver);
       const hrsReal = det?.horasSem || 0;
       if(hrsReal > 0){
-        setHorasInput(Math.min(hrsReal, HORAS_MAX_SEMANALES).toFixed(1));
+        setHorasInput(String(Math.min(hrsReal, HORAS_MAX_SEMANALES)));
         setFuenteHoras('sabana');
       } else {
         setHorasInput(calcHorasSemanales(d) || '');
@@ -6174,11 +6224,16 @@ function SimuladorSueldo({ docentes, horasRealesMap }){
   const sueldoBruto = Math.round(valorMensualHora * horasSem);
   const totalHorasSem = Math.round(horasSem * SEMANAS_SEMESTRE);
 
+  // Resolución del docente seleccionado: se memoiza una sola vez por docente
+  // (no en cada render) para no recalcular el lookup en cada tecla/cambio.
+  const detSel = useMemo(
+    () => docSel ? lookupDocenteEnMap(docSel, horasRealesMap?._detallado, horasRealesMap?._resolver) : null,
+    [docSel, horasRealesMap]
+  );
   // Pago adicional por eventos esporádicos (si el docente seleccionado los
   // tiene): se paga por hora dictada en el semestre, no se mensualiza con
   // el factor 19/5. Total semestre = hrs_esp × valor_hora.
-  const detallado = docSel ? lookupDocenteEnMap(docSel, horasRealesMap?._detallado, horasRealesMap?._idIdx) : null;
-  const hrsEsporadicas = detallado?.esporadicasTotal || 0;
+  const hrsEsporadicas = detSel?.esporadicasTotal || 0;
   const pagoEsporadicoSemestre = Math.round(hrsEsporadicas * hora);
   const pagoEsporadicoMensual  = Math.round(pagoEsporadicoSemestre / 4.5); // 4.5 meses por semestre
   const sueldoBrutoTotal = sueldoBruto + pagoEsporadicoMensual;
@@ -6219,35 +6274,38 @@ function SimuladorSueldo({ docentes, horasRealesMap }){
         </div>
         <div className="col-2">
           <div className="field">
-            <label>Valor hora docente ($)</label>
+            <label>Valor hora docente ($) <span style={{fontWeight:400,color:'var(--text-muted)',fontSize:11}}>· por módulo pedagógico</span></label>
             <input type="number" value={horaInput} onChange={e=>setHoraInput(e.target.value)} placeholder="16716"/>
           </div>
           <div className="field">
-            <label>Horas semanales (máx {HORAS_MAX_SEMANALES}) {fuenteHoras==='sabana' && <span className="chip success" style={{fontSize:9,padding:'2px 6px',marginLeft:4}}>✓ real SABANA</span>}{fuenteHoras==='excel' && <span className="chip" style={{fontSize:9,padding:'2px 6px',marginLeft:4}}>desde Excel</span>}</label>
+            <label>Horas pedag./semana (máx {HORAS_MAX_SEMANALES}) {fuenteHoras==='sabana' && <span className="chip success" style={{fontSize:9,padding:'2px 6px',marginLeft:4}}>✓ real SABANA</span>}{fuenteHoras==='excel' && <span className="chip" style={{fontSize:9,padding:'2px 6px',marginLeft:4}}>desde Excel</span>}</label>
             <input type="number" step="0.5" max={HORAS_MAX_SEMANALES} value={horasInput} onChange={e=>{setHorasInput(e.target.value); setFuenteHoras(null);}} placeholder="20"/>
           </div>
         </div>
 
         {docSel && (() => {
-          const det = lookupDocenteEnMap(docSel, horasRealesMap?._detallado, horasRealesMap?._idIdx);
-          const hrsReal = det?.horasSem || 0;
+          const det = detSel;
+          const hrsReal = det?.horasSem || 0;       // módulos pedagógicos/sem
           const hrsExcel = Number(docSel.jmg_semanal)||0;
-          const detallado = det;
-          if(hrsReal === 0 && hrsExcel === 0 && !detallado) return null;
+          if(hrsReal === 0 && hrsExcel === 0 && !det) return null;
           const dif = Math.abs(hrsReal - hrsExcel);
+          const DIA_LBL = ['Lun','Mar','Mié','Jue','Vie','Sáb','Dom'];
+          const diasDe = (dw) => [...String(dw||'')].map((c,i)=> c==='1'?DIA_LBL[i]:null).filter(Boolean).join(', ');
           return (
             <div className="stack" style={{gap:8}}>
               <div className="card" style={{padding:'10px 14px',background: dif>=1?'rgba(255,159,10,.08)':'var(--surface-2)',border:'1px solid '+(dif>=1?'rgba(255,159,10,.35)':'var(--border-soft)'),fontSize:12.5}}>
                 <div className="row" style={{gap:14,flexWrap:'wrap',alignItems:'center'}}>
                   <div><b>Horas semanales del docente:</b></div>
-                  <div>📊 <b style={{color:hrsReal>0?'var(--success)':'var(--text-muted)'}}>SABANA/RECURSOS: {hrsReal>0?hrsReal.toFixed(1):'—'} hrs</b> <button className="btn-ghost btn-sm" style={{padding:'2px 8px',marginLeft:4,fontSize:10.5}} disabled={!hrsReal} onClick={()=>{setHorasInput(Math.min(hrsReal,HORAS_MAX_SEMANALES).toFixed(1)); setFuenteHoras('sabana');}}>Usar</button></div>
+                  <div>📊 <b style={{color:hrsReal>0?'var(--success)':'var(--text-muted)'}}>SABANA pedag.: {hrsReal>0?hrsReal:'—'} módulos</b> <button className="btn-ghost btn-sm" style={{padding:'2px 8px',marginLeft:4,fontSize:10.5}} disabled={!hrsReal} onClick={()=>{setHorasInput(Math.min(hrsReal,HORAS_MAX_SEMANALES)); setFuenteHoras('sabana');}}>Usar</button></div>
+                  <div>🕐 <b>SABANA reloj: {det?.horasRelojSem>0?det.horasRelojSem.toFixed(1):'—'} hrs</b> <button className="btn-ghost btn-sm" style={{padding:'2px 8px',marginLeft:4,fontSize:10.5}} disabled={!det?.horasRelojSem} onClick={()=>{setHorasInput(Math.min(Math.round(det.horasRelojSem),HORAS_MAX_SEMANALES)); setFuenteHoras('sabana');}}>Usar</button></div>
                   <div>📄 <b>Excel: {hrsExcel||'—'} hrs</b> <button className="btn-ghost btn-sm" style={{padding:'2px 8px',marginLeft:4,fontSize:10.5}} disabled={!hrsExcel} onClick={()=>{setHorasInput(hrsExcel); setFuenteHoras('excel');}}>Usar</button></div>
-                  {dif>=1 && <div style={{color:'var(--warn)',marginLeft:'auto'}}>⚠ Diferencia de {dif.toFixed(1)} hrs</div>}
+                  {dif>=1 && <div style={{color:'var(--warn)',marginLeft:'auto'}}>⚠ Dif. {dif.toFixed(0)} entre pedag. y Excel</div>}
                 </div>
                 {hrsReal > 0 && det && (
                   <div style={{fontSize:11,color:'var(--text-muted)',marginTop:4}}>
                     Match: <b style={{color:det.duocId?'var(--success)':'var(--text-muted)'}}>{det.duocId?`ID DUOC #${det.duocId}`:'por nombre (sin ID)'}</b>
                     {det.nombre && det.nombre.toUpperCase() !== (docSel.nombre||'').toUpperCase() && <> · nombre en SABANA: <code>{det.nombre}</code></>}
+                    {det.horasRelojSem ? <> · equivale a {det.horasRelojSem.toFixed(1)} hrs de reloj/sem</> : null}
                   </div>
                 )}
                 {hrsReal === 0 && (
@@ -6256,28 +6314,51 @@ function SimuladorSueldo({ docentes, horasRealesMap }){
                   </div>
                 )}
               </div>
-              {detallado && (detallado.instRecurrentes + detallado.instEsporadicas) > 0 && (
+              {det && (det.instRecurrentes + det.instEsporadicas) > 0 && (
                 <div className="card" style={{padding:'10px 14px',fontSize:12.5}}>
-                  <div style={{fontWeight:600,marginBottom:6}}>📚 Desglose de carga académica (semestre {SEMANAS_SEMESTRE} sem):</div>
+                  <div style={{fontWeight:600,marginBottom:6}}>📚 Desglose de carga académica (semestre {SEMANAS_SEMESTRE} sem) · en módulos pedagógicos de {MIN_POR_MODULO} min:</div>
                   <div className="grid grid-3" style={{gap:8}}>
                     <div style={{padding:'8px 10px',background:'rgba(48,209,88,.08)',borderRadius:6,border:'1px solid rgba(48,209,88,.25)'}}>
                       <div style={{fontSize:11,color:'var(--text-muted)',fontWeight:600,letterSpacing:.3}}>RECURRENTES (sueldo fijo)</div>
-                      <div style={{fontSize:18,fontWeight:700,color:'var(--success)'}}>{detallado.recurrentes.toFixed(1)} <span style={{fontSize:12,fontWeight:400}}>hrs/sem</span></div>
-                      <div style={{fontSize:11}}>{detallado.instRecurrentes} asignatura{detallado.instRecurrentes!==1?'s':''} × {SEMANAS_SEMESTRE} sem · {(detallado.recurrentes*SEMANAS_SEMESTRE).toFixed(0)} hrs semestre</div>
+                      <div style={{fontSize:18,fontWeight:700,color:'var(--success)'}}>{det.recurrentes} <span style={{fontSize:12,fontWeight:400}}>hrs/sem</span></div>
+                      <div style={{fontSize:11}}>{det.instRecurrentes} asignatura{det.instRecurrentes!==1?'s':''} × {SEMANAS_SEMESTRE} sem · {det.recurrentes*SEMANAS_SEMESTRE} hrs semestre</div>
                     </div>
                     <div style={{padding:'8px 10px',background:'rgba(255,159,10,.08)',borderRadius:6,border:'1px solid rgba(255,159,10,.25)'}}>
                       <div style={{fontSize:11,color:'var(--text-muted)',fontWeight:600,letterSpacing:.3}}>ESPORÁDICAS (pago aparte)</div>
-                      <div style={{fontSize:18,fontWeight:700,color:'var(--warn)'}}>{detallado.esporadicasTotal.toFixed(1)} <span style={{fontSize:12,fontWeight:400}}>hrs total</span></div>
-                      <div style={{fontSize:11}}>{detallado.instEsporadicas} asig · {detallado.esporadicasInst} clase{detallado.esporadicasInst!==1?'s':''} en el semestre</div>
+                      <div style={{fontSize:18,fontWeight:700,color:'var(--warn)'}}>{det.esporadicasTotal} <span style={{fontSize:12,fontWeight:400}}>hrs total</span></div>
+                      <div style={{fontSize:11}}>{det.instEsporadicas} asig · {det.esporadicasInst} clase{det.esporadicasInst!==1?'s':''} en el semestre</div>
                     </div>
                     <div style={{padding:'8px 10px',background:'var(--surface-2)',borderRadius:6,border:'1px solid var(--border-soft)'}}>
                       <div style={{fontSize:11,color:'var(--text-muted)',fontWeight:600,letterSpacing:.3}}>CARGA TOTAL SEMESTRE</div>
-                      <div style={{fontSize:18,fontWeight:700}}>{detallado.totalSemestre.toFixed(1)} <span style={{fontSize:12,fontWeight:400}}>hrs</span></div>
-                      <div style={{fontSize:11}}>{detallado.asignaturas} asignatura{detallado.asignaturas!==1?'s':''} distinta{detallado.asignaturas!==1?'s':''}</div>
+                      <div style={{fontSize:18,fontWeight:700}}>{det.totalSemestre} <span style={{fontSize:12,fontWeight:400}}>hrs</span></div>
+                      <div style={{fontSize:11}}>{det.asignaturas} asignatura{det.asignaturas!==1?'s':''} distinta{det.asignaturas!==1?'s':''}</div>
                     </div>
                   </div>
+                  {det.filas && det.filas.length > 0 && (
+                    <details style={{marginTop:8}}>
+                      <summary style={{cursor:'pointer',fontSize:11.5,fontWeight:600,color:'var(--primary)'}}>🔎 Ver detalle por sección recurrente ({det.filas.length} bloques · corrobora las {det.recurrentes} hrs/sem)</summary>
+                      <div className="tbl-scroll" style={{marginTop:6,maxHeight:240}}>
+                        <table className="tbl" style={{fontSize:11.5}}>
+                          <thead><tr><th>Sección</th><th>Días</th><th>Horario</th><th style={{textAlign:'right'}}>Días/sem</th><th style={{textAlign:'right'}}>Módulos</th><th style={{textAlign:'right'}}>Hrs/sem</th></tr></thead>
+                          <tbody>
+                            {det.filas.map((f,i)=>(
+                              <tr key={i}>
+                                <td title={f.a}>{f.sc}</td>
+                                <td>{diasDe(f.dw)}</td>
+                                <td style={{fontFamily:'monospace'}}>{f.hi}–{f.hf}</td>
+                                <td style={{textAlign:'right'}}>{f.dias}</td>
+                                <td style={{textAlign:'right'}}>{f.mods}</td>
+                                <td style={{textAlign:'right',fontWeight:600}}>{f.mods*f.dias}</td>
+                              </tr>
+                            ))}
+                          </tbody>
+                          <tfoot><tr style={{borderTop:'2px solid var(--border-soft)',fontWeight:700}}><td colSpan="5" style={{textAlign:'right'}}>Total módulos/sem (= sueldo fijo):</td><td style={{textAlign:'right',color:'var(--success)'}}>{det.recurrentes}</td></tr></tfoot>
+                        </table>
+                      </div>
+                    </details>
+                  )}
                   <div style={{fontSize:11,color:'var(--text-muted)',marginTop:6,lineHeight:1.5}}>
-                    💡 <b>Recurrentes</b> entran al sueldo mensual fijo (hrs/sem × 19/5 × valor_hora). <b>Esporádicas</b> se pagan por hora dictada — el total del semestre se prorratea en 4,5 meses para mostrar el aporte mensual estimado, pero el desembolso real depende del calendario de las clases.
+                    💡 La carga se mide en <b>módulos pedagógicos</b> ({MIN_POR_MODULO} min c/u), no en horas de reloj — así se paga la hora docente en Duoc. <b>Recurrentes</b> entran al sueldo mensual fijo (hrs/sem × 19/5 × valor_hora). <b>Esporádicas</b> se pagan por hora dictada — el total del semestre se prorratea en 4,5 meses, pero el desembolso real depende del calendario de las clases.
                   </div>
                 </div>
               )}
@@ -6388,7 +6469,7 @@ function DashboardDocente({ docentes, data, horasRealesMap }){
   const conAsigActiva = activos.filter(d => d.asignatura_activa).length;
   // Cuántos docentes tienen diferencia significativa Excel vs SABANA
   const conDiscrepancia = activos.filter(d => {
-    const det = lookupDocenteEnMap(d, horasRealesMap?._detallado, horasRealesMap?._idIdx);
+    const det = lookupDocenteEnMap(d, horasRealesMap?._detallado, horasRealesMap?._resolver);
     const real = det?.horasSem || 0;
     const excel = Number(d.jmg_semanal)||0;
     return real > 0 && Math.abs(real - excel) >= 1;
@@ -6457,7 +6538,7 @@ function DashboardDocente({ docentes, data, horasRealesMap }){
       <div className="grid grid-4">
         <div className="kpi kpi-blue"><span className="label">Docentes activos</span><span className="value">{totActivos.toLocaleString('es-CL')}</span><span className="delta">de {total.toLocaleString('es-CL')} en catálogo · {totInactivos} inactivos</span><div className="icon">👥</div></div>
         <div className="kpi kpi-green"><span className="label">Jefaturas únicas</span><span className="value">{jefaturasUnicas}</span><span className="delta">directores distintos</span><div className="icon">⭐</div></div>
-        <div className="kpi kpi-amber"><span className="label">Horas/semana (real SABANA)</span><span className="value">{Math.round(horasTotales).toLocaleString('es-CL')}</span><span className="delta">suma activos · {conDiscrepancia>0?`${conDiscrepancia} ≠ Excel ⚠`:'coincide con Excel'}</span><div className="icon">⏱</div></div>
+        <div className="kpi kpi-amber"><span className="label">Hrs pedag./semana (real SABANA)</span><span className="value">{Math.round(horasTotales).toLocaleString('es-CL')}</span><span className="delta">módulos de {MIN_POR_MODULO} min · suma activos · {conDiscrepancia>0?`${conDiscrepancia} ≠ Excel ⚠`:'coincide con Excel'}</span><div className="icon">⏱</div></div>
         <div className="kpi kpi-red"><span className="label">Costo mensual proyectado</span><span className="value" style={{fontSize:18}}>{fmtCLP(Math.round(costoMensualTotal))}</span><span className="delta">hora × 19/5 × hrs reales (máx {HORAS_MAX_SEMANALES})</span><div className="icon">💰</div></div>
       </div>
 
