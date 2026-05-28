@@ -5238,9 +5238,13 @@ function GestionDocente({ data, user, db, toast }){
     catch(e){ toast(`Error: ${e.message}`); }
   };
 
-  // Map nombre→horas semanales reales desde SABANA/Eventos.
-  // Se recalcula sólo cuando cambian las sesiones (data).
-  const horasRealesMap = useMemo(()=> calcHorasSemanalesRealesMap(data), [data]);
+  // Map clave (ID:xx o NOM:xx) → horas semanales reales desde SABANA/Eventos.
+  // Recibe data + el catálogo docentes para poder construir el índice
+  // nombre→duoc_id que permite el matching robusto por ID.
+  const horasRealesMap = useMemo(
+    ()=> calcHorasSemanalesRealesMap({ ...data, docentes }),
+    [data, docentes]
+  );
 
   if(!unlocked){
     return (
@@ -5444,7 +5448,7 @@ function ListadoDocentes({ docentes, onSave, onDelete, toast, horasRealesMap }){
             </tr></thead>
             <tbody>
               {filtradas.map(d => {
-                const det = lookupDocenteEnMap(d.nombre, horasRealesMap?._detallado);
+                const det = lookupDocenteEnMap(d, horasRealesMap?._detallado, horasRealesMap?._idIdx);
                 const hrsReal = det?.horasSem || 0;
                 const hrsExcel = Number(d.jmg_semanal)||0;
                 const difHoras = hrsReal > 0 && Math.abs(hrsReal - hrsExcel) >= 1;
@@ -5877,30 +5881,95 @@ const tokenizeDocente = (s) => {
     .split(' ')
     .filter(t => t.length >= 3 && !STOPWORDS_NOMBRE.has(t));
 };
-// Busca un docente en el map de horas usando matching robusto. Devuelve el
-// objeto del map o null. Estrategia:
-// 1. Exacto por nombre normalizado.
-// 2. Por overlap de tokens (apellidos + nombres): considera match si comparten
-//    ≥2 tokens significativos (>3 letras, sin stopwords).
-const lookupDocenteEnMap = (nombreDocente, mapDetallado) => {
-  if(!mapDetallado || !nombreDocente) return null;
-  const norm = normalizeDocenteNombre(nombreDocente);
-  // 1) Match exacto
-  for(const [k, v] of mapDetallado){
-    if(normalizeDocenteNombre(k) === norm) return v;
+// Construye un índice nombre_normalizado → duoc_id usando dos fuentes:
+// 1) Catálogo docentes (importado del Excel DOCENTES) → fuente principal
+// 2) Filas P de eventos (LISTA DE RECURSOS) → cuando trae dp + dpid juntos
+// Esto permite resolver el ID DUOC estable de un docente aunque su nombre
+// aparezca con variantes en SABANA, eventos o catálogo.
+const buildDocenteIdIndex = (data) => {
+  const idx = new Map();
+  for(const d of (data?.docentes||[])){
+    if(!d.duoc_id || !d.nombre) continue;
+    idx.set(normalizeDocenteNombre(d.nombre), String(d.duoc_id));
   }
-  // 2) Match por tokens
+  for(const e of (data?.eventos||[])){
+    if(!e.dp || !e.dpid) continue;
+    const ids = String(e.dpid).split('·').map(x=>x.trim()).filter(Boolean);
+    const noms = String(e.dp).split('·').map(x=>x.trim()).filter(Boolean);
+    for(let i=0; i<Math.min(ids.length, noms.length); i++){
+      const key = normalizeDocenteNombre(noms[i]);
+      if(key && ids[i] && !idx.has(key)) idx.set(key, ids[i]);
+    }
+  }
+  return idx;
+};
+
+// Resuelve el duoc_id estable de un docente a partir de su nombre.
+// Estrategia: match exacto, sino match por overlap de tokens (≥2 comunes).
+const resolveDocenteId = (nombreDocente, idIdx) => {
+  if(!nombreDocente || !idIdx) return null;
+  const norm = normalizeDocenteNombre(nombreDocente);
+  if(idIdx.has(norm)) return idIdx.get(norm);
   const tokensA = new Set(tokenizeDocente(nombreDocente));
   if(tokensA.size < 2) return null;
-  let mejor = null, mejorScore = 0;
-  for(const [k, v] of mapDetallado){
+  let mejorId = null, mejorScore = 0;
+  for(const [k, id] of idIdx){
     const tokensB = new Set(tokenizeDocente(k));
     if(tokensB.size < 2) continue;
     let comunes = 0;
     for(const t of tokensA) if(tokensB.has(t)) comunes++;
-    if(comunes >= 2 && comunes > mejorScore){
-      mejor = v; mejorScore = comunes;
+    if(comunes >= 2 && comunes > mejorScore){ mejorId = id; mejorScore = comunes; }
+  }
+  return mejorId;
+};
+
+// Devuelve la clave canónica para indexar al docente. Prefiere ID DUOC; si
+// no hay forma de resolverlo, cae al nombre normalizado como fallback.
+const getDocenteKey = (nombre, duocId, idIdx) => {
+  if(duocId) return `ID:${duocId}`;
+  const id = resolveDocenteId(nombre, idIdx);
+  if(id) return `ID:${id}`;
+  return `NOM:${normalizeDocenteNombre(nombre||'')}`;
+};
+
+// Busca un docente en el map de horas usando matching robusto. Prioriza
+// match por ID DUOC (fuente única); si no, intenta por nombre exacto o
+// por tokens. Acepta tanto un objeto docente como un nombre suelto.
+const lookupDocenteEnMap = (docenteONombre, mapDetallado, idIdx) => {
+  if(!mapDetallado) return null;
+  const esObj = typeof docenteONombre === 'object' && docenteONombre !== null;
+  const nombre = esObj ? docenteONombre.nombre : docenteONombre;
+  const duocId = esObj ? docenteONombre.duoc_id : null;
+  if(!nombre && !duocId) return null;
+  // 1) Match por ID directo
+  if(duocId){
+    const v = mapDetallado.get(`ID:${duocId}`);
+    if(v) return v;
+  }
+  // 2) Resolver ID por nombre via índice
+  if(idIdx && nombre){
+    const id = resolveDocenteId(nombre, idIdx);
+    if(id){
+      const v = mapDetallado.get(`ID:${id}`);
+      if(v) return v;
     }
+  }
+  // 3) Fallback por nombre normalizado
+  if(!nombre) return null;
+  const norm = normalizeDocenteNombre(nombre);
+  const vFb = mapDetallado.get(`NOM:${norm}`);
+  if(vFb) return vFb;
+  // 4) Fallback por tokens (último recurso)
+  const tokensA = new Set(tokenizeDocente(nombre));
+  if(tokensA.size < 2) return null;
+  let mejor = null, mejorScore = 0;
+  for(const [k, v] of mapDetallado){
+    if(!k.startsWith('NOM:')) continue;
+    const tokensB = new Set(tokenizeDocente(k.slice(4)));
+    if(tokensB.size < 2) continue;
+    let comunes = 0;
+    for(const t of tokensA) if(tokensB.has(t)) comunes++;
+    if(comunes >= 2 && comunes > mejorScore){ mejor = v; mejorScore = comunes; }
   }
   return mejor;
 };
@@ -5939,17 +6008,21 @@ const calcHorasSemanales = (d) => {
 */
 const calcHorasDocenteMap = (data) => {
   const sabanaIdx = buildSabanaIndex(data.programacion);
-  const porDocRec = new Map(); // recurrentes desde SABANA
-  const porDocEsp = new Map(); // esporádicas desde eventos no-SABANA o reemplazos
+  const idIdx = buildDocenteIdIndex(data);
+  const porDocRec = new Map(); // key (ID:xx o NOM:xx) → recurrentes
+  const porDocEsp = new Map(); // idem → esporádicas
+  const nombres = new Map();   // key → nombre representativo para mostrar
 
-  // 1) Recurrentes: una fila de programacion = una asignatura semanal típica.
+  // 1) Recurrentes: SABANA. SABANA solo tiene nombre, así que resolvemos
+  // su ID DUOC vía el índice y usamos eso como clave canónica.
   for(const p of (data.programacion||[])){
-    const key = (p.d||'').trim().toUpperCase();
-    if(!key || !p.hi || !p.hf) continue;
+    if(!p.d || !p.hi || !p.hf) continue;
     const dur = (toMin(p.hf) - toMin(p.hi)) / 60;
     if(dur <= 0) continue;
     const dias = [...String(p.dw||'')].filter(c => c === '1').length;
     if(!dias) continue;
+    const key = getDocenteKey(p.d, null, idIdx);
+    if(!nombres.has(key)) nombres.set(key, p.d.trim());
     const aKey = `${p.sc||''}|${p.s||''}|${p.hi}|${p.hf}|${p.dw}`;
     let st = porDocRec.get(key);
     if(!st){ st = { hrsSem: 0, claves: new Set(), asigs: new Set() }; porDocRec.set(key, st); }
@@ -5960,8 +6033,8 @@ const calcHorasDocenteMap = (data) => {
     }
   }
 
-  // 2) Esporádicas: eventos cuyo código NO está en SABANA, o eventos con
-  // docente distinto al titular SABANA (reemplazos puntuales).
+  // 2) Esporádicas: eventos. Si tiene dpid usamos el ID directo. Si no,
+  // usamos el docente del SABANA y resolvemos su ID.
   if(hasEventos(data)){
     for(const ev of data.eventos){
       if(!ev.hi || !ev.hf) continue;
@@ -5969,18 +6042,27 @@ const calcHorasDocenteMap = (data) => {
       if(dur <= 0) continue;
       const code = secCodeFrom(ev.sc);
       const sabanaRow = code ? sabanaIdx.get(code) : null;
-      const docTitular = (sabanaRow?.d || '').trim().toUpperCase();
-      // Docente real del evento (prioriza fila P, sino infiere de SABANA)
-      const docReal = (ev.dp || sabanaRow?.d || '').trim().toUpperCase();
-      if(!docReal) continue;
+      const docTitular = sabanaRow?.d || '';
+      // Docente real del evento. Prioriza fila P (ev.dp + ev.dpid):
+      let docRealNombre, docRealId = null;
+      if(ev.dp){
+        docRealNombre = String(ev.dp).split('·')[0].trim();
+        if(ev.dpid) docRealId = String(ev.dpid).split('·')[0].trim();
+      } else {
+        docRealNombre = docTitular;
+      }
+      if(!docRealNombre) continue;
+      const keyReal = getDocenteKey(docRealNombre, docRealId, idIdx);
+      const keyTitular = sabanaRow ? getDocenteKey(docTitular, null, idIdx) : null;
 
-      if(sabanaRow && docReal === docTitular){
-        // Caso normal: instancia recurrente del titular, ya contada en SABANA.
+      if(sabanaRow && keyReal === keyTitular){
+        // Mismo docente que el titular del SABANA: instancia recurrente,
+        // ya está contabilizada.
         continue;
       }
-      // Esporádica: evento sin SABANA O reemplazo (otro docente)
-      let st = porDocEsp.get(docReal);
-      if(!st){ st = { hrsTot: 0, instancias: 0, asigs: new Set() }; porDocEsp.set(docReal, st); }
+      if(!nombres.has(keyReal)) nombres.set(keyReal, docRealNombre);
+      let st = porDocEsp.get(keyReal);
+      if(!st){ st = { hrsTot: 0, instancias: 0, asigs: new Set() }; porDocEsp.set(keyReal, st); }
       st.hrsTot += dur;
       st.instancias++;
       if(ev.sc) st.asigs.add(ev.sc);
@@ -5993,6 +6075,9 @@ const calcHorasDocenteMap = (data) => {
     const r = porDocRec.get(k) || { hrsSem: 0, asigs: new Set() };
     const e = porDocEsp.get(k) || { hrsTot: 0, instancias: 0, asigs: new Set() };
     out.set(k, {
+      key: k,
+      duocId: k.startsWith('ID:') ? k.slice(3) : null,
+      nombre: nombres.get(k) || '',
       horasSem: r.hrsSem,
       recurrentes: r.hrsSem,
       esporadicasTotal: e.hrsTot,
@@ -6007,20 +6092,22 @@ const calcHorasDocenteMap = (data) => {
 };
 
 // Compatibilidad: nombre→horasSem recurrentes (las que entran al sueldo fijo).
+// Mantiene _detallado y _idIdx para que las vistas hagan lookups robustos.
 const calcHorasSemanalesRealesMap = (data) => {
   const detallado = calcHorasDocenteMap(data);
   const out = new Map();
   for(const [k, v] of detallado) out.set(k, v.horasSem);
   out._detallado = detallado;
+  out._idIdx = buildDocenteIdIndex(data);
   return out;
 };
 
 // Devuelve las horas semanales del docente, prefiriendo SABANA real si está
-// disponible. Usa matching robusto por tokens (no requiere coincidencia
-// exacta del nombre). Cae al campo del Excel solo si no hay datos en SABANA.
+// disponible. Usa el ID DUOC del docente como clave primaria (fuente única).
+// Si el docente no tiene ID o no aparece en SABANA, cae al campo del Excel.
 const horasSemanalesEfectivas = (d, horasRealesMap) => {
   if(horasRealesMap && horasRealesMap._detallado){
-    const det = lookupDocenteEnMap(d.nombre, horasRealesMap._detallado);
+    const det = lookupDocenteEnMap(d, horasRealesMap._detallado, horasRealesMap._idIdx);
     if(det && det.horasSem > 0) return Math.min(det.horasSem, HORAS_MAX_SEMANALES);
   }
   return calcHorasSemanales(d);
@@ -6058,7 +6145,7 @@ function SimuladorSueldo({ docentes, horasRealesMap }){
     if(d){
       setDocSel(d);
       setHoraInput(d.hora_docente || '');
-      const det = lookupDocenteEnMap(d.nombre, horasRealesMap?._detallado);
+      const det = lookupDocenteEnMap(d, horasRealesMap?._detallado, horasRealesMap?._idIdx);
       const hrsReal = det?.horasSem || 0;
       if(hrsReal > 0){
         setHorasInput(Math.min(hrsReal, HORAS_MAX_SEMANALES).toFixed(1));
@@ -6081,7 +6168,7 @@ function SimuladorSueldo({ docentes, horasRealesMap }){
   // Pago adicional por eventos esporádicos (si el docente seleccionado los
   // tiene): se paga por hora dictada en el semestre, no se mensualiza con
   // el factor 19/5. Total semestre = hrs_esp × valor_hora.
-  const detallado = docSel ? lookupDocenteEnMap(docSel.nombre, horasRealesMap?._detallado) : null;
+  const detallado = docSel ? lookupDocenteEnMap(docSel, horasRealesMap?._detallado, horasRealesMap?._idIdx) : null;
   const hrsEsporadicas = detallado?.esporadicasTotal || 0;
   const pagoEsporadicoSemestre = Math.round(hrsEsporadicas * hora);
   const pagoEsporadicoMensual  = Math.round(pagoEsporadicoSemestre / 4.5); // 4.5 meses por semestre
@@ -6133,7 +6220,7 @@ function SimuladorSueldo({ docentes, horasRealesMap }){
         </div>
 
         {docSel && (() => {
-          const det = lookupDocenteEnMap(docSel.nombre, horasRealesMap?._detallado);
+          const det = lookupDocenteEnMap(docSel, horasRealesMap?._detallado, horasRealesMap?._idIdx);
           const hrsReal = det?.horasSem || 0;
           const hrsExcel = Number(docSel.jmg_semanal)||0;
           const detallado = det;
@@ -6148,9 +6235,15 @@ function SimuladorSueldo({ docentes, horasRealesMap }){
                   <div>📄 <b>Excel: {hrsExcel||'—'} hrs</b> <button className="btn-ghost btn-sm" style={{padding:'2px 8px',marginLeft:4,fontSize:10.5}} disabled={!hrsExcel} onClick={()=>{setHorasInput(hrsExcel); setFuenteHoras('excel');}}>Usar</button></div>
                   {dif>=1 && <div style={{color:'var(--warn)',marginLeft:'auto'}}>⚠ Diferencia de {dif.toFixed(1)} hrs</div>}
                 </div>
+                {hrsReal > 0 && det && (
+                  <div style={{fontSize:11,color:'var(--text-muted)',marginTop:4}}>
+                    Match: <b style={{color:det.duocId?'var(--success)':'var(--text-muted)'}}>{det.duocId?`ID DUOC #${det.duocId}`:'por nombre (sin ID)'}</b>
+                    {det.nombre && det.nombre.toUpperCase() !== (docSel.nombre||'').toUpperCase() && <> · nombre en SABANA: <code>{det.nombre}</code></>}
+                  </div>
+                )}
                 {hrsReal === 0 && (
                   <div style={{fontSize:11,color:'var(--text-muted)',marginTop:6,padding:'6px 8px',background:'rgba(255,69,58,.06)',borderRadius:6}}>
-                    ⚠ No se encontraron clases recurrentes para este docente en SABANA. Posibles causas: (1) docente sin programación cargada; (2) el nombre en SABANA difiere del nombre en el catálogo de docentes; (3) sus clases son solo eventos esporádicos. Verifica el Horario Docente del usuario.
+                    ⚠ No se encontraron clases recurrentes para este docente en SABANA. Posibles causas: (1) docente sin programación cargada; (2) el ID DUOC <code>{docSel.duoc_id||'(no asignado)'}</code> no aparece en SABANA ni eventos; (3) sus clases son solo eventos esporádicos.
                   </div>
                 )}
               </div>
@@ -6286,7 +6379,7 @@ function DashboardDocente({ docentes, data, horasRealesMap }){
   const conAsigActiva = activos.filter(d => d.asignatura_activa).length;
   // Cuántos docentes tienen diferencia significativa Excel vs SABANA
   const conDiscrepancia = activos.filter(d => {
-    const det = lookupDocenteEnMap(d.nombre, horasRealesMap?._detallado);
+    const det = lookupDocenteEnMap(d, horasRealesMap?._detallado, horasRealesMap?._idIdx);
     const real = det?.horasSem || 0;
     const excel = Number(d.jmg_semanal)||0;
     return real > 0 && Math.abs(real - excel) >= 1;
