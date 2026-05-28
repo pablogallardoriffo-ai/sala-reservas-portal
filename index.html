@@ -5583,6 +5583,35 @@ NOTIFY pgrst, 'reload schema';`;
 const isSchemaError = (msg) =>
   /schema cache|relation.*does not exist|table.*not found|Could not find/i.test(msg||'');
 
+// Diagnóstico contra Supabase: prueba SELECT count a docentes y a otras tablas
+// conocidas para que el usuario sepa si el problema es la tabla, los permisos
+// o la conexión completa. Devuelve un objeto con resultados detallados.
+const diagnosticarSupabase = async () => {
+  const out = { url: null, projectRef: null, conectividad: null, tablas: {}, errores: [] };
+  const cfg = window.SUPABASE_CONFIG || {};
+  out.url = cfg.url || '(sin configurar)';
+  const refMatch = (cfg.url||'').match(/https:\/\/([a-z0-9]+)\.supabase\.co/);
+  out.projectRef = refMatch ? refMatch[1] : '(no detectado)';
+  if(!window.supabase || !cfg.url || !cfg.key){ out.errores.push('Supabase no configurado'); return out; }
+  const sb = window.supabase.createClient(cfg.url, cfg.key);
+  // Test 1: tabla docentes
+  try {
+    const { count, error } = await sb.from('docentes').select('*', { count:'exact', head:true });
+    if(error) out.tablas.docentes = { ok:false, error: error.message, code: error.code, hint: error.hint, details: error.details };
+    else out.tablas.docentes = { ok:true, count };
+  } catch(e){ out.tablas.docentes = { ok:false, error: e.message }; }
+  // Test 2: tablas conocidas (deberían existir desde el setup inicial)
+  for(const t of ['salas','users','programacion']){
+    try {
+      const { count, error } = await sb.from(t).select('*', { count:'exact', head:true });
+      if(error) out.tablas[t] = { ok:false, error: error.message, code: error.code };
+      else out.tablas[t] = { ok:true, count };
+    } catch(e){ out.tablas[t] = { ok:false, error: e.message }; }
+  }
+  out.conectividad = Object.values(out.tablas).some(x => x.ok || (x.error && !/fetch|network/i.test(x.error)));
+  return out;
+};
+
 function ImportarDocentes({ db, toast, onDone, docentes }){
   const [file, setFile] = useState(null);
   const [preview, setPreview] = useState(null);
@@ -5592,6 +5621,15 @@ function ImportarDocentes({ db, toast, onDone, docentes }){
   const [resultado, setResultado] = useState(null);
   const [schemaErr, setSchemaErr] = useState(false);
   const [copied, setCopied] = useState(false);
+  const [diag, setDiag] = useState(null);
+  const [diagBusy, setDiagBusy] = useState(false);
+
+  const correrDiagnostico = async () => {
+    setDiagBusy(true);
+    try { setDiag(await diagnosticarSupabase()); }
+    catch(e){ setDiag({ errores:[e.message] }); }
+    finally { setDiagBusy(false); }
+  };
 
   const copiarSQL = () => {
     navigator.clipboard?.writeText(SQL_DOCENTES).then(()=>{ setCopied(true); setTimeout(()=>setCopied(false), 2500); });
@@ -5608,9 +5646,10 @@ function ImportarDocentes({ db, toast, onDone, docentes }){
     finally { setParsing(false); }
   };
 
+  const [errFull, setErrFull] = useState('');
   const ejecutar = async () => {
     if(!preview || !preview.length){ toast('Nada que importar.'); return; }
-    setSchemaErr(false); setImporting(true);
+    setSchemaErr(false); setErrFull(''); setImporting(true);
     try {
       const r = await db.bulkUpsertDocentes(preview, { inactivarAusentes: inactivar });
       setResultado(r);
@@ -5618,6 +5657,7 @@ function ImportarDocentes({ db, toast, onDone, docentes }){
       onDone && onDone();
     } catch(e){
       console.error(e);
+      setErrFull(e.message || String(e));
       if(isSchemaError(e.message)){ setSchemaErr(true); }
       else { toast(`Error: ${e.message}`); }
     }
@@ -5644,28 +5684,70 @@ function ImportarDocentes({ db, toast, onDone, docentes }){
 
         {parsing && <div className="loader"><div className="spinner"/><div>Leyendo archivo…</div></div>}
 
-        {schemaErr && (
+        {errFull && (
           <div className="stack" style={{gap:10,padding:'16px',background:'rgba(255,69,58,.07)',border:'1px solid rgba(255,69,58,.35)',borderRadius:10}}>
-            <div style={{fontWeight:700,fontSize:14}}>⚠ La tabla <code>docentes</code> no existe en Supabase</div>
-            <div style={{fontSize:13,lineHeight:1.55}}>
-              Tienes que crearla desde el SQL Editor de Supabase. Sigue estos pasos:
+            <div style={{fontWeight:700,fontSize:14}}>{schemaErr ? '⚠ La tabla docentes no es accesible' : '⚠ Error al importar'}</div>
+            <div style={{fontSize:12,padding:'8px 10px',background:'var(--surface-2)',borderRadius:6,fontFamily:'monospace',wordBreak:'break-word'}}>
+              <b>Mensaje de Supabase:</b><br/>{errFull}
             </div>
-            <ol style={{fontSize:13,lineHeight:1.7,paddingLeft:20,margin:0}}>
-              <li>Abre este link: <a href="https://supabase.com/dashboard/project/blobjumbgxqmgsorjchu/sql/new" target="_blank" rel="noreferrer" style={{color:'var(--primary)',fontWeight:600}}>SQL Editor → Nuevo query ↗</a></li>
-              <li>Copia el SQL con el botón de abajo</li>
-              <li>Pégalo en el editor y presiona <b>Run</b> (o Ctrl+Enter)</li>
-              <li>Vuelve aquí y presiona <b>Reintentar importación</b></li>
-            </ol>
-            <div style={{position:'relative'}}>
-              <pre style={{fontSize:10.5,background:'var(--surface-2)',padding:'10px 12px',borderRadius:6,overflowX:'auto',margin:0,lineHeight:1.45,maxHeight:160}}>{SQL_DOCENTES}</pre>
-            </div>
+            {schemaErr && (
+              <>
+                <div style={{fontSize:13,lineHeight:1.55}}><b>Si ya ejecutaste el SQL</b> y el error persiste, lo más probable es uno de estos casos:</div>
+                <ul style={{fontSize:12.5,lineHeight:1.6,paddingLeft:20,margin:0}}>
+                  <li>Ejecutaste el SQL en un proyecto distinto de Supabase. Verifica que abriste <b>blobjumbgxqmgsorjchu</b></li>
+                  <li>El SQL falló silenciosamente (algún error de sintaxis o de permisos)</li>
+                  <li>La caché de PostgREST no se refrescó — corre <code>NOTIFY pgrst, 'reload schema';</code></li>
+                  <li>RLS está activado y bloquea el acceso — el script ya incluye <code>DISABLE ROW LEVEL SECURITY</code></li>
+                </ul>
+                <ol style={{fontSize:13,lineHeight:1.7,paddingLeft:20,margin:0}}>
+                  <li>Abre <a href="https://supabase.com/dashboard/project/blobjumbgxqmgsorjchu/sql/new" target="_blank" rel="noreferrer" style={{color:'var(--primary)',fontWeight:600}}>SQL Editor → Nuevo query ↗</a></li>
+                  <li>Copia el SQL con el botón <b>Copiar SQL</b></li>
+                  <li>Pégalo en el editor y presiona <b>Run</b></li>
+                  <li>Presiona <b>Reintentar</b></li>
+                </ol>
+                <details style={{fontSize:12}}>
+                  <summary style={{cursor:'pointer',padding:'4px 0'}}>Ver SQL completo</summary>
+                  <pre style={{fontSize:10.5,background:'var(--surface-2)',padding:'10px 12px',borderRadius:6,overflowX:'auto',margin:'6px 0 0',lineHeight:1.45,maxHeight:160}}>{SQL_DOCENTES}</pre>
+                </details>
+              </>
+            )}
             <div className="row" style={{gap:8,flexWrap:'wrap'}}>
               <button className="btn btn-primary btn-sm" onClick={copiarSQL} style={{minWidth:140}}>
                 {copied ? '✓ Copiado!' : '📋 Copiar SQL'}
               </button>
               <a href="https://supabase.com/dashboard/project/blobjumbgxqmgsorjchu/sql/new" target="_blank" rel="noreferrer" className="btn btn-ghost btn-sm">Abrir SQL Editor ↗</a>
-              <button className="btn btn-ghost btn-sm" onClick={ejecutar} disabled={importing}>🔄 Reintentar importación</button>
+              <button className="btn btn-ghost btn-sm" onClick={correrDiagnostico} disabled={diagBusy}>{diagBusy?'⏳ Probando…':'🔍 Diagnosticar conexión'}</button>
+              <button className="btn btn-ghost btn-sm" onClick={ejecutar} disabled={importing}>🔄 Reintentar</button>
             </div>
+
+            {diag && (
+              <div className="stack" style={{gap:8,padding:'10px 12px',background:'var(--surface-2)',borderRadius:8,marginTop:6}}>
+                <div style={{fontWeight:700,fontSize:13}}>🔍 Diagnóstico</div>
+                <div style={{fontSize:12,fontFamily:'monospace'}}>
+                  <div>URL Supabase: <b>{diag.url}</b></div>
+                  <div>Project ref: <b style={{color: diag.projectRef==='blobjumbgxqmgsorjchu' ? 'var(--success)' : 'var(--danger)'}}>{diag.projectRef}</b> {diag.projectRef==='blobjumbgxqmgsorjchu' ? '✓ correcto' : '⚠ NO coincide con el SQL Editor que abriste'}</div>
+                </div>
+                <table className="tbl" style={{fontSize:12}}>
+                  <thead><tr><th>Tabla</th><th>Estado</th><th>Detalle</th></tr></thead>
+                  <tbody>
+                    {Object.entries(diag.tablas||{}).map(([t,r]) => (
+                      <tr key={t}>
+                        <td><b>{t}</b></td>
+                        <td>{r.ok ? <span className="chip success">✓ accesible</span> : <span className="chip danger">✗ falla</span>}</td>
+                        <td style={{fontFamily:'monospace',fontSize:11}}>{r.ok ? `${r.count??0} filas` : (r.error||'').slice(0,150)}{r.code?` · code=${r.code}`:''}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+                <div style={{fontSize:11.5,color:'var(--text-muted)'}}>
+                  {diag.tablas?.docentes?.ok && <>✓ <b>La tabla docentes existe y es accesible.</b> Presiona <b>Reintentar</b> arriba.</>}
+                  {diag.tablas?.docentes && !diag.tablas.docentes.ok && diag.tablas?.salas?.ok &&
+                    <>✓ Otras tablas funcionan → la conexión a Supabase OK. ✗ Solo <b>docentes</b> falla → el SQL aún no se ejecutó en este proyecto. Vuelve a correrlo.</>}
+                  {diag.tablas?.salas && !diag.tablas.salas.ok &&
+                    <>⚠ Otras tablas también fallan. Puede ser un problema de red, de la anon key o del proyecto pausado.</>}
+                </div>
+              </div>
+            )}
           </div>
         )}
 
