@@ -1842,8 +1842,7 @@ function Login({ onLogin, db, mode, onReconfigure }){
     im.onerror = () => setImgOk(false);
     im.src = CAMPUS_IMG_URL;
   }, []);
-  const [role, setRole] = useState('admin');
-  const [username, setUsername] = useState('admin');
+  const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
   const [err, setErr] = useState('');
   const [busy, setBusy] = useState(false);
@@ -1854,16 +1853,10 @@ function Login({ onLogin, db, mode, onReconfigure }){
     try {
       const u = await db.login(username.trim(), password);
       if(!u){ setErr('Credenciales inválidas o usuario inactivo.'); return; }
-      if(u.role!==role){ setErr(`El usuario "${u.username}" no tiene rol ${ROLES[role].label}.`); return; }
       onLogin(u);
     } catch(e){
       setErr('Error: '+e.message);
     } finally { setBusy(false); }
-  };
-
-  const quickFill = (r) => {
-    const def = DEFAULT_USERS.find(d => d.role===r);
-    if(def){ setRole(r); setUsername(def.username); setPassword(def.password); setErr(''); }
   };
 
   return (
@@ -1887,19 +1880,11 @@ function Login({ onLogin, db, mode, onReconfigure }){
       <div className="login-form-wrap">
         <form className="login-card" onSubmit={submit}>
           <h2>Iniciar sesión</h2>
-          <div className="sub">Selecciona tu perfil para continuar</div>
-
-          <div className="role-chips">
-            {Object.entries(ROLES).map(([k,v]) => (
-              <div key={k} className={`role-chip ${role===k?'active':''}`} onClick={()=>{ setRole(k); quickFill(k); }}>
-                {v.label}
-              </div>
-            ))}
-          </div>
+          <div className="sub">Ingresa tus credenciales institucionales</div>
 
           <div className="field">
             <label>Usuario</label>
-            <input value={username} onChange={e=>setUsername(e.target.value)} placeholder="usuario" autoComplete="username"/>
+            <input value={username} onChange={e=>setUsername(e.target.value)} placeholder="usuario" autoComplete="username" autoFocus/>
           </div>
           <div className="field">
             <label>Contraseña</label>
@@ -1912,10 +1897,9 @@ function Login({ onLogin, db, mode, onReconfigure }){
 
           <div className="login-hint">
             <div className="row between" style={{marginBottom:6}}>
-              <span><b>Demo:</b> admin · reservador · usuario · pass <b>010203</b></span>
+              <span style={{fontSize:11.5,opacity:.85}}>El sistema asignará tus permisos según tu perfil registrado.</span>
               <span className={`chip ${mode==='cloud'?'success':'muted'}`}>{mode==='cloud'?'☁ Compartido':'💾 Local'}</span>
             </div>
-            <div style={{fontSize:11,opacity:.85}}>{ROLES[role]?.desc}</div>
             <div style={{marginTop:8,fontSize:11}}><a href="#" onClick={e=>{e.preventDefault();onReconfigure();}} style={{color:'var(--primary-2)',textDecoration:'underline'}}>Reconfigurar base de datos</a></div>
           </div>
         </form>
