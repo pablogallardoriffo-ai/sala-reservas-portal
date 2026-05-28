@@ -5686,6 +5686,7 @@ function Reservas({ reservas, data, user, toast, onGoNueva, onUpdateEstado }){
       <div className="row" style={{justifyContent:'space-between'}}>
         <div className="seg">
           <button className={tab==='lista'?'on':''} onClick={()=>setTab('lista')}>Listado de reservas</button>
+          {canApprove && <button className={tab==='resumen'?'on':''} onClick={()=>setTab('resumen')}>📊&nbsp;Dashboard</button>}
           <button className={tab==='libres'?'on':''} onClick={()=>setTab('libres')}>{I.search}&nbsp;Buscar espacios libres</button>
         </div>
         {tab==='lista' && (
@@ -5783,7 +5784,116 @@ function Reservas({ reservas, data, user, toast, onGoNueva, onUpdateEstado }){
         </div>
       </>}
 
+      {tab==='resumen' && canApprove && <ResumenReservas reservas={reservas} data={data}/>}
+
       {tab==='libres' && <BuscarLibres data={data} reservas={reservas} onGoNueva={onGoNueva}/>}
+    </div>
+  );
+}
+
+/* ========= DASHBOARD DE RESERVAS (sub-pestaña, admin/reservador) ========= */
+function ResumenReservas({ reservas, data }){
+  const salaTipoMap = useMemo(()=> new Map((data.salas||[]).map(s=>[s.codigo, s.tipo||'—'])), [data.salas]);
+  const fmtMes = (ym) => { const [y,m]=ym.split('-'); return new Date(Number(y), Number(m)-1, 1).toLocaleDateString('es-CL',{month:'short',year:'2-digit'}); };
+
+  const r = useMemo(()=>{
+    let pend=0, aprob=0, rech=0, recurrentes=0;
+    const porTipo=new Map(), porSala=new Map(), porMes=new Map(), porSolic=new Map(), porAprob=new Map();
+    for(const x of reservas){
+      if(x.es==='pendiente') pend++; else if(x.es==='aprobada') aprob++; else if(x.es==='rechazada') rech++;
+      if(x.dw && /1/.test(x.dw)) recurrentes++;
+      const tipo = salaTipoMap.get(x.r) || '—';
+      porTipo.set(tipo, (porTipo.get(tipo)||0)+1);
+      porSala.set(x.r||'—', (porSala.get(x.r||'—')||0)+1);
+      const ym = (x.fi||'').slice(0,7);
+      if(ym) porMes.set(ym, (porMes.get(ym)||0)+1);
+      const sol = (x.do||x.creado_por||'—').trim() || '—';
+      porSolic.set(sol, (porSolic.get(sol)||0)+1);
+      if(x.decidido_por) porAprob.set(x.decidido_por, (porAprob.get(x.decidido_por)||0)+1);
+    }
+    const decididas = aprob+rech;
+    const top = (m,n) => [...m.entries()].sort((a,b)=>b[1]-a[1]).slice(0,n);
+    return {
+      total: reservas.length, pend, aprob, rech, recurrentes,
+      pctAprob: decididas ? Math.round(aprob/decididas*100) : 0,
+      porTipo: top(porTipo,99), topSalas: top(porSala,10),
+      meses: [...porMes.entries()].sort((a,b)=>a[0].localeCompare(b[0])),
+      topSolic: top(porSolic,10), topAprob: top(porAprob,6),
+    };
+  },[reservas, salaTipoMap]);
+
+  if(!reservas.length) return <div className="card"><div className="empty"><span className="emoji">📊</span>Aún no hay reservas para analizar.</div></div>;
+
+  const Bar = ({label, value, max, color}) => (
+    <div>
+      <div className="row between" style={{marginBottom:4}}>
+        <span style={{fontWeight:600,fontSize:13,whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis',maxWidth:'78%'}} title={label}>{label}</span>
+        <span className="muted" style={{fontSize:12}}>{value}</span>
+      </div>
+      <div style={{height:8,background:'var(--border-soft)',borderRadius:6,overflow:'hidden'}}>
+        <div style={{height:'100%',width:`${max?Math.max(2,Math.round(value/max*100)):0}%`,background:color||'linear-gradient(90deg,var(--primary),var(--primary-2))'}}/>
+      </div>
+    </div>
+  );
+  const maxTipo  = Math.max(1, ...r.porTipo.map(x=>x[1]));
+  const maxSala  = Math.max(1, ...r.topSalas.map(x=>x[1]));
+  const maxMes   = Math.max(1, ...r.meses.map(x=>x[1]));
+  const maxSolic = Math.max(1, ...r.topSolic.map(x=>x[1]));
+  const maxAprob = Math.max(1, ...r.topAprob.map(x=>x[1]));
+
+  return (
+    <div className="stack">
+      <div className="grid grid-4">
+        <div className="kpi kpi-blue"><span className="label">Total reservas</span><span className="value">{r.total.toLocaleString('es-CL')}</span><span className="delta">{r.recurrentes} recurrente{r.recurrentes!==1?'s':''}</span><div className="icon">📋</div></div>
+        <div className="kpi kpi-amber"><span className="label">Pendientes</span><span className="value">{r.pend}</span><span className="delta">por decidir</span><div className="icon">⏳</div></div>
+        <div className="kpi kpi-green"><span className="label">Aprobadas</span><span className="value">{r.aprob}</span><span className="delta">{r.rech} rechazada{r.rech!==1?'s':''}</span><div className="icon">✓</div></div>
+        <div className="kpi kpi-red"><span className="label">% Aprobación</span><span className="value">{r.pctAprob}%</span><span className="delta">de las decididas</span><div className="icon">📈</div></div>
+      </div>
+
+      <div className="grid grid-2" style={{gap:14}}>
+        <div className="card">
+          <div className="card-header"><div><h3>📐 Por tipo de sala</h3><div className="sub">Reservas según tipo de recinto</div></div></div>
+          <div className="stack" style={{gap:10}}>
+            {r.porTipo.map(([k,v]) => <Bar key={k} label={k} value={v} max={maxTipo}/>)}
+          </div>
+        </div>
+        <div className="card">
+          <div className="card-header"><div><h3>🏫 Salas más reservadas</h3><div className="sub">Top {r.topSalas.length} recintos</div></div></div>
+          <div className="stack" style={{gap:10}}>
+            {r.topSalas.map(([k,v]) => <Bar key={k} label={k} value={v} max={maxSala} color="linear-gradient(90deg,var(--success),#34c759)"/>)}
+          </div>
+        </div>
+      </div>
+
+      <div className="card">
+        <div className="card-header"><div><h3>📅 Evolución por mes</h3><div className="sub">Reservas por mes, según la fecha de la reserva</div></div></div>
+        <div className="row" style={{gap:12,alignItems:'flex-end',height:170,overflowX:'auto',paddingTop:10}}>
+          {r.meses.map(([ym,v]) => (
+            <div key={ym} style={{display:'flex',flexDirection:'column',alignItems:'center',gap:6,minWidth:44}}>
+              <span style={{fontSize:11,fontWeight:700}}>{v}</span>
+              <div title={`${v} reserva${v!==1?'s':''}`} style={{width:28,height:`${Math.max(4,Math.round(v/maxMes*110))}px`,background:'linear-gradient(180deg,var(--primary),var(--primary-2))',borderRadius:'4px 4px 0 0'}}/>
+              <span className="muted" style={{fontSize:10,whiteSpace:'nowrap'}}>{fmtMes(ym)}</span>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      <div className="grid grid-2" style={{gap:14}}>
+        <div className="card">
+          <div className="card-header"><div><h3>👤 Quién reserva más</h3><div className="sub">Top {r.topSolic.length} solicitantes</div></div></div>
+          <div className="stack" style={{gap:10}}>
+            {r.topSolic.map(([k,v]) => <Bar key={k} label={k} value={v} max={maxSolic} color="linear-gradient(90deg,#ff9f0a,#ffb340)"/>)}
+          </div>
+        </div>
+        <div className="card">
+          <div className="card-header"><div><h3>🛡 Quién decide más</h3><div className="sub">Aprobaciones/rechazos por usuario</div></div></div>
+          {r.topAprob.length ? (
+            <div className="stack" style={{gap:10}}>
+              {r.topAprob.map(([k,v]) => <Bar key={k} label={k} value={v} max={maxAprob} color="linear-gradient(90deg,#5e5ce6,#7d7aff)"/>)}
+            </div>
+          ) : <div className="empty" style={{padding:'20px 0'}}><span className="muted">Aún no hay decisiones registradas.</span></div>}
+        </div>
+      </div>
     </div>
   );
 }
