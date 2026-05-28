@@ -5582,6 +5582,11 @@ NOTIFY pgrst, 'reload schema';`;
 
 const isSchemaError = (msg) =>
   /schema cache|relation.*does not exist|table.*not found|Could not find/i.test(msg||'');
+const isRlsError = (msg) =>
+  /row-level security|RLS|policy/i.test(msg||'');
+
+const SQL_FIX_RLS = `ALTER TABLE docentes DISABLE ROW LEVEL SECURITY;
+NOTIFY pgrst, 'reload schema';`;
 
 // Diagnóstico contra Supabase: prueba SELECT count a docentes y a otras tablas
 // conocidas para que el usuario sepa si el problema es la tabla, los permisos
@@ -5620,7 +5625,9 @@ function ImportarDocentes({ db, toast, onDone, docentes }){
   const [inactivar, setInactivar] = useState(true);
   const [resultado, setResultado] = useState(null);
   const [schemaErr, setSchemaErr] = useState(false);
+  const [rlsErr, setRlsErr] = useState(false);
   const [copied, setCopied] = useState(false);
+  const [copiedRls, setCopiedRls] = useState(false);
   const [diag, setDiag] = useState(null);
   const [diagBusy, setDiagBusy] = useState(false);
 
@@ -5629,6 +5636,9 @@ function ImportarDocentes({ db, toast, onDone, docentes }){
     try { setDiag(await diagnosticarSupabase()); }
     catch(e){ setDiag({ errores:[e.message] }); }
     finally { setDiagBusy(false); }
+  };
+  const copiarFixRls = () => {
+    navigator.clipboard?.writeText(SQL_FIX_RLS).then(()=>{ setCopiedRls(true); setTimeout(()=>setCopiedRls(false), 2500); });
   };
 
   const copiarSQL = () => {
@@ -5649,7 +5659,7 @@ function ImportarDocentes({ db, toast, onDone, docentes }){
   const [errFull, setErrFull] = useState('');
   const ejecutar = async () => {
     if(!preview || !preview.length){ toast('Nada que importar.'); return; }
-    setSchemaErr(false); setErrFull(''); setImporting(true);
+    setSchemaErr(false); setRlsErr(false); setErrFull(''); setImporting(true);
     try {
       const r = await db.bulkUpsertDocentes(preview, { inactivarAusentes: inactivar });
       setResultado(r);
@@ -5658,7 +5668,8 @@ function ImportarDocentes({ db, toast, onDone, docentes }){
     } catch(e){
       console.error(e);
       setErrFull(e.message || String(e));
-      if(isSchemaError(e.message)){ setSchemaErr(true); }
+      if(isRlsError(e.message)){ setRlsErr(true); }
+      else if(isSchemaError(e.message)){ setSchemaErr(true); }
       else { toast(`Error: ${e.message}`); }
     }
     finally { setImporting(false); }
@@ -5686,10 +5697,33 @@ function ImportarDocentes({ db, toast, onDone, docentes }){
 
         {errFull && (
           <div className="stack" style={{gap:10,padding:'16px',background:'rgba(255,69,58,.07)',border:'1px solid rgba(255,69,58,.35)',borderRadius:10}}>
-            <div style={{fontWeight:700,fontSize:14}}>{schemaErr ? '⚠ La tabla docentes no es accesible' : '⚠ Error al importar'}</div>
+            <div style={{fontWeight:700,fontSize:14}}>{rlsErr ? '⚠ Permisos bloqueados (RLS activo)' : schemaErr ? '⚠ La tabla docentes no es accesible' : '⚠ Error al importar'}</div>
             <div style={{fontSize:12,padding:'8px 10px',background:'var(--surface-2)',borderRadius:6,fontFamily:'monospace',wordBreak:'break-word'}}>
               <b>Mensaje de Supabase:</b><br/>{errFull}
             </div>
+            {rlsErr && (
+              <>
+                <div style={{fontSize:13,lineHeight:1.55}}>
+                  La tabla <b>existe</b> pero tiene <b>Row Level Security</b> activado y bloquea los inserts. Hay que desactivarlo (igual que el resto de tus tablas que ya funcionan).
+                </div>
+                <ol style={{fontSize:13,lineHeight:1.7,paddingLeft:20,margin:0}}>
+                  <li>Abre <a href="https://supabase.com/dashboard/project/blobjumbgxqmgsorjchu/sql/new" target="_blank" rel="noreferrer" style={{color:'var(--primary)',fontWeight:600}}>SQL Editor → Nuevo query ↗</a></li>
+                  <li>Pega este SQL (un solo comando):</li>
+                </ol>
+                <pre style={{fontSize:11.5,background:'var(--surface-2)',padding:'10px 12px',borderRadius:6,margin:0,lineHeight:1.45,whiteSpace:'pre-wrap'}}>{SQL_FIX_RLS}</pre>
+                <ol start="3" style={{fontSize:13,lineHeight:1.7,paddingLeft:20,margin:0}}>
+                  <li>Presiona <b>Run</b> (o Ctrl+Enter)</li>
+                  <li>Vuelve aquí y presiona <b>Reintentar</b></li>
+                </ol>
+                <div className="row" style={{gap:8,flexWrap:'wrap'}}>
+                  <button className="btn btn-primary btn-sm" onClick={copiarFixRls} style={{minWidth:140}}>
+                    {copiedRls ? '✓ Copiado!' : '📋 Copiar SQL (1 línea)'}
+                  </button>
+                  <a href="https://supabase.com/dashboard/project/blobjumbgxqmgsorjchu/sql/new" target="_blank" rel="noreferrer" className="btn btn-ghost btn-sm">Abrir SQL Editor ↗</a>
+                  <button className="btn btn-ghost btn-sm" onClick={ejecutar} disabled={importing}>🔄 Reintentar</button>
+                </div>
+              </>
+            )}
             {schemaErr && (
               <>
                 <div style={{fontSize:13,lineHeight:1.55}}><b>Si ya ejecutaste el SQL</b> y el error persiste, lo más probable es uno de estos casos:</div>
