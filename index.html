@@ -1611,6 +1611,38 @@ function createDb({ mode, supabase }){
     return true;
   };
 
+  /* ----- Log de cambios (audit trail) ----- */
+  // accion: 'crear' | 'modificar' | 'eliminar'
+  const logAuditoria = async (entry) => {
+    const row = {
+      audit_id: entry.audit_id || null,
+      accion:   entry.accion,
+      usuario:  entry.usuario || null,
+      anterior: entry.anterior ? JSON.stringify(entry.anterior) : null,
+      nuevo:    entry.nuevo ? JSON.stringify(entry.nuevo) : null,
+      detalle:  entry.detalle || null,
+      created_at: new Date().toISOString(),
+    };
+    if(isCloud){
+      try {
+        const { data, error } = await supabase.from('auditorias_log').insert(row).select().single();
+        if(error){ console.warn('logAuditoria fallo (tabla auditorias_log puede no existir):', error.message); return null; }
+        return data;
+      } catch(e){ console.warn('logAuditoria:', e.message); return null; }
+    }
+    const st = loadStore();
+    const lista = st.auditorias_log || [];
+    row.id = Date.now() + Math.floor(Math.random()*999);
+    lista.push(row);
+    saveStore({ ...st, auditorias_log:lista });
+    return row;
+  };
+  const loadAuditoriasLog = async () => {
+    if(isCloud) return await fetchAllSafe('auditorias_log', { order:'id' });
+    const st = loadStore();
+    return st.auditorias_log || [];
+  };
+
   return {
     isCloud, mode,
     loadAll, login,
@@ -1621,6 +1653,7 @@ function createDb({ mode, supabase }){
     createJefe, updateJefe, deleteJefe, logImport,
     subscribe, getStats, fetchAll, fetchAllSafe,
     loadAuditorias, saveAuditoria, deleteAuditoria,
+    logAuditoria, loadAuditoriasLog,
   };
 }
 
@@ -3311,8 +3344,54 @@ function HorarioDocente({ data }){
    - Config persistida en localStorage: modIni, modFin, n (cantidad).
 */
 const GESTIONES_PASSWORD = '010203';
+const GESTIONES_PASSWORD_KEY = 'sr_gestiones_pw_v1';   // localStorage (override de la default)
 const GESTIONES_CFG_KEY = 'sr_gestiones_cfg_v1';
 const GESTIONES_AUTH_KEY = 'sr_gestiones_auth_v1'; // sessionStorage
+const GESTIONES_LOCK_MIN_KEY = 'sr_gestiones_lock_min_v1';
+
+// Hash simple (FNV-1a 32-bit) — no es criptográfico pero alcanza para no
+// guardar la contraseña en texto plano en localStorage. La PW real sigue
+// siendo solo cliente; quien tenga acceso al device la puede inspeccionar
+// si se esfuerza, pero no se ve a simple vista.
+const hashPw = (str) => {
+  let h = 0x811c9dc5;
+  for(let i=0; i<str.length; i++){
+    h ^= str.charCodeAt(i);
+    h = Math.imul(h, 0x01000193);
+  }
+  return (h >>> 0).toString(16);
+};
+const verifyPw = (input) => {
+  const stored = localStorage.getItem(GESTIONES_PASSWORD_KEY);
+  if(stored) return hashPw(input) === stored;
+  return input === GESTIONES_PASSWORD;
+};
+
+// Normaliza la fecha del registro a YYYY-MM-DD (Supabase a veces devuelve
+// DATE como string ISO con tiempo si la columna se modificó por update).
+const normFechaIso = (f) => {
+  if(!f) return '';
+  const s = String(f);
+  return s.length >= 10 ? s.slice(0, 10) : s;
+};
+
+// Extrae "piso" aproximado del código de sala (ej. VI-S301 → 3, VI-LC10 → 1).
+// Asume formato común Duoc: 1 o 2 dígitos del piso al inicio del número.
+const pisoDeSala = (codigo) => {
+  if(!codigo) return 99;
+  const m = String(codigo).match(/-?[A-Z]+(\d+)/);
+  if(!m) return 99;
+  const n = m[1];
+  if(n.length >= 3) return Number(n[0]);    // 301 → 3
+  if(n.length === 2) return Number(n[0]);   // 12 → 1
+  return Number(n);                          // 5 → 5
+};
+// Prefijo "edificio implícito" cuando no hay metadata: VI-S, VI-LC, VI-AC...
+const edificioImplicito = (codigo) => {
+  if(!codigo) return 'ZZ';
+  const m = String(codigo).match(/^([A-Z]+-?[A-Z]+)/);
+  return m ? m[1] : 'ZZ';
+};
 
 // PRNG determinístico para que dos cargas del mismo día con el mismo
 // auditor produzcan exactamente la misma muestra. mulberry32 de tomas-vergara.
@@ -3353,9 +3432,10 @@ function Gestiones({ data, user, db, toast }){
   const [unlocked, setUnlocked] = useState(()=> sessionStorage.getItem(GESTIONES_AUTH_KEY)==='1');
   const [pw, setPw] = useState('');
   const [pwErr, setPwErr] = useState(false);
+  const [showPwChange, setShowPwChange] = useState(false);
   const tryUnlock = (e) => {
     if(e) e.preventDefault();
-    if(pw === GESTIONES_PASSWORD){
+    if(verifyPw(pw)){
       sessionStorage.setItem(GESTIONES_AUTH_KEY, '1');
       setUnlocked(true);
       setPw(''); setPwErr(false);
@@ -3364,6 +3444,35 @@ function Gestiones({ data, user, db, toast }){
     }
   };
   const lock = () => { sessionStorage.removeItem(GESTIONES_AUTH_KEY); setUnlocked(false); };
+
+  // === Auto-lock por inactividad ===
+  // Tiempo (minutos) configurable. 0 = desactivado. Default 10.
+  const [lockMin, setLockMin] = useState(()=>{
+    const v = Number(localStorage.getItem(GESTIONES_LOCK_MIN_KEY));
+    return isNaN(v) ? 10 : v;
+  });
+  const guardarLockMin = (n) => {
+    setLockMin(n);
+    localStorage.setItem(GESTIONES_LOCK_MIN_KEY, String(n));
+  };
+  useEffect(()=>{
+    if(!unlocked || lockMin <= 0) return;
+    let timer;
+    const reset = () => {
+      clearTimeout(timer);
+      timer = setTimeout(() => {
+        toast(`Bloqueado por ${lockMin} min de inactividad.`);
+        lock();
+      }, lockMin * 60 * 1000);
+    };
+    const evs = ['mousemove','keydown','click','touchstart','scroll'];
+    evs.forEach(e => window.addEventListener(e, reset, { passive:true }));
+    reset();
+    return () => {
+      clearTimeout(timer);
+      evs.forEach(e => window.removeEventListener(e, reset));
+    };
+  }, [unlocked, lockMin]);
 
   // === 2) Configuración persistida ===
   const [cfg, setCfg] = useState(()=>{
@@ -3407,6 +3516,9 @@ function Gestiones({ data, user, db, toast }){
   const [fecha, setFecha] = useState(isoDate(new Date()));
   // Bump para re-sortear cuando el admin hace click en "Re-sortear"
   const [reroll, setReroll] = useState(0);
+  // Orden de la muestra: por ruta física (edificio → piso) vs por hora.
+  const [ordenRuta, setOrdenRuta] = useState(()=> localStorage.getItem('sr_gestiones_orden_ruta_v1') === '1');
+  const setOrdenRutaPers = (v) => { setOrdenRuta(v); localStorage.setItem('sr_gestiones_orden_ruta_v1', v?'1':'0'); };
 
   // === 6) Sub-pestaña: 'recorrido' | 'panel' ===
   const [tab, setTab] = useState('recorrido');
@@ -3426,21 +3538,35 @@ function Gestiones({ data, user, db, toast }){
     const dedup = new Set();
     const esHoy = fecha === isoDate(new Date());
     const ahoraHM = `${String(now.getHours()).padStart(2,'0')}:${String(now.getMinutes()).padStart(2,'0')}`;
+
+    // Coordinación entre auditores: claves de clases ya cubiertas por OTROS
+    // auditores en la misma fecha (existe registro guardado por otro user).
+    // Así dos auditores nunca ven la misma clase en su sorteo.
+    const cubiertasPorOtros = new Set();
+    for(const a of auditorias){
+      if(!a.fecha || normFechaIso(a.fecha) !== fecha) continue;
+      if(a.auditor === user.username) continue;
+      const k = `${a.seccion||''}|${a.sala||''}|${a.hora_inicio||''}|${a.hora_fin||''}`;
+      cubiertasPorOtros.add(k);
+    }
+
     const out = [];
     for(const s of sess){
       if(!s.d) continue; // sin docente identificado
       const sala = salaInfoMap.get(s.s);
       if(!esSalaAuditable(sala)) continue;
       if(s.hi < hLimIni || s.hf > hLimFin) continue;
-      // Si es hoy, solo clases que aún no terminaron
       if(esHoy && s.hf <= ahoraHM) continue;
+      // Excluir si otro auditor ya empezó (o terminó) esta clase
+      const kOtros = `${s.sc||''}|${s.s||''}|${s.hi}|${s.hf}`;
+      if(cubiertasPorOtros.has(kOtros)) continue;
       const k = `${s.sc||''}|${s.s||''}|${s.hi}|${s.hf}|${fecha}`;
       if(dedup.has(k)) continue;
       dedup.add(k);
       out.push(s);
     }
     return out;
-  }, [unlocked, data, fecha, cfg.modIni, cfg.modFin, now, reroll]);
+  }, [unlocked, data, fecha, cfg.modIni, cfg.modFin, now, reroll, auditorias, user.username]);
 
   // Sorteo determinístico: misma muestra para mismo (fecha + auditor)
   // Sample estratificado: maximiza diversidad de escuelas en la muestra y,
@@ -3506,8 +3632,27 @@ function Gestiones({ data, user, db, toast }){
         }
       }
     }
+    // Ruta optimizada: ordena por edificio (si existe) → piso → hora.
+    // Reduce caminata del auditor agrupando salas físicamente cercanas.
+    if(ordenRuta){
+      const salaInfoMap2 = new Map(data.salas.map(s => [s.codigo, s]));
+      seleccion.sort((a,b) => {
+        const sa = salaInfoMap2.get(a.s) || {};
+        const sb = salaInfoMap2.get(b.s) || {};
+        const ea = sa.edificio || edificioImplicito(a.s);
+        const eb = sb.edificio || edificioImplicito(b.s);
+        if(ea !== eb) return ea.localeCompare(eb);
+        const pa = pisoDeSala(a.s), pb = pisoDeSala(b.s);
+        if(pa !== pb) return pa - pb;
+        if(a.s !== b.s) return (a.s||'').localeCompare(b.s||'');
+        return (a.hi||'').localeCompare(b.hi||'');
+      });
+    } else {
+      // Orden por hora cuando ruta desactivada
+      seleccion.sort((a,b) => (a.hi||'').localeCompare(b.hi||''));
+    }
     return seleccion;
-  }, [candidatas, fecha, user.username, cfg.n, reroll]);
+  }, [candidatas, fecha, user.username, cfg.n, reroll, ordenRuta, data.salas]);
 
   // === 8) Índice de auditorías existentes para esta fecha + auditor ===
   // Clave única por (fecha, sección, sala, hora_inicio, hora_fin) — sólo
@@ -3557,8 +3702,17 @@ function Gestiones({ data, user, db, toast }){
       ...patch,
     };
     try {
+      const esNuevo = !prev;
       const saved = await db.saveAuditoria(row);
-      // refrescar lista local sin recargar todo
+      // Audit log (no bloquea si falla)
+      db.logAuditoria && db.logAuditoria({
+        audit_id: saved.id,
+        accion: esNuevo ? 'crear' : 'modificar',
+        usuario: user.username,
+        anterior: esNuevo ? null : prev,
+        nuevo: saved,
+        detalle: esNuevo ? 'Primer registro' : `Actualizó ${Object.keys(patch).join(', ')}`,
+      });
       setAuditorias(list => {
         const i = list.findIndex(x => x.id === saved.id);
         if(i >= 0){ const next = list.slice(); next[i] = saved; return next; }
@@ -3598,22 +3752,43 @@ function Gestiones({ data, user, db, toast }){
 
   return (
     <div className="stack">
-      {/* Header con sub-tabs y botón lock */}
+      {/* Header con sub-tabs y configuración */}
       <div className="card">
         <div className="card-header">
           <div>
             <h3>🔒 Gestiones</h3>
-            <div className="sub">Usuario: <b>{user.nombre || user.username}</b> · Los registros quedan asociados a tu cuenta.</div>
+            <div className="sub">
+              Usuario: <b>{user.nombre || user.username}</b> · Los registros quedan asociados a tu cuenta.
+              {lockMin > 0 && <> · Auto-bloqueo en {lockMin} min de inactividad.</>}
+            </div>
           </div>
-          <div className="row" style={{gap:8}}>
+          <div className="row" style={{gap:8,flexWrap:'wrap'}}>
+            <div className="field" style={{maxWidth:160}}>
+              <label style={{fontSize:10}}>Auto-bloqueo</label>
+              <select value={lockMin} onChange={e=>guardarLockMin(Number(e.target.value))} style={{padding:'4px 8px',fontSize:12}}>
+                <option value="0">Desactivado</option>
+                <option value="5">5 min</option>
+                <option value="10">10 min</option>
+                <option value="15">15 min</option>
+                <option value="30">30 min</option>
+                <option value="60">60 min</option>
+              </select>
+            </div>
+            <button className="btn btn-ghost" style={{fontSize:12,padding:'6px 12px'}} onClick={()=>setShowPwChange(true)}>🔑 Cambiar contraseña</button>
             <button className="btn btn-ghost" style={{fontSize:12,padding:'6px 12px'}} onClick={lock}>🔒 Bloquear</button>
           </div>
         </div>
         <div className="seg" style={{marginTop:4}}>
           <button className={tab==='recorrido'?'active':''} onClick={()=>setTab('recorrido')}>📋 Listado</button>
           <button className={tab==='panel'?'active':''} onClick={()=>setTab('panel')}>📊 Resumen</button>
+          <button className={tab==='log'?'active':''} onClick={()=>setTab('log')}>📜 Cambios</button>
         </div>
       </div>
+
+      {/* Modal cambiar contraseña */}
+      {showPwChange && (
+        <ModalCambioPw onClose={()=>setShowPwChange(false)} toast={toast}/>
+      )}
 
       {tab==='recorrido' && (
         <GestionesRecorrido
@@ -3624,6 +3799,8 @@ function Gestiones({ data, user, db, toast }){
           onSave={guardarItem}
           onReroll={()=> setReroll(r => r+1)}
           loading={loadingA}
+          ordenRuta={ordenRuta}
+          setOrdenRuta={setOrdenRutaPers}
         />
       )}
       {tab==='panel' && (
@@ -3632,17 +3809,160 @@ function Gestiones({ data, user, db, toast }){
           auditorias={auditorias}
           loading={loadingA}
           onReload={recargar}
-          onSave={async (row) => { try { const saved = await db.saveAuditoria(row); setAuditorias(list => { const i = list.findIndex(x => x.id === saved.id); if(i>=0){ const n = list.slice(); n[i] = saved; return n; } return [...list, saved]; }); toast('Registro actualizado.'); return saved; } catch(e){ toast(`Error: ${e.message}`); throw e; } }}
-          onDelete={async (id) => { try { await db.deleteAuditoria(id); setAuditorias(list => list.filter(x => x.id !== id)); toast('Registro eliminado.'); } catch(e){ toast(`Error: ${e.message}`); } }}
+          onSave={async (row) => {
+            try {
+              const prev = auditorias.find(x => x.id === row.id);
+              const saved = await db.saveAuditoria(row);
+              db.logAuditoria && db.logAuditoria({ audit_id:saved.id, accion:'modificar', usuario:user.username, anterior:prev, nuevo:saved, detalle:'Edición desde Resumen' });
+              setAuditorias(list => { const i = list.findIndex(x => x.id === saved.id); if(i>=0){ const n = list.slice(); n[i] = saved; return n; } return [...list, saved]; });
+              toast('Registro actualizado.');
+              return saved;
+            } catch(e){ toast(`Error: ${e.message}`); throw e; }
+          }}
+          onDelete={async (id) => {
+            try {
+              const prev = auditorias.find(x => x.id === id);
+              await db.deleteAuditoria(id);
+              db.logAuditoria && db.logAuditoria({ audit_id:id, accion:'eliminar', usuario:user.username, anterior:prev, nuevo:null, detalle:'Eliminado desde Resumen' });
+              setAuditorias(list => list.filter(x => x.id !== id));
+              toast('Registro eliminado.');
+            } catch(e){ toast(`Error: ${e.message}`); }
+          }}
           activo={tab==='panel'}
         />
+      )}
+      {tab==='log' && <GestionesLog db={db}/>}
+    </div>
+  );
+}
+
+/* ----- Modal · Cambiar contraseña ----- */
+function ModalCambioPw({ onClose, toast }){
+  const [actual, setActual] = useState('');
+  const [nueva, setNueva] = useState('');
+  const [conf, setConf] = useState('');
+  const [err, setErr] = useState('');
+  const guardar = () => {
+    setErr('');
+    if(!verifyPw(actual)){ setErr('Contraseña actual incorrecta.'); return; }
+    if(nueva.length < 4){ setErr('La nueva contraseña debe tener al menos 4 caracteres.'); return; }
+    if(nueva !== conf){ setErr('La confirmación no coincide.'); return; }
+    localStorage.setItem(GESTIONES_PASSWORD_KEY, hashPw(nueva));
+    toast('Contraseña actualizada.');
+    onClose();
+  };
+  const restaurar = () => {
+    if(!window.confirm('¿Restaurar la contraseña original (010203)?')) return;
+    localStorage.removeItem(GESTIONES_PASSWORD_KEY);
+    toast('Contraseña restaurada a la original.');
+    onClose();
+  };
+  return (
+    <Modal title="🔑 Cambiar contraseña" onClose={onClose} onSave={guardar}>
+      <div className="stack" style={{gap:10}}>
+        <div className="field">
+          <label>Contraseña actual</label>
+          <input type="password" value={actual} onChange={e=>{setActual(e.target.value); setErr('');}} autoFocus/>
+        </div>
+        <div className="field">
+          <label>Nueva contraseña (mín. 4 caracteres)</label>
+          <input type="password" value={nueva} onChange={e=>{setNueva(e.target.value); setErr('');}}/>
+        </div>
+        <div className="field">
+          <label>Confirmar nueva contraseña</label>
+          <input type="password" value={conf} onChange={e=>{setConf(e.target.value); setErr('');}}/>
+        </div>
+        {err && <div style={{color:'var(--danger)',fontSize:12.5,padding:'8px 10px',background:'rgba(255,69,58,.08)',borderRadius:6}}>⚠ {err}</div>}
+        <div className="muted" style={{fontSize:11.5,padding:'8px 10px',background:'var(--surface-2)',borderRadius:6}}>
+          La contraseña se guarda solo en este dispositivo. Si la cambias y la olvidas, puedes restaurarla desde aquí.
+        </div>
+        <button type="button" className="btn btn-ghost btn-sm" onClick={restaurar}>Restaurar contraseña original</button>
+      </div>
+    </Modal>
+  );
+}
+
+/* ----- Sub-tab · Log de cambios ----- */
+function GestionesLog({ db }){
+  const [entries, setEntries] = useState([]);
+  const [loading, setLoading] = useState(false);
+  const recargar = async () => {
+    if(!db) return;
+    setLoading(true);
+    try { setEntries((await db.loadAuditoriasLog()).slice().reverse()); }
+    catch(e){ console.error('loadAuditoriasLog:', e); }
+    finally { setLoading(false); }
+  };
+  useEffect(()=>{ recargar(); }, [db]);
+
+  const fmtCambios = (e) => {
+    if(e.accion === 'crear') return e.detalle || 'Primer registro';
+    if(e.accion === 'eliminar') return 'Registro eliminado';
+    // modificar — comparar anterior vs nuevo
+    try {
+      const ant = e.anterior ? JSON.parse(e.anterior) : {};
+      const nv  = e.nuevo ? JSON.parse(e.nuevo) : {};
+      const cambios = [];
+      const campos = ['llego_a_hora','hora_llegada','obs_inicio','termino_a_hora','hora_salida','obs_fin'];
+      for(const c of campos){
+        if(ant[c] !== nv[c]){
+          const labels = { llego_a_hora:'Conforme inicio', hora_llegada:'Hora real inicio', obs_inicio:'Obs inicio', termino_a_hora:'Conforme término', hora_salida:'Hora real término', obs_fin:'Obs término' };
+          const before = ant[c] == null ? '—' : String(ant[c]).slice(0,40);
+          const after  = nv[c] == null ? '—' : String(nv[c]).slice(0,40);
+          cambios.push(`${labels[c]}: "${before}" → "${after}"`);
+        }
+      }
+      return cambios.length ? cambios.join('  ·  ') : (e.detalle || '—');
+    } catch { return e.detalle || '—'; }
+  };
+
+  return (
+    <div className="card" style={{padding:0}}>
+      <div className="card-header" style={{padding:'14px 18px'}}>
+        <div>
+          <h3>📜 Log de cambios</h3>
+          <div className="sub">{entries.length.toLocaleString('es-CL')} eventos · más recientes arriba. Quién cambió qué y cuándo.</div>
+        </div>
+        <button className="btn btn-ghost" style={{fontSize:12,padding:'6px 12px'}} onClick={recargar}>🔄 Recargar</button>
+      </div>
+      {loading ? (
+        <div className="loader"><div className="spinner"/><div>Cargando…</div></div>
+      ) : (
+        <div className="tbl-scroll" style={{maxHeight:600}}>
+          <table className="tbl">
+            <thead><tr><th>Fecha</th><th>Usuario</th><th>Acción</th><th>Registro</th><th>Cambios</th></tr></thead>
+            <tbody>
+              {entries.map((e,i) => {
+                let resumen = '—';
+                try {
+                  const fuente = e.nuevo || e.anterior;
+                  if(fuente){
+                    const obj = JSON.parse(fuente);
+                    resumen = `${obj.sala||'—'} · ${obj.seccion||'—'} · ${normFechaIso(obj.fecha)} ${obj.hora_inicio||''}`;
+                  }
+                } catch {}
+                const accColor = e.accion === 'crear' ? 'success' : e.accion === 'eliminar' ? 'danger' : 'info';
+                return (
+                  <tr key={i}>
+                    <td className="muted" style={{fontSize:12,whiteSpace:'nowrap'}}>{new Date(e.created_at).toLocaleString('es-CL',{day:'2-digit',month:'2-digit',year:'2-digit',hour:'2-digit',minute:'2-digit'})}</td>
+                    <td><b>{e.usuario||'—'}</b></td>
+                    <td><span className={`chip ${accColor}`}>{e.accion}</span></td>
+                    <td style={{fontSize:12.5}}>{resumen}</td>
+                    <td style={{fontSize:12,color:'var(--text-muted)',maxWidth:520}}>{fmtCambios(e)}</td>
+                  </tr>
+                );
+              })}
+              {entries.length===0 && <tr><td colSpan="5"><div className="empty"><span className="emoji">📭</span>Sin eventos registrados.</div></td></tr>}
+            </tbody>
+          </table>
+        </div>
       )}
     </div>
   );
 }
 
 /* ----- SUB-COMPONENTE: Recorrido (lista de auditorías por hacer) ----- */
-function GestionesRecorrido({ data, user, fecha, setFecha, cfg, guardarCfg, muestra, candidatas, auditIdx, now, onSave, onReroll, loading }){
+function GestionesRecorrido({ data, user, fecha, setFecha, cfg, guardarCfg, muestra, candidatas, auditIdx, now, onSave, onReroll, loading, ordenRuta, setOrdenRuta }){
   const todayIso = isoDate(new Date());
   const ahoraMin = now.getHours()*60 + now.getMinutes();
   const esHoy = fecha === todayIso;
@@ -3665,6 +3985,35 @@ function GestionesRecorrido({ data, user, fecha, setFecha, cfg, guardarCfg, mues
     return ahoraMin >= a && ahoraMin < b;
   });
 
+  // Compartir / exportar listado del día
+  const buildResumenTexto = () => {
+    const fech = new Date(fecha+'T00:00:00').toLocaleDateString('es-CL',{weekday:'long',day:'2-digit',month:'long'});
+    const lineas = [
+      `📋 Listado · ${fech}`,
+      `Usuario: ${user.nombre || user.username}`,
+      `${muestra.length} ítems${ordenRuta?' · ordenados por ruta':' · ordenados por hora'}`,
+      '',
+      ...muestra.map((s,i)=>`${i+1}. ${s.hi}–${s.hf} · ${s.s} · ${s.sc||'—'}\n   ${s.d||'—'}${s.es?' · '+(ESCUELAS_FULL[s.es]||s.es):''}\n   ${(s.a||s.de||'').slice(0,50)}`),
+    ];
+    return lineas.join('\n');
+  };
+  const compartir = async () => {
+    const texto = buildResumenTexto();
+    try {
+      if(navigator.share){
+        await navigator.share({ title:'Listado', text:texto });
+      } else {
+        await navigator.clipboard.writeText(texto);
+        alert('Listado copiado al portapapeles.');
+      }
+    } catch(e){ /* cancelado */ }
+  };
+  const imprimir = () => window.print();
+  const copiarTexto = async () => {
+    try { await navigator.clipboard.writeText(buildResumenTexto()); alert('Listado copiado al portapapeles.'); }
+    catch { alert('No se pudo copiar.'); }
+  };
+
   return (
     <>
       {/* Configuración */}
@@ -3674,7 +4023,16 @@ function GestionesRecorrido({ data, user, fecha, setFecha, cfg, guardarCfg, mues
             <h3>⚙ Configuración</h3>
             <div className="sub">Edita los parámetros. La selección es estable por <b>fecha + usuario</b> (no cambia al recargar).</div>
           </div>
-          <button className="btn btn-ghost" style={{fontSize:12,padding:'6px 12px'}} onClick={onReroll}>🔀 Re-generar</button>
+          <div className="row" style={{gap:6,flexWrap:'wrap'}}>
+            <label className="row" style={{gap:6,fontSize:12,alignItems:'center',padding:'6px 10px',background:'var(--surface-2)',borderRadius:6,cursor:'pointer'}}>
+              <input type="checkbox" checked={ordenRuta} onChange={e=>setOrdenRuta(e.target.checked)}/>
+              🗺 Orden por ruta física
+            </label>
+            <button className="btn btn-ghost" style={{fontSize:12,padding:'6px 12px'}} onClick={compartir} title="WhatsApp / compartir nativo">📤 Compartir</button>
+            <button className="btn btn-ghost" style={{fontSize:12,padding:'6px 12px'}} onClick={copiarTexto} title="Copiar al portapapeles">📋 Copiar</button>
+            <button className="btn btn-ghost" style={{fontSize:12,padding:'6px 12px'}} onClick={imprimir} title="Imprimir / PDF">🖨 Imprimir</button>
+            <button className="btn btn-ghost" style={{fontSize:12,padding:'6px 12px'}} onClick={onReroll}>🔀 Re-generar</button>
+          </div>
         </div>
         <div className="filters">
           <div className="field" style={{maxWidth:170}}>
@@ -4001,13 +4359,7 @@ function GestionesPanel({ data, auditorias, loading, onReload, onSave, onDelete,
   // guardados en otra sesión / dispositivo / por otro auditor.
   useEffect(()=>{ if(activo && onReload) onReload(); }, [activo]);
 
-  // Normaliza la fecha del registro a YYYY-MM-DD (Supabase a veces devuelve
-  // DATE como string ISO con tiempo si la columna se modificó por update).
-  const normFecha = (f) => {
-    if(!f) return '';
-    const s = String(f);
-    return s.length >= 10 ? s.slice(0, 10) : s;
-  };
+  const normFecha = normFechaIso;
 
   const filtradas = useMemo(()=> {
     const qn = q.trim().toLowerCase();
@@ -4168,6 +4520,73 @@ function GestionesPanel({ data, auditorias, loading, onReload, onSave, onDelete,
     URL.revokeObjectURL(url);
   };
 
+  // Reporte por jefatura: agrupa los registros filtrados por jefe directo
+  // (vía data.docente_jefes) e imprime en HTML formal para que vaya como PDF.
+  const reportePorJefatura = () => {
+    const jefaturaIdx = new Map();
+    for(const j of (data.docente_jefes||[])){
+      const k = (j.docente||'').trim().toLowerCase();
+      if(k && !jefaturaIdx.has(k)) jefaturaIdx.set(k, j);
+    }
+    const grupos = new Map();
+    for(const a of filtradas){
+      if(!a.docente) continue;
+      const j = jefaturaIdx.get((a.docente||'').trim().toLowerCase());
+      const jKey = j ? j.jefe : '(Sin jefatura asignada)';
+      if(!grupos.has(jKey)) grupos.set(jKey, { jefe:jKey, jefe_correo: j?.jefe_correo || '', escuela: j?.escuela || '', filas:[] });
+      grupos.get(jKey).filas.push(a);
+    }
+    const html = `<!doctype html><html lang="es"><head><meta charset="utf-8"><title>Reporte por jefatura</title>
+<style>
+  body{font-family:'Inter','Segoe UI',sans-serif;color:#1a1a1a;padding:24px;font-size:12px}
+  h1{font-size:18px;color:#003C82;margin:0 0 6px 0}
+  h2{font-size:14px;color:#003C82;margin:24px 0 8px 0;border-bottom:2px solid #003C82;padding-bottom:4px}
+  .sub{color:#555;font-size:11px;margin-bottom:18px}
+  .resumen{background:#f5f7fa;padding:10px 14px;border-radius:6px;margin-bottom:8px;font-size:11.5px}
+  table{width:100%;border-collapse:collapse;margin-top:6px;font-size:10.5px}
+  th{background:#0E1A33;color:#fff;padding:6px 8px;text-align:left;font-weight:700}
+  td{padding:5px 8px;border-bottom:1px solid #e0e4ec;vertical-align:top}
+  tr:nth-child(even) td{background:#fafbfd}
+  .si{color:#1A8045;font-weight:700}
+  .no{color:#C0392B;font-weight:700}
+  .obs{color:#666;font-style:italic;font-size:10px}
+  @media print { @page { size:A4; margin:14mm } }
+</style></head><body>
+<h1>Reporte por jefatura</h1>
+<div class="sub">Sede Viña del Mar · Período: ${desde} → ${hasta} · Generado: ${new Date().toLocaleString('es-CL')} · ${filtradas.length} registros</div>
+${[...grupos.values()].sort((a,b)=> b.filas.length - a.filas.length).map(g => {
+  const total = g.filas.length;
+  const conIni = g.filas.filter(x => x.llego_a_hora).length;
+  const conFin = g.filas.filter(x => x.termino_a_hora).length;
+  const siIni = g.filas.filter(x => x.llego_a_hora==='si').length;
+  const siFin = g.filas.filter(x => x.termino_a_hora==='si').length;
+  const pctIni = conIni>0 ? Math.round(siIni/conIni*100) : null;
+  const pctFin = conFin>0 ? Math.round(siFin/conFin*100) : null;
+  const docentes = [...new Set(g.filas.map(x => x.docente).filter(Boolean))].length;
+  return `<h2>${g.jefe}${g.escuela?` · ${ESCUELAS_FULL[g.escuela]||g.escuela}`:''}${g.jefe_correo?` · ${g.jefe_correo}`:''}</h2>
+<div class="resumen">${docentes} personas · ${total} registros · ${pctIni!=null?`<b>${pctIni}%</b> conforme inicio`:'sin datos de inicio'} · ${pctFin!=null?`<b>${pctFin}%</b> conforme término`:'sin datos de término'}</div>
+<table><thead><tr><th>Fecha</th><th>Persona</th><th>Sección</th><th>Recinto</th><th>Inicio</th><th>Término</th><th>Observaciones</th></tr></thead><tbody>
+${g.filas.sort((a,b)=> (b.fecha||'').localeCompare(a.fecha||'')).map(r => {
+  const obs = [r.obs_inicio?`Inicio: ${r.obs_inicio}`:'', r.obs_fin?`Término: ${r.obs_fin}`:''].filter(Boolean).join(' · ');
+  return `<tr>
+    <td>${normFecha(r.fecha)}<br><small>${r.hora_inicio||''}–${r.hora_fin||''}</small></td>
+    <td><b>${r.docente||'—'}</b><br><small>${(r.asignatura||'').slice(0,50)}</small></td>
+    <td>${r.seccion||'—'}</td>
+    <td>${r.sala||'—'}</td>
+    <td>${r.llego_a_hora==='si'?'<span class="si">✓</span>':r.llego_a_hora==='no'?'<span class="no">✗</span>':'—'} ${r.hora_llegada||''}</td>
+    <td>${r.termino_a_hora==='si'?'<span class="si">✓</span>':r.termino_a_hora==='no'?'<span class="no">✗</span>':'—'} ${r.hora_salida||''}</td>
+    <td class="obs">${obs||'—'}</td>
+  </tr>`;
+}).join('')}
+</tbody></table>`;
+}).join('')}
+<scr${''}ipt>window.onload=()=>{setTimeout(()=>window.print(),500);}</scr${''}ipt>
+</body></html>`;
+    const w = window.open('', '_blank');
+    if(!w){ alert('Habilita ventanas emergentes para abrir el reporte.'); return; }
+    w.document.write(html); w.document.close();
+  };
+
   return (
     <>
       <div className="card">
@@ -4180,9 +4599,10 @@ function GestionesPanel({ data, auditorias, loading, onReload, onSave, onDelete,
               {auditorias.length === 0 && <> · <span style={{color:'var(--danger)'}}>Sin registros guardados aún — prueba en <b>📋 Listado</b></span></>}
             </div>
           </div>
-          <div className="row" style={{gap:6}}>
+          <div className="row" style={{gap:6,flexWrap:'wrap'}}>
             <button className="btn btn-ghost" style={{fontSize:12,padding:'6px 12px'}} onClick={onReload}>🔄 Recargar</button>
             <button className="btn btn-ghost" style={{fontSize:12,padding:'6px 12px'}} onClick={exportarCSV}>📥 CSV</button>
+            <button className="btn btn-ghost" style={{fontSize:12,padding:'6px 12px'}} onClick={reportePorJefatura}>📄 PDF por jefatura</button>
           </div>
         </div>
         <div className="filters">

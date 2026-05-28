@@ -122,6 +122,20 @@ CREATE INDEX IF NOT EXISTS idx_audit_fecha ON auditorias(fecha);
 CREATE INDEX IF NOT EXISTS idx_audit_auditor ON auditorias(auditor);
 CREATE INDEX IF NOT EXISTS idx_audit_seccion ON auditorias(seccion);
 
+-- LOG DE CAMBIOS de auditorías (audit trail interno)
+CREATE TABLE IF NOT EXISTS auditorias_log (
+  id          BIGSERIAL PRIMARY KEY,
+  audit_id    BIGINT,            -- id de la fila en 'auditorias' (puede ser null si ya fue eliminada)
+  accion      TEXT NOT NULL,     -- 'crear' | 'modificar' | 'eliminar'
+  usuario     TEXT,              -- username del admin que hizo el cambio
+  anterior    JSONB,             -- snapshot previo (null en 'crear')
+  nuevo       JSONB,             -- snapshot nuevo (null en 'eliminar')
+  detalle     TEXT,              -- nota libre
+  created_at  TIMESTAMPTZ DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_audit_log_audit_id ON auditorias_log(audit_id);
+CREATE INDEX IF NOT EXISTS idx_audit_log_usuario  ON auditorias_log(usuario);
+
 -- RESERVAS
 CREATE TABLE IF NOT EXISTS reservas (
   id            BIGSERIAL PRIMARY KEY,
