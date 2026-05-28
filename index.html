@@ -5558,6 +5558,31 @@ function ModalEditarDocente({ row, onClose, onSave, catalogos }){
 }
 
 /* ----- Sub: Importar Excel de docentes ----- */
+const SQL_DOCENTES = `CREATE TABLE IF NOT EXISTS docentes (
+  id BIGSERIAL PRIMARY KEY,
+  duoc_id TEXT, rut TEXT UNIQUE, estado TEXT DEFAULT 'ACTIVO',
+  apellido1 TEXT, apellido2 TEXT, nombres TEXT, nombre TEXT NOT NULL,
+  correo TEXT, correo_personal TEXT, telefono TEXT,
+  fecha_nacimiento DATE, genero TEXT,
+  hora_docente INT, valor_mensual INT, banda_salarial TEXT,
+  jmg_semanal INT, jmg_horas INT, sede_ceco TEXT,
+  categoria TEXT, plazo_contractual TEXT, sindicalizacion TEXT,
+  jefe_id TEXT, jefe TEXT,
+  region TEXT, ciudad TEXT, comuna TEXT, direccion TEXT, adicional TEXT,
+  asignatura_activa BOOLEAN,
+  escuela TEXT, notas TEXT,
+  importado_en TIMESTAMPTZ, updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_docentes_categoria ON docentes(categoria);
+CREATE INDEX IF NOT EXISTS idx_docentes_jefe ON docentes(jefe);
+CREATE INDEX IF NOT EXISTS idx_docentes_estado ON docentes(estado);
+CREATE INDEX IF NOT EXISTS idx_docentes_rut ON docentes(rut);
+ALTER TABLE docentes DISABLE ROW LEVEL SECURITY;
+NOTIFY pgrst, 'reload schema';`;
+
+const isSchemaError = (msg) =>
+  /schema cache|relation.*does not exist|table.*not found|Could not find/i.test(msg||'');
+
 function ImportarDocentes({ db, toast, onDone, docentes }){
   const [file, setFile] = useState(null);
   const [preview, setPreview] = useState(null);
@@ -5565,10 +5590,16 @@ function ImportarDocentes({ db, toast, onDone, docentes }){
   const [importing, setImporting] = useState(false);
   const [inactivar, setInactivar] = useState(true);
   const [resultado, setResultado] = useState(null);
+  const [schemaErr, setSchemaErr] = useState(false);
+  const [copied, setCopied] = useState(false);
+
+  const copiarSQL = () => {
+    navigator.clipboard?.writeText(SQL_DOCENTES).then(()=>{ setCopied(true); setTimeout(()=>setCopied(false), 2500); });
+  };
 
   const handleFile = async (f) => {
     if(!f) return;
-    setFile(f); setResultado(null); setPreview(null); setParsing(true);
+    setFile(f); setResultado(null); setPreview(null); setParsing(false); setSchemaErr(false); setParsing(true);
     try {
       if(!window.XLSX){ throw new Error('Librería XLSX no cargada. Recarga la página.'); }
       const rows = await parseDocentesXLSX(f);
@@ -5579,13 +5610,17 @@ function ImportarDocentes({ db, toast, onDone, docentes }){
 
   const ejecutar = async () => {
     if(!preview || !preview.length){ toast('Nada que importar.'); return; }
-    setImporting(true);
+    setSchemaErr(false); setImporting(true);
     try {
       const r = await db.bulkUpsertDocentes(preview, { inactivarAusentes: inactivar });
       setResultado(r);
       toast(`Importación lista: ${r.actualizados} procesados${r.inactivados?`, ${r.inactivados} inactivados`:''}.`);
       onDone && onDone();
-    } catch(e){ console.error(e); toast(`Error: ${e.message}`); }
+    } catch(e){
+      console.error(e);
+      if(isSchemaError(e.message)){ setSchemaErr(true); }
+      else { toast(`Error: ${e.message}`); }
+    }
     finally { setImporting(false); }
   };
 
@@ -5608,6 +5643,31 @@ function ImportarDocentes({ db, toast, onDone, docentes }){
         </label>
 
         {parsing && <div className="loader"><div className="spinner"/><div>Leyendo archivo…</div></div>}
+
+        {schemaErr && (
+          <div className="stack" style={{gap:10,padding:'16px',background:'rgba(255,69,58,.07)',border:'1px solid rgba(255,69,58,.35)',borderRadius:10}}>
+            <div style={{fontWeight:700,fontSize:14}}>⚠ La tabla <code>docentes</code> no existe en Supabase</div>
+            <div style={{fontSize:13,lineHeight:1.55}}>
+              Tienes que crearla desde el SQL Editor de Supabase. Sigue estos pasos:
+            </div>
+            <ol style={{fontSize:13,lineHeight:1.7,paddingLeft:20,margin:0}}>
+              <li>Abre este link: <a href="https://supabase.com/dashboard/project/blobjumbgxqmgsorjchu/sql/new" target="_blank" rel="noreferrer" style={{color:'var(--primary)',fontWeight:600}}>SQL Editor → Nuevo query ↗</a></li>
+              <li>Copia el SQL con el botón de abajo</li>
+              <li>Pégalo en el editor y presiona <b>Run</b> (o Ctrl+Enter)</li>
+              <li>Vuelve aquí y presiona <b>Reintentar importación</b></li>
+            </ol>
+            <div style={{position:'relative'}}>
+              <pre style={{fontSize:10.5,background:'var(--surface-2)',padding:'10px 12px',borderRadius:6,overflowX:'auto',margin:0,lineHeight:1.45,maxHeight:160}}>{SQL_DOCENTES}</pre>
+            </div>
+            <div className="row" style={{gap:8,flexWrap:'wrap'}}>
+              <button className="btn btn-primary btn-sm" onClick={copiarSQL} style={{minWidth:140}}>
+                {copied ? '✓ Copiado!' : '📋 Copiar SQL'}
+              </button>
+              <a href="https://supabase.com/dashboard/project/blobjumbgxqmgsorjchu/sql/new" target="_blank" rel="noreferrer" className="btn btn-ghost btn-sm">Abrir SQL Editor ↗</a>
+              <button className="btn btn-ghost btn-sm" onClick={ejecutar} disabled={importing}>🔄 Reintentar importación</button>
+            </div>
+          </div>
+        )}
 
         {preview && (
           <>
