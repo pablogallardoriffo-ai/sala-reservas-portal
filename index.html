@@ -5282,6 +5282,7 @@ function GestionDocente({ data, user, db, toast }){
         <div className="seg" style={{marginTop:4}}>
           <button className={tab==='listado'?'active':''} onClick={()=>setTab('listado')}>👨‍🏫 Listado</button>
           <button className={tab==='importar'?'active':''} onClick={()=>setTab('importar')}>📥 Importar</button>
+          <button className={tab==='simulador'?'active':''} onClick={()=>setTab('simulador')}>💰 Simulador</button>
           <button className={tab==='dashboard'?'active':''} onClick={()=>setTab('dashboard')}>📊 Dashboard</button>
         </div>
       </div>
@@ -5295,6 +5296,9 @@ function GestionDocente({ data, user, db, toast }){
       )}
       {!loading && tab==='importar' && (
         <ImportarDocentes db={db} toast={toast} onDone={recargar} docentes={docentes}/>
+      )}
+      {!loading && tab==='simulador' && (
+        <SimuladorSueldo docentes={docentes}/>
       )}
       {!loading && tab==='dashboard' && (
         <DashboardDocente docentes={docentes} data={data}/>
@@ -5424,7 +5428,7 @@ function ListadoDocentes({ docentes, onSave, onDelete, toast }){
           <table className="tbl">
             <thead><tr>
               <th>ID</th><th>Nombre</th><th>RUT</th><th>Categoría</th><th>Banda</th>
-              <th style={{textAlign:'right'}}>Hora</th><th style={{textAlign:'right'}}>Mensual</th>
+              <th style={{textAlign:'right'}}>Hora</th><th style={{textAlign:'right'}} title="Calculado: hora × 19/5 × hrs semanales (tope 40)">Sueldo bruto</th>
               <th style={{textAlign:'right'}}>JMG sem</th>
               <th>Jefe</th><th>Estado</th><th>Activa</th><th></th>
             </tr></thead>
@@ -5437,7 +5441,7 @@ function ListadoDocentes({ docentes, onSave, onDelete, toast }){
                   <td><span className="chip">{d.categoria||'—'}</span></td>
                   <td className="muted">{d.banda_salarial||'—'}</td>
                   <td style={{textAlign:'right',fontFamily:'monospace'}}>{fmtCLP(d.hora_docente)}</td>
-                  <td style={{textAlign:'right',fontFamily:'monospace'}}>{fmtCLP(d.valor_mensual)}</td>
+                  <td style={{textAlign:'right',fontFamily:'monospace'}} title="Calculado: hora × 19/5 × hrs semanales (tope 40)">{fmtCLP(calcSueldoMensual(d))}</td>
                   <td style={{textAlign:'right'}}>{d.jmg_semanal||0}</td>
                   <td style={{fontSize:12}}>{d.jefe||'—'}</td>
                   <td><span className={`chip ${d.estado==='ACTIVO'?'success':d.estado==='INACTIVO'?'danger':''}`}>{d.estado||'—'}</span></td>
@@ -5830,6 +5834,181 @@ function ImportarDocentes({ db, toast, onDone, docentes }){
   );
 }
 
+/* ----- Helpers de cálculo de sueldo docente -----
+   Fórmula institucional (Duoc UC Sede Viña 2026):
+   - Valor mensual por hora = valor_hora × 19 / 5
+   - Horas semanales del docente: usa jmg_semanal directo; si no, jmg_horas / 18
+   - Tope normativo: 40 horas semanales
+   - Sueldo bruto mensual = valor_mensual_por_hora × horas_semanales
+*/
+const SEMANAS_SEMESTRE = 18;
+const HORAS_MAX_SEMANALES = 40;
+const FACTOR_MENSUAL = 19 / 5; // 3.8
+
+const calcValorMensualHora = (horaDocente) => {
+  const h = Number(horaDocente);
+  if(isNaN(h) || h <= 0) return 0;
+  return Math.round(h * FACTOR_MENSUAL);
+};
+const calcHorasSemanales = (d) => {
+  if(d.jmg_semanal != null && d.jmg_semanal !== '') return Math.min(Number(d.jmg_semanal)||0, HORAS_MAX_SEMANALES);
+  if(d.jmg_horas != null) return Math.min((Number(d.jmg_horas)||0) / SEMANAS_SEMESTRE, HORAS_MAX_SEMANALES);
+  return 0;
+};
+const calcSueldoMensual = (d) => Math.round(calcValorMensualHora(d.hora_docente) * calcHorasSemanales(d));
+
+// Descuentos legales Chile 2026 (porcentajes aproximados, configurables en UI)
+const DESC_AFP_PCT = 11.5;       // AFP + comisión promedio
+const DESC_SALUD_PCT = 7;        // Fonasa / Isapre
+const DESC_CESANTIA_PCT = 0.6;   // Seguro de cesantía empleado
+
+/* ----- Sub: Simulador de sueldo docente ----- */
+function SimuladorSueldo({ docentes }){
+  const [docenteId, setDocenteId] = useState('');
+  const [horaInput, setHoraInput] = useState('');
+  const [horasInput, setHorasInput] = useState('');
+  const [pensionado, setPensionado] = useState(false);
+  const [afpPct, setAfpPct] = useState(DESC_AFP_PCT);
+  const [saludPct, setSaludPct] = useState(DESC_SALUD_PCT);
+  const [cesPct, setCesPct] = useState(DESC_CESANTIA_PCT);
+  const [showAdvanced, setShowAdvanced] = useState(false);
+
+  const fmtCLP = (n) => '$ '+Math.round(Number(n)||0).toLocaleString('es-CL');
+  const fmtNum = (n, d=1) => (Number(n)||0).toLocaleString('es-CL', {minimumFractionDigits:d, maximumFractionDigits:d});
+
+  // Si elige un docente, precarga sus datos
+  const seleccionarDocente = (id) => {
+    setDocenteId(id);
+    if(!id){ setHoraInput(''); setHorasInput(''); return; }
+    const d = docentes.find(x => String(x.id) === String(id));
+    if(d){
+      setHoraInput(d.hora_docente || '');
+      setHorasInput(calcHorasSemanales(d) || '');
+    }
+  };
+
+  const hora = Number(horaInput) || 0;
+  let horasSem = Number(horasInput) || 0;
+  if(horasSem > HORAS_MAX_SEMANALES) horasSem = HORAS_MAX_SEMANALES;
+  const valorMensualHora = Math.round(hora * FACTOR_MENSUAL);
+  const sueldoBruto = Math.round(valorMensualHora * horasSem);
+  const totalHorasSem = Math.round(horasSem * SEMANAS_SEMESTRE);
+
+  const afpDesc   = pensionado ? 0 : Math.round(sueldoBruto * afpPct/100);
+  const saludDesc = Math.round(sueldoBruto * saludPct/100);
+  const cesDesc   = pensionado ? 0 : Math.round(sueldoBruto * cesPct/100);
+  const totalDesc = afpDesc + saludDesc + cesDesc;
+  const sueldoLiquido = sueldoBruto - totalDesc;
+
+  const docentesOrdenados = useMemo(()=> [...docentes].filter(d=>(d.estado||'ACTIVO')==='ACTIVO').sort((a,b)=>(a.nombre||'').localeCompare(b.nombre||'')), [docentes]);
+
+  return (
+    <>
+      <div className="card">
+        <div className="card-header">
+          <div>
+            <h3>💰 Simulador de sueldo docente</h3>
+            <div className="sub">Calcula el sueldo bruto y líquido aplicando la fórmula institucional <b>valor_hora × 19/5 × horas_semana</b>. Tope normativo: <b>{HORAS_MAX_SEMANALES} hrs/semana</b> · semestre de <b>{SEMANAS_SEMESTRE} semanas</b>.</div>
+          </div>
+        </div>
+        <div className="col-2">
+          <div className="field">
+            <label>Cargar datos de un docente</label>
+            <select value={docenteId} onChange={e=>seleccionarDocente(e.target.value)}>
+              <option value="">— Datos personalizados —</option>
+              {docentesOrdenados.map(d => <option key={d.id} value={d.id}>{d.nombre} ({d.categoria||'sin categ.'})</option>)}
+            </select>
+          </div>
+          <div className="field">
+            <label>¿Es pensionado?</label>
+            <div className="row" style={{gap:14,marginTop:6,fontSize:13}}>
+              <label style={{cursor:'pointer'}}><input type="radio" checked={!pensionado} onChange={()=>setPensionado(false)}/> No</label>
+              <label style={{cursor:'pointer'}}><input type="radio" checked={pensionado} onChange={()=>setPensionado(true)}/> Sí (sin AFP ni cesantía)</label>
+            </div>
+          </div>
+        </div>
+        <div className="col-2">
+          <div className="field">
+            <label>Valor hora docente ($)</label>
+            <input type="number" value={horaInput} onChange={e=>setHoraInput(e.target.value)} placeholder="16716"/>
+          </div>
+          <div className="field">
+            <label>Horas semanales (máx {HORAS_MAX_SEMANALES})</label>
+            <input type="number" step="0.5" max={HORAS_MAX_SEMANALES} value={horasInput} onChange={e=>setHorasInput(e.target.value)} placeholder="20"/>
+          </div>
+        </div>
+
+        <details open={showAdvanced} onToggle={e=>setShowAdvanced(e.target.open)} style={{marginTop:6}}>
+          <summary style={{cursor:'pointer',fontSize:13,fontWeight:600,padding:'4px 0'}}>⚙ Ajustar porcentajes de descuento legales</summary>
+          <div className="col-3" style={{marginTop:8}}>
+            <div className="field"><label>AFP (%)</label><input type="number" step="0.1" value={afpPct} onChange={e=>setAfpPct(Number(e.target.value)||0)} disabled={pensionado}/></div>
+            <div className="field"><label>Salud (%)</label><input type="number" step="0.1" value={saludPct} onChange={e=>setSaludPct(Number(e.target.value)||0)}/></div>
+            <div className="field"><label>Cesantía (%)</label><input type="number" step="0.1" value={cesPct} onChange={e=>setCesPct(Number(e.target.value)||0)} disabled={pensionado}/></div>
+          </div>
+          <div className="muted" style={{fontSize:11.5,marginTop:6}}>Valores referenciales 2026. AFP incluye comisión promedio. Pensionado: solo cotiza salud.</div>
+        </details>
+      </div>
+
+      {/* Resultados */}
+      <div className="grid grid-4">
+        <div className="kpi kpi-blue">
+          <span className="label">Valor mensual por hora</span>
+          <span className="value" style={{fontSize:20}}>{fmtCLP(valorMensualHora)}</span>
+          <span className="delta">hora × 19/5</span>
+          <div className="icon">📈</div>
+        </div>
+        <div className="kpi kpi-amber">
+          <span className="label">Horas semestre</span>
+          <span className="value">{totalHorasSem.toLocaleString('es-CL')}</span>
+          <span className="delta">{fmtNum(horasSem)} hrs × {SEMANAS_SEMESTRE} sem</span>
+          <div className="icon">⏱</div>
+        </div>
+        <div className="kpi kpi-green">
+          <span className="label">Sueldo BRUTO mensual</span>
+          <span className="value" style={{fontSize:20}}>{fmtCLP(sueldoBruto)}</span>
+          <span className="delta">{fmtNum(horasSem)} hrs/sem</span>
+          <div className="icon">💵</div>
+        </div>
+        <div className="kpi kpi-red">
+          <span className="label">Sueldo LÍQUIDO mensual</span>
+          <span className="value" style={{fontSize:20}}>{fmtCLP(sueldoLiquido)}</span>
+          <span className="delta">{sueldoBruto>0?Math.round(sueldoLiquido/sueldoBruto*100):0}% del bruto</span>
+          <div className="icon">💰</div>
+        </div>
+      </div>
+
+      <div className="card" style={{padding:0}}>
+        <div className="card-header" style={{padding:'14px 18px'}}>
+          <div><h3>🧾 Desglose</h3><div className="sub">Detalle del cálculo paso a paso</div></div>
+        </div>
+        <div className="tbl-scroll">
+          <table className="tbl">
+            <tbody>
+              <tr><td><b>1.</b> Valor hora docente</td><td style={{textAlign:'right',fontFamily:'monospace'}}>{fmtCLP(hora)}</td></tr>
+              <tr><td><b>2.</b> × Factor mensualización (19/5 = {FACTOR_MENSUAL})</td><td style={{textAlign:'right',fontFamily:'monospace'}}>×{FACTOR_MENSUAL}</td></tr>
+              <tr style={{background:'var(--surface-2)'}}><td><b>= Valor mensual por hora</b></td><td style={{textAlign:'right',fontFamily:'monospace',fontWeight:700}}>{fmtCLP(valorMensualHora)}</td></tr>
+              <tr><td><b>3.</b> × Horas semanales</td><td style={{textAlign:'right',fontFamily:'monospace'}}>×{fmtNum(horasSem)}</td></tr>
+              <tr style={{background:'rgba(48,209,88,.08)'}}><td><b>= SUELDO BRUTO MENSUAL</b></td><td style={{textAlign:'right',fontFamily:'monospace',fontWeight:700,color:'var(--success)'}}>{fmtCLP(sueldoBruto)}</td></tr>
+              <tr><td colSpan="2" style={{padding:'10px 12px',fontWeight:700,fontSize:12,color:'var(--text-muted)',background:'var(--surface-2)'}}>DESCUENTOS LEGALES</td></tr>
+              <tr><td>AFP ({pensionado?'pensionado · exento':`${afpPct}%`})</td><td style={{textAlign:'right',fontFamily:'monospace',color:'var(--danger)'}}>− {fmtCLP(afpDesc)}</td></tr>
+              <tr><td>Salud ({saludPct}%)</td><td style={{textAlign:'right',fontFamily:'monospace',color:'var(--danger)'}}>− {fmtCLP(saludDesc)}</td></tr>
+              <tr><td>Seguro cesantía ({pensionado?'pensionado · exento':`${cesPct}%`})</td><td style={{textAlign:'right',fontFamily:'monospace',color:'var(--danger)'}}>− {fmtCLP(cesDesc)}</td></tr>
+              <tr style={{background:'rgba(255,69,58,.08)'}}><td><b>Total descuentos</b></td><td style={{textAlign:'right',fontFamily:'monospace',fontWeight:700,color:'var(--danger)'}}>− {fmtCLP(totalDesc)}</td></tr>
+              <tr style={{background:'rgba(10,132,255,.1)'}}><td><b>SUELDO LÍQUIDO MENSUAL</b></td><td style={{textAlign:'right',fontFamily:'monospace',fontWeight:700,fontSize:15,color:'var(--primary)'}}>{fmtCLP(sueldoLiquido)}</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      {pensionado && (
+        <div className="card" style={{padding:'12px 14px',background:'rgba(10,132,255,.08)',border:'1px solid rgba(10,132,255,.3)'}}>
+          <b>💡 Pensionado:</b> No se descuenta AFP ni seguro de cesantía. Solo se aplica el descuento de salud (Fonasa o Isapre).
+        </div>
+      )}
+    </>
+  );
+}
+
 /* ----- Sub: Dashboard de gestión docente ----- */
 function DashboardDocente({ docentes, data }){
   const fmtCLP = (n) => n != null ? '$ '+Number(n).toLocaleString('es-CL') : '—';
@@ -5840,8 +6019,9 @@ function DashboardDocente({ docentes, data }){
   const totActivos = activos.length;
   const totInactivos = docentes.filter(d => d.estado === 'INACTIVO').length;
   const jefaturasUnicas = new Set(activos.map(d=>d.jefe).filter(Boolean)).size;
-  const costoMensualTotal = activos.reduce((a,d)=> a + (Number(d.valor_mensual)||0), 0);
-  const horasTotales = activos.reduce((a,d)=> a + (Number(d.jmg_semanal)||0), 0);
+  // Costo según fórmula institucional: valor_hora × 19/5 × min(horas_semanales, 40)
+  const costoMensualTotal = activos.reduce((a,d)=> a + calcSueldoMensual(d), 0);
+  const horasTotales = activos.reduce((a,d)=> a + calcHorasSemanales(d), 0);
   const conAsigActiva = activos.filter(d => d.asignatura_activa).length;
 
   // Por categoría
@@ -5851,7 +6031,7 @@ function DashboardDocente({ docentes, data }){
       const k = d.categoria || 'Sin categoría';
       if(!m.has(k)) m.set(k, { categoria:k, n:0, horas:0, costo:0 });
       const x = m.get(k);
-      x.n++; x.horas += Number(d.jmg_semanal)||0; x.costo += Number(d.valor_mensual)||0;
+      x.n++; x.horas += calcHorasSemanales(d); x.costo += calcSueldoMensual(d);
     }
     return [...m.values()].sort((a,b)=> b.n - a.n);
   }, [activos]);
@@ -5863,7 +6043,7 @@ function DashboardDocente({ docentes, data }){
       const k = d.banda_salarial || 'Sin banda';
       if(!m.has(k)) m.set(k, { banda:k, n:0, horas:0, costo:0, hora_prom:0, _horas:[] });
       const x = m.get(k);
-      x.n++; x.horas += Number(d.jmg_semanal)||0; x.costo += Number(d.valor_mensual)||0;
+      x.n++; x.horas += calcHorasSemanales(d); x.costo += calcSueldoMensual(d);
       if(d.hora_docente) x._horas.push(Number(d.hora_docente));
     }
     return [...m.values()].map(x => ({ ...x, hora_prom: x._horas.length ? Math.round(x._horas.reduce((a,b)=>a+b,0)/x._horas.length) : 0 })).sort((a,b)=> b.hora_prom - a.hora_prom);
@@ -5876,7 +6056,7 @@ function DashboardDocente({ docentes, data }){
       const k = d.jefe || 'Sin jefatura';
       if(!m.has(k)) m.set(k, { jefe:k, n:0, horas:0, costo:0, conAsig:0 });
       const x = m.get(k);
-      x.n++; x.horas += Number(d.jmg_semanal)||0; x.costo += Number(d.valor_mensual)||0;
+      x.n++; x.horas += calcHorasSemanales(d); x.costo += calcSueldoMensual(d);
       if(d.asignatura_activa) x.conAsig++;
     }
     return [...m.values()].sort((a,b)=> b.n - a.n);
@@ -5908,7 +6088,7 @@ function DashboardDocente({ docentes, data }){
         <div className="kpi kpi-blue"><span className="label">Docentes activos</span><span className="value">{totActivos.toLocaleString('es-CL')}</span><span className="delta">de {total.toLocaleString('es-CL')} en catálogo · {totInactivos} inactivos</span><div className="icon">👥</div></div>
         <div className="kpi kpi-green"><span className="label">Jefaturas únicas</span><span className="value">{jefaturasUnicas}</span><span className="delta">directores distintos</span><div className="icon">⭐</div></div>
         <div className="kpi kpi-amber"><span className="label">Horas JMG semana</span><span className="value">{horasTotales.toLocaleString('es-CL')}</span><span className="delta">suma de docentes activos</span><div className="icon">⏱</div></div>
-        <div className="kpi kpi-red"><span className="label">Costo mensual proyectado</span><span className="value" style={{fontSize:18}}>{fmtCLP(costoMensualTotal)}</span><span className="delta">suma valor mensual activos</span><div className="icon">💰</div></div>
+        <div className="kpi kpi-red"><span className="label">Costo mensual proyectado</span><span className="value" style={{fontSize:18}}>{fmtCLP(costoMensualTotal)}</span><span className="delta">hora × 19/5 × hrs sem (máx {HORAS_MAX_SEMANALES})</span><div className="icon">💰</div></div>
       </div>
 
       <div className="grid grid-2" style={{gap:14}}>
