@@ -5239,11 +5239,15 @@ function GestionDocente({ data, user, db, toast }){
   };
 
   // Map clave (ID:xx o NOM:xx) → horas semanales reales desde SABANA/Eventos.
-  // Recibe data + el catálogo docentes para poder construir el índice
-  // nombre→duoc_id que permite el matching robusto por ID.
+  // Sólo depende de programacion + eventos + docentes — NO de salas, reservas,
+  // app_users, docente_jefes ni import_log. Si pones `data` entero como dep,
+  // cualquier suscripción Realtime de Supabase (que refresca salas/reservas/
+  // etc. via `setData(d => ({...d, salas:fresh}))`) cambia la ref de `data`
+  // e invalida el memo → se recalcula la suma de 70k+ eventos en pleno render
+  // (p.ej. al abrir el modal "Cambiar contraseña") y cuelga el browser.
   const horasRealesMap = useMemo(
-    ()=> calcHorasSemanalesRealesMap({ ...data, docentes }),
-    [data, docentes]
+    ()=> calcHorasSemanalesRealesMap({ programacion: data?.programacion, eventos: data?.eventos, docentes }),
+    [data?.programacion, data?.eventos, docentes]
   );
 
   if(!unlocked){
@@ -6513,11 +6517,13 @@ function DashboardDocente({ docentes, data, horasRealesMap }){
     return [...m.values()].sort((a,b)=> b.n - a.n);
   }, [activos, horasRealesMap]);
 
-  // Cruce con SABANA: docentes que dictan según programación / eventos
+  // Cruce con SABANA: docentes que dictan según programación / eventos.
+  // Sólo depende de programacion + eventos (iterar 71k eventos en cada cambio
+  // de salas/reservas/etc. era el cuelgue secundario en este dashboard).
   const docentesSabana = useMemo(()=>{
-    const sesiones = sesionesConsolidadas(data);
+    const sesiones = sesionesConsolidadas({ programacion: data?.programacion, eventos: data?.eventos });
     return new Set(sesiones.map(s => s.d).filter(Boolean).map(n => n.trim().toUpperCase()));
-  }, [data]);
+  }, [data?.programacion, data?.eventos]);
   const cruce = useMemo(()=>{
     const nombreUpp = (s) => (s||'').trim().toUpperCase();
     const docNombres = new Set(activos.map(d => nombreUpp(d.nombre)));
