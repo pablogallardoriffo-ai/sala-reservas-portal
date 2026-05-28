@@ -2169,13 +2169,18 @@ function Dashboard({ data, reservas, user, db, onGoView, onGoNuevaPrefill }){
     return m ? `https://supabase.com/dashboard/project/${m[1]}/settings/usage` : null;
   },[]);
 
+  // Índice SABANA compartido: se construye UNA sola vez por cambio de
+  // programación y se reusa en todos los cálculos de sesiones de abajo. Antes
+  // cada uno reconstruía su propio índice (5k filas) varias veces por render.
+  const sabanaIdx = useMemo(()=> buildSabanaIndex(data.programacion), [data.programacion]);
+
   const stats = useMemo(()=>{
     const totalSalas = data.salas.length;
-    const clasesHoy  = sesionesEnFecha(data, todayIso).length;
+    const clasesHoy  = sesionesEnFecha(data, todayIso, null, sabanaIdx).length;
     const reservasHoy = reservas.filter(r => r.fi===todayIso).length;
     const pendientes  = reservas.filter(r => r.es==='pendiente').length;
     return { totalSalas, clasesHoy, reservasHoy, pendientes };
-  },[data, reservas, dow, todayIso]);
+  },[data.salas, data.programacion, data.eventos, sabanaIdx, reservas, todayIso]);
 
   const fmtBytes = (b) => {
     if(b < 1024) return `${b} B`;
@@ -2188,7 +2193,7 @@ function Dashboard({ data, reservas, user, db, onGoView, onGoNuevaPrefill }){
     const m = {};
     data.salas.forEach(s => { m[s.tipo] = (m[s.tipo]||0)+1; });
     return Object.entries(m).sort((a,b)=>b[1]-a[1]);
-  },[data]);
+  },[data.salas]);
 
   const ocupacionPorEscuela = useMemo(()=>{
     const m = {};
@@ -2199,7 +2204,7 @@ function Dashboard({ data, reservas, user, db, onGoView, onGoNuevaPrefill }){
       m[k] = (m[k]||0)+1;
     });
     return Object.entries(m).sort((a,b)=>b[1]-a[1]).slice(0,7);
-  },[data]);
+  },[data.programacion, data.eventos]);
 
   const maxEsc = Math.max(1, ...ocupacionPorEscuela.map(x=>x[1]));
 
@@ -2208,7 +2213,7 @@ function Dashboard({ data, reservas, user, db, onGoView, onGoNuevaPrefill }){
   // Próximas 2h: sesiones cuyo hi cae entre ahora y ahora+2h hoy.
   // Salas libres ahora: total salas con clase=0 ahora.
   // Alumnos en sede: suma inscritos de sesiones en curso.
-  const sesionesHoy = useMemo(()=> sesionesEnFecha(data, todayIso), [data, todayIso]);
+  const sesionesHoy = useMemo(()=> sesionesEnFecha(data, todayIso, null, sabanaIdx), [data.programacion, data.eventos, todayIso, sabanaIdx]);
   // Módulo actual (para preseleccionar al hacer click en "Reservar" desde
   // una sala libre): el módulo cuyo rango horario contiene la hora actual.
   const modActivo = useMemo(()=>{
@@ -2286,7 +2291,7 @@ function Dashboard({ data, reservas, user, db, onGoView, onGoNuevaPrefill }){
     const calc = (iso) => {
       const arr = new Array(data.modulos.length).fill(0);
       const seen = new Set();
-      const sesionesDia = sesionesEnFecha(data, iso);
+      const sesionesDia = sesionesEnFecha(data, iso, null, sabanaIdx);
       for(const s of sesionesDia){
         const k = `${s.sc||''}|${s.s||''}|${s.hi}|${s.hf}`;
         if(seen.has(k)) continue;
@@ -2302,7 +2307,7 @@ function Dashboard({ data, reservas, user, db, onGoView, onGoNuevaPrefill }){
     const hoy = calc(todayIso), man = calc(mañanaIso);
     const max = Math.max(1, ...hoy, ...man);
     return { hoy, man, max };
-  }, [data, todayIso, mañanaIso]);
+  }, [data.programacion, data.eventos, data.modulos, todayIso, mañanaIso, sabanaIdx]);
 
   // === SALAS SATURADAS vs SUBUTILIZADAS ===
   // Para cada sala con capacidad, calcular promedio (inscritos / capacidad)
@@ -2314,7 +2319,7 @@ function Dashboard({ data, reservas, user, db, onGoView, onGoNuevaPrefill }){
     const ratioBySala = new Map();   // codigo → [ratio, ratio, ...]
     const seen = new Set();
     for(const iso of [todayIso, mañanaIso]){
-      const sess = sesionesEnFecha(data, iso);
+      const sess = sesionesEnFecha(data, iso, null, sabanaIdx);
       for(const s of sess){
         const sInfo = salaInfoMap.get(s.s);
         if(sInfo && isSalaVirtual(sInfo)) continue;  // ← excluye virtuales
@@ -2343,7 +2348,7 @@ function Dashboard({ data, reservas, user, db, onGoView, onGoNuevaPrefill }){
     const saturadas = [...stats].sort((a,b)=> b.avgUso - a.avgUso).slice(0, 5);
     const subutilizadas = stats.filter(x => x.cap >= 20).sort((a,b)=> a.avgUso - b.avgUso).slice(0, 5);
     return { saturadas, subutilizadas };
-  }, [data, todayIso, mañanaIso]);
+  }, [data.salas, data.programacion, data.eventos, todayIso, mañanaIso, sabanaIdx]);
 
   // Métricas de gestión: visibles para admin (visión equipo) y reservador (visión personal + equipo)
   const metricas = useMemo(()=>{
@@ -3015,20 +3020,22 @@ function Horario({ data, reservas, onGoNueva }){
   const sabanaIdx = useMemo(()=> buildSabanaIndex(data.programacion), [data.programacion]);
 
   const grid = useMemo(()=>{
+    // Pre-cálculo por día: una sola pasada de sesiones/reservas por cada uno de
+    // los 7 días, en vez de re-filtrar los 71k eventos dentro de cada módulo
+    // (antes: 20 módulos × 7 días = 140 filtrados; ahora: 7).
+    const sesPorDia = week.map(d => sesionesEnFecha(data, isoDate(d), sala, sabanaIdx));
+    const resPorDia = week.map(d => {
+      const dIso = isoDate(d);
+      return reservas.filter(r => r.r === sala && r.fi === dIso && r.es !== 'rechazada');
+    });
     return data.modulos.map(mod => {
       return week.map((d, dw) => {
-        const dIso = isoDate(d);
-        const acads = sesionesEnFecha(data, dIso, sala, sabanaIdx).filter(p =>
-          moduleInTimeRange(mod.num, p.hi, p.hf, data.modulos)
-        );
-        const ress = reservas.filter(r =>
-          r.r === sala && r.fi === dIso && r.es !== 'rechazada' &&
-          mod.num >= Number(r.mi||0) && mod.num <= Number(r.mf||0)
-        );
+        const acads = sesPorDia[dw].filter(p => moduleInTimeRange(mod.num, p.hi, p.hf, data.modulos));
+        const ress = resPorDia[dw].filter(r => mod.num >= Number(r.mi||0) && mod.num <= Number(r.mf||0));
         return { acads, ress };
       });
     });
-  },[data, reservas, sala, week]);
+  },[data.programacion, data.eventos, data.modulos, reservas, sala, week, sabanaIdx]);
 
   const salaInfo = data.salas.find(s => s.codigo===sala);
   const todayIso = isoDate(new Date());
@@ -3158,7 +3165,7 @@ function HorarioDocente({ data }){
   const now = useNowMinutes();
 
   const usaEventos = hasEventos(data);
-  const sesiones = useMemo(()=> sesionesConsolidadas(data), [data]);
+  const sesiones = useMemo(()=> sesionesConsolidadas(data), [data.programacion, data.eventos]);
   const docentes = useMemo(()=> [...new Set(sesiones.map(s=>s.d).filter(Boolean))].sort(), [sesiones]);
   const docentesFiltrados = useMemo(()=>{
     if(!q) return docentes;
@@ -5452,7 +5459,7 @@ function Salas({ data, user, toast, onCreate, onUpdate, onDelete }){
    conteo de clases por día de la semana. Se usa dentro de
    "Importar datos → SABANA" como sanity check post-importación. */
 function VerificadorSabana({ data }){
-  const sesiones = useMemo(()=> sesionesConsolidadas(data), [data]);
+  const sesiones = useMemo(()=> sesionesConsolidadas(data), [data.programacion, data.eventos]);
   const usaEventos = hasEventos(data);
   const diaCount = useMemo(()=>{
     const c = [0,0,0,0,0,0,0];
@@ -6220,7 +6227,7 @@ function Usuarios({ users, toast, onCreate, onUpdate, onDelete }){
 function Reportes({ data, reservas }){
   const [tab, setTab] = useState('escuela');
   const usaEventos = hasEventos(data);
-  const sesiones = useMemo(()=> sesionesConsolidadas(data), [data]);
+  const sesiones = useMemo(()=> sesionesConsolidadas(data), [data.programacion, data.eventos]);
 
   // === Análisis por escuela ===
   // sesiones: instancias de clase (deduplicado por sección/horario/fecha).
@@ -6341,7 +6348,7 @@ function Reportes({ data, reservas }){
         avgUso,
       };
     }).filter(x => x.capacidad > 0).sort((a,b)=> a.avgUso - b.avgUso);
-  }, [data, sesiones]);
+  }, [data.salas, sesiones]);
 
   // === Ocupación por semana del semestre ===
   const reporteSemanas = useMemo(()=>{
@@ -6383,7 +6390,7 @@ function Reportes({ data, reservas }){
     const flat = grid.flat();
     const max = Math.max(1, ...flat);
     return { semanas, grid, totales, max };
-  }, [data, usaEventos]);
+  }, [data.programacion, data.eventos, data.modulos, usaEventos]);
 
   // === Helpers de exportación ===
   const toCsv = (rows, headers) => {
@@ -6672,7 +6679,7 @@ function ReporteDocente({ data }){
     return m;
   }, [data.docente_jefes]);
 
-  const sesiones = useMemo(()=> sesionesConsolidadas(data), [data]);
+  const sesiones = useMemo(()=> sesionesConsolidadas(data), [data.programacion, data.eventos]);
 
   // Stats por docente:
   // - sesiones: cantidad de INSTANCIAS de clase (deduplicado por
@@ -6980,7 +6987,7 @@ function MapaCalor({ data, user }){
   const todayDw = (() => { const d = new Date().getDay(); return d===0 ? 6 : d-1; })();
 
   const usaEventos = hasEventos(data);
-  const sesiones = useMemo(()=> sesionesConsolidadas(data), [data]);
+  const sesiones = useMemo(()=> sesionesConsolidadas(data), [data.programacion, data.eventos]);
 
   const modActivo = useMemo(()=> data.modulos.find(m => moduleRunningNow(m, now)), [data.modulos, now]);
   const nowStr = `${String(Math.floor(now/60)).padStart(2,'0')}:${String(now%60).padStart(2,'0')}`;
