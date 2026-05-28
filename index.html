@@ -1231,6 +1231,38 @@ function createDb({ mode, supabase }){
     catch(e){ console.warn(`fetchAll(${table}) → []:`, e.message); return []; }
   };
 
+  // Settings compartidos (cloud) o en localStorage (local).
+  // Source of truth en cloud para que un cambio de contraseña hecho desde
+  // un browser sea visible desde otro. Tolerante si la tabla aún no existe
+  // (la migración SQL es opcional: la app sigue funcionando con default).
+  const getSetting = async (key) => {
+    if(isCloud){
+      const { data, error } = await supabase.from('app_settings').select('value').eq('key', key).maybeSingle();
+      if(error){
+        if(/does not exist|42P01|relation .* does not exist/i.test(error.message)){
+          console.warn('app_settings no existe aún (correr db/schema.sql); fallback a localStorage.');
+          return null;
+        }
+        throw new Error(error.message);
+      }
+      return data?.value ?? null;
+    }
+    const st = loadStore();
+    return st.settings?.[key] ?? null;
+  };
+  const setSetting = async (key, value, who) => {
+    if(isCloud){
+      const payload = { key, value, updated_at: new Date().toISOString(), updated_by: who||null };
+      const { error } = await supabase.from('app_settings').upsert(payload);
+      if(error) throw new Error(error.message);
+    } else {
+      const st = loadStore();
+      const settings = { ...(st.settings||{}) };
+      if(value == null || value === '') delete settings[key]; else settings[key] = value;
+      saveStore({ ...st, settings });
+    }
+  };
+
   /* ----- CARGA INICIAL =====
      Cargamos PRIMERO lo crítico para que la app se vea rápido. Los eventos
      (~13MB descargados, 71K filas en RAM) los cargamos en BACKGROUND
@@ -1751,6 +1783,7 @@ function createDb({ mode, supabase }){
     loadAuditorias, saveAuditoria, deleteAuditoria,
     logAuditoria, loadAuditoriasLog,
     loadDocentes, saveDocente, deleteDocente, bulkUpsertDocentes,
+    getSetting, setSetting,
   };
 }
 
@@ -3444,10 +3477,51 @@ const hashPw = (str) => {
   }
   return (h >>> 0).toString(16);
 };
-const verifyPw = (input) => {
-  const stored = localStorage.getItem(GESTIONES_PASSWORD_KEY);
-  if(stored) return hashPw(input) === stored;
-  return input === GESTIONES_PASSWORD;
+// Verificador puro: si hay hash compartido lo compara, sino acepta la default.
+const verifyAgainstHash = (input, storedHash, defaultPw) => {
+  if(storedHash) return hashPw(input) === storedHash;
+  return input === defaultPw;
+};
+
+// Sincroniza un hash de contraseña entre Supabase (app_settings) y el caché
+// local. Al montar, lee del cloud y actualiza el caché. Si hay hash en local
+// pero NO en cloud (caso del usuario que cambió la clave antes de tener
+// app_settings), sube el hash local al cloud automáticamente (migración).
+// Devuelve `ready=true` recién cuando ya se consultó el cloud — esto evita
+// que la pantalla de unlock acepte la default mientras carga, lo que
+// permitiría entrar con la default desde un browser sin caché aunque alguien
+// ya hubiera cambiado la clave (el bug que reportó el admin).
+const useSharedPwHash = (db, key, storedHash, setStoredHash, user) => {
+  const [ready, setReady] = useState(false);
+  useEffect(() => {
+    if(!db){ setReady(false); return; }
+    let cancelled = false;
+    (async () => {
+      try {
+        const cloud = await db.getSetting(key);
+        if(cancelled) return;
+        if(cloud){
+          if(cloud !== storedHash){
+            setStoredHash(cloud);
+            localStorage.setItem(key, cloud);
+          }
+        } else if(storedHash){
+          // Migración: hay hash local pero el cloud está vacío. Súbelo
+          // para que otros dispositivos lo vean.
+          try {
+            await db.setSetting(key, storedHash, user?.username);
+            console.info(`[pw] hash local migrado a cloud para ${key}.`);
+          } catch(e){ console.warn(`[pw] no se pudo migrar hash a cloud:`, e.message); }
+        }
+      } catch(e){
+        console.warn(`[pw] getSetting(${key}) falló; usando caché local:`, e.message);
+      } finally {
+        if(!cancelled) setReady(true);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [db, key]);
+  return ready;
 };
 
 // Normaliza la fecha del registro a YYYY-MM-DD (Supabase a veces devuelve
@@ -3512,13 +3586,18 @@ const esSalaAuditable = (sala) => {
 
 function Gestiones({ data, user, db, toast }){
   // === 1) Bloqueo por contraseña (memorizado en sessionStorage) ===
+  // Hash compartido vive en Supabase (tabla app_settings); localStorage es
+  // sólo caché para que la verificación sea sincrónica y funcione offline.
   const [unlocked, setUnlocked] = useState(()=> sessionStorage.getItem(GESTIONES_AUTH_KEY)==='1');
   const [pw, setPw] = useState('');
   const [pwErr, setPwErr] = useState(false);
   const [showPwChange, setShowPwChange] = useState(false);
+  const [storedHash, setStoredHash] = useState(()=> localStorage.getItem(GESTIONES_PASSWORD_KEY) || null);
+  const hashReady = useSharedPwHash(db, GESTIONES_PASSWORD_KEY, storedHash, setStoredHash, user);
   const tryUnlock = (e) => {
     if(e) e.preventDefault();
-    if(verifyPw(pw)){
+    if(!hashReady) return; // todavía consultando la nube — evita aceptar la default por timing
+    if(verifyAgainstHash(pw, storedHash, GESTIONES_PASSWORD)){
       sessionStorage.setItem(GESTIONES_AUTH_KEY, '1');
       setUnlocked(true);
       setPw(''); setPwErr(false);
@@ -3826,7 +3905,7 @@ function Gestiones({ data, user, db, toast }){
               />
               {pwErr && <div style={{color:'var(--danger)',fontSize:12,marginTop:4}}>Contraseña incorrecta.</div>}
             </div>
-            <button type="submit" className="btn btn-primary btn-block">Ingresar</button>
+            <button type="submit" className="btn btn-primary btn-block" disabled={!hashReady}>{hashReady ? 'Ingresar' : 'Conectando…'}</button>
           </form>
         </div>
       </div>
@@ -3870,7 +3949,7 @@ function Gestiones({ data, user, db, toast }){
 
       {/* Modal cambiar contraseña */}
       {showPwChange && (
-        <ModalCambioPw onClose={()=>setShowPwChange(false)} toast={toast}/>
+        <ModalCambioPw onClose={()=>setShowPwChange(false)} toast={toast} db={db} user={user} storedHash={storedHash} onSaved={setStoredHash}/>
       )}
 
       {tab==='recorrido' && (
@@ -3919,49 +3998,19 @@ function Gestiones({ data, user, db, toast }){
   );
 }
 
-/* ----- Modal · Cambiar contraseña ----- */
-function ModalCambioPw({ onClose, toast }){
-  const [actual, setActual] = useState('');
-  const [nueva, setNueva] = useState('');
-  const [conf, setConf] = useState('');
-  const [err, setErr] = useState('');
-  const guardar = () => {
-    setErr('');
-    if(!verifyPw(actual)){ setErr('Contraseña actual incorrecta.'); return; }
-    if(nueva.length < 4){ setErr('La nueva contraseña debe tener al menos 4 caracteres.'); return; }
-    if(nueva !== conf){ setErr('La confirmación no coincide.'); return; }
-    localStorage.setItem(GESTIONES_PASSWORD_KEY, hashPw(nueva));
-    toast('Contraseña actualizada.');
-    onClose();
-  };
-  const restaurar = () => {
-    if(!window.confirm('¿Restaurar la contraseña original (010203)?')) return;
-    localStorage.removeItem(GESTIONES_PASSWORD_KEY);
-    toast('Contraseña restaurada a la original.');
-    onClose();
-  };
+/* ----- Modal · Cambiar contraseña (Gestiones) ----- */
+function ModalCambioPw({ onClose, toast, db, user, storedHash, onSaved }){
   return (
-    <Modal title="🔑 Cambiar contraseña" onClose={onClose} onSave={guardar}>
-      <div className="stack" style={{gap:10}}>
-        <div className="field">
-          <label>Contraseña actual</label>
-          <input type="password" value={actual} onChange={e=>{setActual(e.target.value); setErr('');}} autoFocus/>
-        </div>
-        <div className="field">
-          <label>Nueva contraseña (mín. 4 caracteres)</label>
-          <input type="password" value={nueva} onChange={e=>{setNueva(e.target.value); setErr('');}}/>
-        </div>
-        <div className="field">
-          <label>Confirmar nueva contraseña</label>
-          <input type="password" value={conf} onChange={e=>{setConf(e.target.value); setErr('');}}/>
-        </div>
-        {err && <div style={{color:'var(--danger)',fontSize:12.5,padding:'8px 10px',background:'rgba(255,69,58,.08)',borderRadius:6}}>⚠ {err}</div>}
-        <div className="muted" style={{fontSize:11.5,padding:'8px 10px',background:'var(--surface-2)',borderRadius:6}}>
-          La contraseña se guarda solo en este dispositivo. Si la cambias y la olvidas, puedes restaurarla desde aquí.
-        </div>
-        <button type="button" className="btn btn-ghost btn-sm" onClick={restaurar}>Restaurar contraseña original</button>
-      </div>
-    </Modal>
+    <ModalCambioPwGenerico
+      onClose={onClose}
+      toast={toast}
+      storageKey={GESTIONES_PASSWORD_KEY}
+      defaultPw={GESTIONES_PASSWORD}
+      db={db}
+      user={user}
+      storedHash={storedHash}
+      onSaved={onSaved}
+    />
   );
 }
 
@@ -5048,11 +5097,6 @@ const GD_AUTH_KEY = 'sr_gd_auth_v1';
 const GD_LOCK_MIN_KEY = 'sr_gd_lock_v1';
 const GD_DEFAULT_PASSWORD = '010203';
 
-const verifyGdPw = (input) => {
-  const stored = localStorage.getItem(GD_PASSWORD_KEY);
-  if(stored) return hashPw(input) === stored;
-  return input === GD_DEFAULT_PASSWORD;
-};
 
 // Mapeo Excel → modelo. Acepta variantes de nombre de columna para ser
 // tolerante a futuros cambios menores en el formato.
@@ -5174,13 +5218,17 @@ const parseDocentesXLSX = async (file) => {
 
 function GestionDocente({ data, user, db, toast }){
   // === Bloqueo por contraseña ===
+  // Hash compartido en Supabase (app_settings); localStorage es caché.
   const [unlocked, setUnlocked] = useState(()=> sessionStorage.getItem(GD_AUTH_KEY)==='1');
   const [pw, setPw] = useState('');
   const [pwErr, setPwErr] = useState(false);
   const [showPwChange, setShowPwChange] = useState(false);
+  const [storedHash, setStoredHash] = useState(()=> localStorage.getItem(GD_PASSWORD_KEY) || null);
+  const hashReady = useSharedPwHash(db, GD_PASSWORD_KEY, storedHash, setStoredHash, user);
   const tryUnlock = (e) => {
     if(e) e.preventDefault();
-    if(verifyGdPw(pw)){
+    if(!hashReady) return; // todavía consultando la nube — evita aceptar la default por timing
+    if(verifyAgainstHash(pw, storedHash, GD_DEFAULT_PASSWORD)){
       sessionStorage.setItem(GD_AUTH_KEY, '1');
       setUnlocked(true);
       setPw(''); setPwErr(false);
@@ -5265,7 +5313,7 @@ function GestionDocente({ data, user, db, toast }){
               <input type="password" value={pw} onChange={e=>{setPw(e.target.value); setPwErr(false);}} placeholder="●●●●●●" autoFocus style={pwErr?{borderColor:'var(--danger)'}:{}}/>
               {pwErr && <div style={{color:'var(--danger)',fontSize:12,marginTop:4}}>Contraseña incorrecta.</div>}
             </div>
-            <button type="submit" className="btn btn-primary btn-block">Ingresar</button>
+            <button type="submit" className="btn btn-primary btn-block" disabled={!hashReady}>{hashReady ? 'Ingresar' : 'Conectando…'}</button>
           </form>
         </div>
       </div>
@@ -5303,7 +5351,7 @@ function GestionDocente({ data, user, db, toast }){
         </div>
       </div>
 
-      {showPwChange && <ModalCambioPwGenerico onClose={()=>setShowPwChange(false)} toast={toast} storageKey={GD_PASSWORD_KEY} defaultPw={GD_DEFAULT_PASSWORD}/>}
+      {showPwChange && <ModalCambioPwGenerico onClose={()=>setShowPwChange(false)} toast={toast} storageKey={GD_PASSWORD_KEY} defaultPw={GD_DEFAULT_PASSWORD} db={db} user={user} storedHash={storedHash} onSaved={setStoredHash}/>}
 
       {loading && <div className="card"><div className="loader"><div className="spinner"/><div>Cargando…</div></div></div>}
 
@@ -5324,40 +5372,51 @@ function GestionDocente({ data, user, db, toast }){
 }
 
 /* ----- Modal cambio de contraseña genérico (parametrizado por storageKey) ----- */
-function ModalCambioPwGenerico({ onClose, toast, storageKey, defaultPw }){
+function ModalCambioPwGenerico({ onClose, toast, storageKey, defaultPw, db, user, storedHash, onSaved }){
   const [actual, setActual] = useState('');
   const [nueva, setNueva] = useState('');
   const [conf, setConf] = useState('');
   const [err, setErr] = useState('');
-  const verify = (input) => {
-    const stored = localStorage.getItem(storageKey);
-    if(stored) return hashPw(input) === stored;
-    return input === defaultPw;
-  };
-  const guardar = () => {
+  const [busy, setBusy] = useState(false);
+  const guardar = async () => {
     setErr('');
-    if(!verify(actual)){ setErr('Contraseña actual incorrecta.'); return; }
+    if(!verifyAgainstHash(actual, storedHash, defaultPw)){ setErr('Contraseña actual incorrecta.'); return; }
     if(nueva.length < 4){ setErr('La nueva contraseña debe tener al menos 4 caracteres.'); return; }
     if(nueva !== conf){ setErr('La confirmación no coincide.'); return; }
-    localStorage.setItem(storageKey, hashPw(nueva));
-    toast('Contraseña actualizada.');
-    onClose();
+    const h = hashPw(nueva);
+    setBusy(true);
+    try {
+      if(db?.setSetting) await db.setSetting(storageKey, h, user?.username);
+      localStorage.setItem(storageKey, h);
+      onSaved && onSaved(h);
+      toast(db?.isCloud ? 'Contraseña actualizada (compartida en la nube).' : 'Contraseña actualizada (local).');
+      onClose();
+    } catch(e){
+      setErr(`No se pudo guardar en la nube: ${e.message}. Inténtalo de nuevo.`);
+    } finally { setBusy(false); }
   };
-  const restaurar = () => {
-    if(!window.confirm(`¿Restaurar la contraseña original (${defaultPw})?`)) return;
-    localStorage.removeItem(storageKey);
-    toast('Contraseña restaurada a la original.');
-    onClose();
+  const restaurar = async () => {
+    if(!window.confirm(`¿Restaurar la contraseña original (${defaultPw})? Esto la cambiará para TODOS los dispositivos.`)) return;
+    setBusy(true);
+    try {
+      if(db?.setSetting) await db.setSetting(storageKey, null, user?.username);
+      localStorage.removeItem(storageKey);
+      onSaved && onSaved(null);
+      toast('Contraseña restaurada a la original.');
+      onClose();
+    } catch(e){
+      setErr(`No se pudo restaurar: ${e.message}`);
+    } finally { setBusy(false); }
   };
   return (
-    <Modal title="🔑 Cambiar contraseña" onClose={onClose} onSave={guardar}>
+    <Modal title="🔑 Cambiar contraseña" onClose={onClose} onSave={busy ? undefined : guardar} saveLabel={busy ? 'Guardando…' : 'Guardar'}>
       <div className="stack" style={{gap:10}}>
-        <div className="field"><label>Contraseña actual</label><input type="password" value={actual} onChange={e=>{setActual(e.target.value); setErr('');}} autoFocus/></div>
-        <div className="field"><label>Nueva contraseña (mín. 4 caracteres)</label><input type="password" value={nueva} onChange={e=>{setNueva(e.target.value); setErr('');}}/></div>
-        <div className="field"><label>Confirmar nueva contraseña</label><input type="password" value={conf} onChange={e=>{setConf(e.target.value); setErr('');}}/></div>
+        <div className="field"><label>Contraseña actual</label><input type="password" value={actual} onChange={e=>{setActual(e.target.value); setErr('');}} autoFocus disabled={busy}/></div>
+        <div className="field"><label>Nueva contraseña (mín. 4 caracteres)</label><input type="password" value={nueva} onChange={e=>{setNueva(e.target.value); setErr('');}} disabled={busy}/></div>
+        <div className="field"><label>Confirmar nueva contraseña</label><input type="password" value={conf} onChange={e=>{setConf(e.target.value); setErr('');}} disabled={busy}/></div>
         {err && <div style={{color:'var(--danger)',fontSize:12.5,padding:'8px 10px',background:'rgba(255,69,58,.08)',borderRadius:6}}>⚠ {err}</div>}
-        <div className="muted" style={{fontSize:11.5,padding:'8px 10px',background:'var(--surface-2)',borderRadius:6}}>La contraseña se guarda solo en este dispositivo.</div>
-        <button type="button" className="btn btn-ghost btn-sm" onClick={restaurar}>Restaurar contraseña original</button>
+        <div className="muted" style={{fontSize:11.5,padding:'8px 10px',background:'var(--surface-2)',borderRadius:6}}>{db?.isCloud ? 'La contraseña se guarda en Supabase y queda compartida entre todos los dispositivos.' : 'Modo local — la contraseña se guarda solo en este dispositivo.'}</div>
+        <button type="button" className="btn btn-ghost btn-sm" onClick={restaurar} disabled={busy}>Restaurar contraseña original</button>
       </div>
     </Modal>
   );

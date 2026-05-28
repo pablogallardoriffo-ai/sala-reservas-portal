@@ -266,6 +266,20 @@ CREATE POLICY allow_all ON docente_jefes FOR ALL USING (true) WITH CHECK (true);
 CREATE POLICY allow_all ON import_log    FOR ALL USING (true) WITH CHECK (true);
 CREATE POLICY allow_all ON reservas      FOR ALL USING (true) WITH CHECK (true);
 
+-- CONFIGURACIÓN COMPARTIDA · key/value para settings que viven en la nube y
+-- se comparten entre todos los dispositivos (p.ej. hashes de contraseñas de
+-- pestañas administrativas — antes vivían en localStorage por dispositivo,
+-- por eso un cambio hecho en un browser no era visible en otro).
+CREATE TABLE IF NOT EXISTS app_settings (
+  key         TEXT PRIMARY KEY,
+  value       TEXT,
+  updated_at  TIMESTAMPTZ DEFAULT NOW(),
+  updated_by  TEXT
+);
+ALTER TABLE app_settings ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS allow_all ON app_settings;
+CREATE POLICY allow_all ON app_settings FOR ALL USING (true) WITH CHECK (true);
+
 -- ============================================================
 -- MIGRACIONES IDEMPOTENTES (para BD ya creada)
 -- ============================================================
