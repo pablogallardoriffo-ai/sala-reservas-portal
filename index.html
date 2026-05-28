@@ -3179,6 +3179,7 @@ function Horario({ data, reservas, onGoNueva }){
                       return (
                         <div key={'a'+i} className={`blk blk-ac ${enCurso?'now':''}`} title={`${p.a} · ${p.d||''} · ${p.hi}-${p.hf}${enCurso?' · EN CURSO':''}`}>
                           <b>{p.sc}</b><div style={{opacity:.85}}>{(p.a||'').slice(0,26)}</div>
+                          {p.d && <div style={{opacity:.75,fontSize:9.5,marginTop:1,whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis'}}>👤 {(p.d||'').slice(0,24)}</div>}
                         </div>
                       );
                     })}
@@ -7040,7 +7041,7 @@ function NuevaReserva({ data, reservas, user, toast, goReservas, prefill, onCrea
         ocupadas.push({
           sala: s,
           motivo: acad
-            ? `Clase regular: ${(acad.a||'').slice(0,40)} (${acad.hi}–${acad.hf})`
+            ? `Clase: ${(acad.a||'').slice(0,40)} (${acad.hi}–${acad.hf})${acad.d?` · 👤 ${acad.d}`:''}`
             : `Reserva ${esPendiente?'PENDIENTE de autorización':'aprobada'}: ${(res.mo||'').slice(0,40)} (Mód.${res.mi}–${res.mf})`,
           tipo: acad ? 'académica' : (esPendiente ? 'pendiente' : 'reserva'),
           esPendiente,
