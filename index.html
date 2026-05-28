@@ -5234,6 +5234,10 @@ function GestionDocente({ data, user, db, toast }){
     catch(e){ toast(`Error: ${e.message}`); }
   };
 
+  // Map nombre→horas semanales reales desde SABANA/Eventos.
+  // Se recalcula sólo cuando cambian las sesiones (data).
+  const horasRealesMap = useMemo(()=> calcHorasSemanalesRealesMap(data), [data]);
+
   if(!unlocked){
     return (
       <div className="stack">
@@ -5292,16 +5296,16 @@ function GestionDocente({ data, user, db, toast }){
       {loading && <div className="card"><div className="loader"><div className="spinner"/><div>Cargando…</div></div></div>}
 
       {!loading && tab==='listado' && (
-        <ListadoDocentes docentes={docentes} onSave={onSaveDoc} onDelete={onDeleteDoc} toast={toast}/>
+        <ListadoDocentes docentes={docentes} onSave={onSaveDoc} onDelete={onDeleteDoc} toast={toast} horasRealesMap={horasRealesMap}/>
       )}
       {!loading && tab==='importar' && (
         <ImportarDocentes db={db} toast={toast} onDone={recargar} docentes={docentes}/>
       )}
       {!loading && tab==='simulador' && (
-        <SimuladorSueldo docentes={docentes}/>
+        <SimuladorSueldo docentes={docentes} horasRealesMap={horasRealesMap}/>
       )}
       {!loading && tab==='dashboard' && (
-        <DashboardDocente docentes={docentes} data={data}/>
+        <DashboardDocente docentes={docentes} data={data} horasRealesMap={horasRealesMap}/>
       )}
     </div>
   );
@@ -5348,7 +5352,7 @@ function ModalCambioPwGenerico({ onClose, toast, storageKey, defaultPw }){
 }
 
 /* ----- Sub: Listado de docentes (filtros + tabla + modal edit) ----- */
-function ListadoDocentes({ docentes, onSave, onDelete, toast }){
+function ListadoDocentes({ docentes, onSave, onDelete, toast, horasRealesMap }){
   const [q, setQ] = useState('');
   const [catF, setCatF] = useState('');
   const [jefeF, setJefeF] = useState('');
@@ -5428,12 +5432,18 @@ function ListadoDocentes({ docentes, onSave, onDelete, toast }){
           <table className="tbl">
             <thead><tr>
               <th>ID</th><th>Nombre</th><th>RUT</th><th>Categoría</th><th>Banda</th>
-              <th style={{textAlign:'right'}}>Hora</th><th style={{textAlign:'right'}} title="Calculado: hora × 19/5 × hrs semanales (tope 40)">Sueldo bruto</th>
-              <th style={{textAlign:'right'}}>JMG sem</th>
-              <th>Jefe</th><th>Estado</th><th>Activa</th><th></th>
+              <th style={{textAlign:'right'}}>Hora</th>
+              <th style={{textAlign:'right'}} title="Horas semanales según SABANA / LISTA DE RECURSOS (lo que realmente dicta)">Hrs/sem (real)</th>
+              <th style={{textAlign:'right'}} title="Horas semanales según Excel (col P JMG Semanal)">JMG Excel</th>
+              <th style={{textAlign:'right'}} title="Calculado: hora × 19/5 × hrs semanales reales (tope 40)">Sueldo bruto</th>
+              <th>Jefe</th><th>Estado</th><th></th>
             </tr></thead>
             <tbody>
-              {filtradas.map(d => (
+              {filtradas.map(d => {
+                const hrsReal = horasRealesMap?.get((d.nombre||'').trim().toUpperCase()) || 0;
+                const hrsExcel = Number(d.jmg_semanal)||0;
+                const difHoras = hrsReal > 0 && Math.abs(hrsReal - hrsExcel) >= 1;
+                return (
                 <tr key={d.id || d.rut}>
                   <td className="muted" style={{fontFamily:'monospace',fontSize:12}}>{d.duoc_id||'—'}</td>
                   <td><b>{d.nombre}</b><br/><small className="muted">{d.correo||''}</small></td>
@@ -5441,17 +5451,17 @@ function ListadoDocentes({ docentes, onSave, onDelete, toast }){
                   <td><span className="chip">{d.categoria||'—'}</span></td>
                   <td className="muted">{d.banda_salarial||'—'}</td>
                   <td style={{textAlign:'right',fontFamily:'monospace'}}>{fmtCLP(d.hora_docente)}</td>
-                  <td style={{textAlign:'right',fontFamily:'monospace'}} title="Calculado: hora × 19/5 × hrs semanales (tope 40)">{fmtCLP(calcSueldoMensual(d))}</td>
-                  <td style={{textAlign:'right'}}>{d.jmg_semanal||0}</td>
+                  <td style={{textAlign:'right',fontFamily:'monospace',color: hrsReal>0?'var(--success)':'var(--text-muted)'}}>{hrsReal>0 ? hrsReal.toFixed(1) : '—'}</td>
+                  <td style={{textAlign:'right',color: difHoras?'var(--danger)':'inherit'}} title={difHoras?'⚠ El Excel y SABANA difieren significativamente':''}>{hrsExcel||'—'}{difHoras && <span style={{fontSize:10}}> ⚠</span>}</td>
+                  <td style={{textAlign:'right',fontFamily:'monospace'}} title="Calculado: hora × 19/5 × hrs semanales reales (tope 40)">{fmtCLP(calcSueldoMensual(d, horasRealesMap))}</td>
                   <td style={{fontSize:12}}>{d.jefe||'—'}</td>
                   <td><span className={`chip ${d.estado==='ACTIVO'?'success':d.estado==='INACTIVO'?'danger':''}`}>{d.estado||'—'}</span></td>
-                  <td>{d.asignatura_activa ? <span className="chip success">✓</span> : <span className="chip">—</span>}</td>
                   <td className="nowrap" style={{textAlign:'right'}}>
                     <button className="btn-icon" title="Editar" onClick={()=>setEdit(d)}>{I.edit}</button>
                     <button className="btn-icon" title="Eliminar" onClick={()=>setDel(d)}>{I.trash}</button>
                   </td>
                 </tr>
-              ))}
+              );})}
               {filtradas.length===0 && <tr><td colSpan="12"><div className="empty"><span className="emoji">📭</span>{docentes.length===0 ? 'Sin docentes cargados. Importa un Excel en la pestaña 📥 Importar.' : 'Sin resultados con esos filtros.'}</div></td></tr>}
             </tbody>
           </table>
@@ -5855,7 +5865,66 @@ const calcHorasSemanales = (d) => {
   if(d.jmg_horas != null) return Math.min((Number(d.jmg_horas)||0) / SEMANAS_SEMESTRE, HORAS_MAX_SEMANALES);
   return 0;
 };
-const calcSueldoMensual = (d) => Math.round(calcValorMensualHora(d.hora_docente) * calcHorasSemanales(d));
+
+/* Calcula horas semanales reales por docente desde la programación efectiva
+   (SABANA o LISTA DE RECURSOS). Esta es la fuente "fidedigna" - lo que
+   realmente dicta el docente esta semana - vs el campo jmg_semanal del Excel
+   que en muchos casos está desactualizado o subestimado.
+
+   Devuelve un Map<nombre_uppercase, horasPorSemana>. Lógica:
+   - SABANA (sesiones con dw): suma (hf-hi)/60 × cantidad de días en dw.
+     Deduplica por (sección + sala + horario + dw) para no contar 2 veces.
+   - LISTA DE RECURSOS (sesiones con fi): suma duración total del semestre
+     y divide entre 18 semanas para sacar el promedio semanal.
+   Si hay datos de ambas fuentes para el mismo docente, prevalece eventos.
+*/
+const calcHorasSemanalesRealesMap = (data) => {
+  const sesiones = sesionesConsolidadas(data);
+  const sabana = new Map();  // nombre → { horas, keys:Set para dedupe }
+  const eventos = new Map(); // nombre → minutos totales
+  for(const s of sesiones){
+    if(!s.d || !s.hi || !s.hf) continue;
+    const key = (s.d||'').trim().toUpperCase();
+    if(!key) continue;
+    const dur = (toMin(s.hf) - toMin(s.hi)) / 60;
+    if(dur <= 0) continue;
+    if(s.fi){
+      // Evento puntual con fecha específica → suma total → /18
+      eventos.set(key, (eventos.get(key)||0) + dur);
+    } else if(s.dw){
+      // SABANA - patrón semanal
+      const dias = [...String(s.dw)].filter(c => c === '1').length;
+      if(!dias) continue;
+      const dedupeKey = `${s.sc||''}|${s.s||''}|${s.hi}|${s.hf}|${s.dw}`;
+      let st = sabana.get(key);
+      if(!st){ st = { horas: 0, keys: new Set() }; sabana.set(key, st); }
+      if(!st.keys.has(dedupeKey)){
+        st.keys.add(dedupeKey);
+        st.horas += dur * dias;
+      }
+    }
+  }
+  // Fusión: si hay eventos para un docente, prevalece sobre SABANA
+  const out = new Map();
+  for(const [nombre, total] of eventos){
+    out.set(nombre, total / SEMANAS_SEMESTRE);
+  }
+  for(const [nombre, st] of sabana){
+    if(!out.has(nombre)) out.set(nombre, st.horas);
+  }
+  return out;
+};
+
+// Devuelve las horas semanales del docente, prefiriendo SABANA real si está
+// disponible. Cae al campo del Excel solo si no hay datos en SABANA.
+const horasSemanalesEfectivas = (d, horasRealesMap) => {
+  if(horasRealesMap){
+    const real = horasRealesMap.get((d.nombre||'').trim().toUpperCase());
+    if(real != null && real > 0) return Math.min(real, HORAS_MAX_SEMANALES);
+  }
+  return calcHorasSemanales(d);
+};
+const calcSueldoMensual = (d, horasRealesMap) => Math.round(calcValorMensualHora(d.hora_docente) * horasSemanalesEfectivas(d, horasRealesMap));
 
 // Descuentos legales Chile 2026 (porcentajes aproximados, configurables en UI)
 const DESC_AFP_PCT = 11.5;       // AFP + comisión promedio
@@ -5863,27 +5932,38 @@ const DESC_SALUD_PCT = 7;        // Fonasa / Isapre
 const DESC_CESANTIA_PCT = 0.6;   // Seguro de cesantía empleado
 
 /* ----- Sub: Simulador de sueldo docente ----- */
-function SimuladorSueldo({ docentes }){
+function SimuladorSueldo({ docentes, horasRealesMap }){
   const [docenteId, setDocenteId] = useState('');
   const [horaInput, setHoraInput] = useState('');
   const [horasInput, setHorasInput] = useState('');
+  const [fuenteHoras, setFuenteHoras] = useState(null); // 'sabana' | 'excel' | null
   const [pensionado, setPensionado] = useState(false);
   const [afpPct, setAfpPct] = useState(DESC_AFP_PCT);
   const [saludPct, setSaludPct] = useState(DESC_SALUD_PCT);
   const [cesPct, setCesPct] = useState(DESC_CESANTIA_PCT);
   const [showAdvanced, setShowAdvanced] = useState(false);
+  const [docSel, setDocSel] = useState(null); // datos del docente para comparar
 
   const fmtCLP = (n) => '$ '+Math.round(Number(n)||0).toLocaleString('es-CL');
   const fmtNum = (n, d=1) => (Number(n)||0).toLocaleString('es-CL', {minimumFractionDigits:d, maximumFractionDigits:d});
 
-  // Si elige un docente, precarga sus datos
+  // Si elige un docente, precarga sus datos. Prioriza horas reales SABANA
+  // sobre el campo jmg_semanal del Excel (que suele estar desactualizado).
   const seleccionarDocente = (id) => {
     setDocenteId(id);
-    if(!id){ setHoraInput(''); setHorasInput(''); return; }
+    if(!id){ setHoraInput(''); setHorasInput(''); setFuenteHoras(null); setDocSel(null); return; }
     const d = docentes.find(x => String(x.id) === String(id));
     if(d){
+      setDocSel(d);
       setHoraInput(d.hora_docente || '');
-      setHorasInput(calcHorasSemanales(d) || '');
+      const hrsReal = horasRealesMap?.get((d.nombre||'').trim().toUpperCase()) || 0;
+      if(hrsReal > 0){
+        setHorasInput(Math.min(hrsReal, HORAS_MAX_SEMANALES).toFixed(1));
+        setFuenteHoras('sabana');
+      } else {
+        setHorasInput(calcHorasSemanales(d) || '');
+        setFuenteHoras('excel');
+      }
     }
   };
 
@@ -5933,10 +6013,27 @@ function SimuladorSueldo({ docentes }){
             <input type="number" value={horaInput} onChange={e=>setHoraInput(e.target.value)} placeholder="16716"/>
           </div>
           <div className="field">
-            <label>Horas semanales (máx {HORAS_MAX_SEMANALES})</label>
-            <input type="number" step="0.5" max={HORAS_MAX_SEMANALES} value={horasInput} onChange={e=>setHorasInput(e.target.value)} placeholder="20"/>
+            <label>Horas semanales (máx {HORAS_MAX_SEMANALES}) {fuenteHoras==='sabana' && <span className="chip success" style={{fontSize:9,padding:'2px 6px',marginLeft:4}}>✓ real SABANA</span>}{fuenteHoras==='excel' && <span className="chip" style={{fontSize:9,padding:'2px 6px',marginLeft:4}}>desde Excel</span>}</label>
+            <input type="number" step="0.5" max={HORAS_MAX_SEMANALES} value={horasInput} onChange={e=>{setHorasInput(e.target.value); setFuenteHoras(null);}} placeholder="20"/>
           </div>
         </div>
+
+        {docSel && (() => {
+          const hrsReal = horasRealesMap?.get((docSel.nombre||'').trim().toUpperCase()) || 0;
+          const hrsExcel = Number(docSel.jmg_semanal)||0;
+          if(hrsReal === 0 && hrsExcel === 0) return null;
+          const dif = Math.abs(hrsReal - hrsExcel);
+          return (
+            <div className="card" style={{padding:'10px 14px',background: dif>=1?'rgba(255,159,10,.08)':'var(--surface-2)',border:'1px solid '+(dif>=1?'rgba(255,159,10,.35)':'var(--border-soft)'),fontSize:12.5}}>
+              <div className="row" style={{gap:14,flexWrap:'wrap',alignItems:'center'}}>
+                <div><b>Horas semanales del docente:</b></div>
+                <div>📊 <b style={{color:hrsReal>0?'var(--success)':'var(--text-muted)'}}>SABANA: {hrsReal>0?hrsReal.toFixed(1):'—'} hrs</b> <button className="btn-ghost btn-sm" style={{padding:'2px 8px',marginLeft:4,fontSize:10.5}} disabled={!hrsReal} onClick={()=>{setHorasInput(Math.min(hrsReal,HORAS_MAX_SEMANALES).toFixed(1)); setFuenteHoras('sabana');}}>Usar</button></div>
+                <div>📄 <b>Excel: {hrsExcel||'—'} hrs</b> <button className="btn-ghost btn-sm" style={{padding:'2px 8px',marginLeft:4,fontSize:10.5}} disabled={!hrsExcel} onClick={()=>{setHorasInput(hrsExcel); setFuenteHoras('excel');}}>Usar</button></div>
+                {dif>=1 && <div style={{color:'var(--warn)',marginLeft:'auto'}}>⚠ Diferencia de {dif.toFixed(1)} hrs</div>}
+              </div>
+            </div>
+          );
+        })()}
 
         <details open={showAdvanced} onToggle={e=>setShowAdvanced(e.target.open)} style={{marginTop:6}}>
           <summary style={{cursor:'pointer',fontSize:13,fontWeight:600,padding:'4px 0'}}>⚙ Ajustar porcentajes de descuento legales</summary>
@@ -6010,7 +6107,7 @@ function SimuladorSueldo({ docentes }){
 }
 
 /* ----- Sub: Dashboard de gestión docente ----- */
-function DashboardDocente({ docentes, data }){
+function DashboardDocente({ docentes, data, horasRealesMap }){
   const fmtCLP = (n) => n != null ? '$ '+Number(n).toLocaleString('es-CL') : '—';
   const activos = docentes.filter(d => (d.estado||'ACTIVO') === 'ACTIVO');
 
@@ -6020,9 +6117,16 @@ function DashboardDocente({ docentes, data }){
   const totInactivos = docentes.filter(d => d.estado === 'INACTIVO').length;
   const jefaturasUnicas = new Set(activos.map(d=>d.jefe).filter(Boolean)).size;
   // Costo según fórmula institucional: valor_hora × 19/5 × min(horas_semanales, 40)
-  const costoMensualTotal = activos.reduce((a,d)=> a + calcSueldoMensual(d), 0);
-  const horasTotales = activos.reduce((a,d)=> a + calcHorasSemanales(d), 0);
+  // Usa horas reales SABANA si están, fallback a jmg_semanal del Excel.
+  const costoMensualTotal = activos.reduce((a,d)=> a + calcSueldoMensual(d, horasRealesMap), 0);
+  const horasTotales = activos.reduce((a,d)=> a + horasSemanalesEfectivas(d, horasRealesMap), 0);
   const conAsigActiva = activos.filter(d => d.asignatura_activa).length;
+  // Cuántos docentes tienen diferencia significativa Excel vs SABANA
+  const conDiscrepancia = activos.filter(d => {
+    const real = horasRealesMap?.get((d.nombre||'').trim().toUpperCase()) || 0;
+    const excel = Number(d.jmg_semanal)||0;
+    return real > 0 && Math.abs(real - excel) >= 1;
+  }).length;
 
   // Por categoría
   const porCategoria = useMemo(()=>{
@@ -6031,10 +6135,10 @@ function DashboardDocente({ docentes, data }){
       const k = d.categoria || 'Sin categoría';
       if(!m.has(k)) m.set(k, { categoria:k, n:0, horas:0, costo:0 });
       const x = m.get(k);
-      x.n++; x.horas += calcHorasSemanales(d); x.costo += calcSueldoMensual(d);
+      x.n++; x.horas += horasSemanalesEfectivas(d, horasRealesMap); x.costo += calcSueldoMensual(d, horasRealesMap);
     }
     return [...m.values()].sort((a,b)=> b.n - a.n);
-  }, [activos]);
+  }, [activos, horasRealesMap]);
 
   // Por banda
   const porBanda = useMemo(()=>{
@@ -6043,11 +6147,11 @@ function DashboardDocente({ docentes, data }){
       const k = d.banda_salarial || 'Sin banda';
       if(!m.has(k)) m.set(k, { banda:k, n:0, horas:0, costo:0, hora_prom:0, _horas:[] });
       const x = m.get(k);
-      x.n++; x.horas += calcHorasSemanales(d); x.costo += calcSueldoMensual(d);
+      x.n++; x.horas += horasSemanalesEfectivas(d, horasRealesMap); x.costo += calcSueldoMensual(d, horasRealesMap);
       if(d.hora_docente) x._horas.push(Number(d.hora_docente));
     }
     return [...m.values()].map(x => ({ ...x, hora_prom: x._horas.length ? Math.round(x._horas.reduce((a,b)=>a+b,0)/x._horas.length) : 0 })).sort((a,b)=> b.hora_prom - a.hora_prom);
-  }, [activos]);
+  }, [activos, horasRealesMap]);
 
   // Por jefatura
   const porJefatura = useMemo(()=>{
@@ -6056,11 +6160,11 @@ function DashboardDocente({ docentes, data }){
       const k = d.jefe || 'Sin jefatura';
       if(!m.has(k)) m.set(k, { jefe:k, n:0, horas:0, costo:0, conAsig:0 });
       const x = m.get(k);
-      x.n++; x.horas += calcHorasSemanales(d); x.costo += calcSueldoMensual(d);
+      x.n++; x.horas += horasSemanalesEfectivas(d, horasRealesMap); x.costo += calcSueldoMensual(d, horasRealesMap);
       if(d.asignatura_activa) x.conAsig++;
     }
     return [...m.values()].sort((a,b)=> b.n - a.n);
-  }, [activos]);
+  }, [activos, horasRealesMap]);
 
   // Cruce con SABANA: docentes que dictan según programación / eventos
   const docentesSabana = useMemo(()=>{
@@ -6087,8 +6191,8 @@ function DashboardDocente({ docentes, data }){
       <div className="grid grid-4">
         <div className="kpi kpi-blue"><span className="label">Docentes activos</span><span className="value">{totActivos.toLocaleString('es-CL')}</span><span className="delta">de {total.toLocaleString('es-CL')} en catálogo · {totInactivos} inactivos</span><div className="icon">👥</div></div>
         <div className="kpi kpi-green"><span className="label">Jefaturas únicas</span><span className="value">{jefaturasUnicas}</span><span className="delta">directores distintos</span><div className="icon">⭐</div></div>
-        <div className="kpi kpi-amber"><span className="label">Horas JMG semana</span><span className="value">{horasTotales.toLocaleString('es-CL')}</span><span className="delta">suma de docentes activos</span><div className="icon">⏱</div></div>
-        <div className="kpi kpi-red"><span className="label">Costo mensual proyectado</span><span className="value" style={{fontSize:18}}>{fmtCLP(costoMensualTotal)}</span><span className="delta">hora × 19/5 × hrs sem (máx {HORAS_MAX_SEMANALES})</span><div className="icon">💰</div></div>
+        <div className="kpi kpi-amber"><span className="label">Horas/semana (real SABANA)</span><span className="value">{Math.round(horasTotales).toLocaleString('es-CL')}</span><span className="delta">suma activos · {conDiscrepancia>0?`${conDiscrepancia} ≠ Excel ⚠`:'coincide con Excel'}</span><div className="icon">⏱</div></div>
+        <div className="kpi kpi-red"><span className="label">Costo mensual proyectado</span><span className="value" style={{fontSize:18}}>{fmtCLP(Math.round(costoMensualTotal))}</span><span className="delta">hora × 19/5 × hrs reales (máx {HORAS_MAX_SEMANALES})</span><div className="icon">💰</div></div>
       </div>
 
       <div className="grid grid-2" style={{gap:14}}>
