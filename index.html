@@ -5613,14 +5613,19 @@ function Reservas({ reservas, data, user, toast, onGoNueva, onUpdateEstado }){
     total:     ownArr.length,
   }),[ownArr]);
 
-  // Orden del historial. 'default' = pendientes primero + fecha desc (útil para
-  // aprobar). Al clickear un encabezado se ordena explícitamente por esa columna.
+  // Orden del historial. 'default' = depende del filtro activo:
+  //   • Pendientes → más recientemente CREADAS arriba (las nuevas se ven primero)
+  //   • Aprobadas/Rechazadas → más recientemente DECIDIDAS arriba (lo que acabas
+  //     de aprobar/rechazar queda al tope, no se mezcla con cosas viejas)
+  //   • Todas → pendientes primero, luego por última actividad (decidida o
+  //     creada, la que sea más nueva) desc.
+  // Al clickear un encabezado se ordena explícitamente por esa columna.
   const salaTipoMap = useMemo(()=> new Map((data.salas||[]).map(s=>[s.codigo, s.tipo||''])), [data.salas]);
   const [sortKey, setSortKey] = useState('default');
   const [sortDir, setSortDir] = useState('desc');
   const toggleSort = (key) => {
     if(sortKey===key){ setSortDir(d=> d==='asc'?'desc':'asc'); }
-    else { setSortKey(key); setSortDir(key==='fecha'||key==='creada' ? 'desc' : 'asc'); }
+    else { setSortKey(key); setSortDir(key==='fecha'||key==='creada'||key==='decidida' ? 'desc' : 'asc'); }
   };
   const sorters = {
     fecha:       r => r.fi||'',
@@ -5629,6 +5634,7 @@ function Reservas({ reservas, data, user, toast, onGoNueva, onUpdateEstado }){
     estado:      r => r.es||'',
     solicitante: r => (r.do||r.creado_por||'').toLowerCase(),
     creada:      r => r.creado_en||'',
+    decidida:    r => r.decidido_en||'',  // pendientes (sin valor) caen al final en desc
   };
 
   const filtered = useMemo(()=>{
@@ -5637,13 +5643,30 @@ function Reservas({ reservas, data, user, toast, onGoNueva, onUpdateEstado }){
       (!estado || r.es===estado)
     ).sort((a,b)=>{
       if(sortKey==='default'){
-        // pendientes primero, luego por fecha desc
+        if(estado==='pendiente'){
+          return (b.creado_en||'').localeCompare(a.creado_en||'');
+        }
+        if(estado==='aprobada' || estado==='rechazada'){
+          // Decididas más recientes arriba (las más viejas o sin fecha al final).
+          const ad = a.decidido_en || '', bd = b.decidido_en || '';
+          if(ad !== bd) return bd.localeCompare(ad);
+          return (b.creado_en||'').localeCompare(a.creado_en||'');
+        }
+        // "Todas": pendientes primero, luego por última actividad desc.
         if(a.es==='pendiente' && b.es!=='pendiente') return -1;
         if(b.es==='pendiente' && a.es!=='pendiente') return 1;
-        return (b.fi||'').localeCompare(a.fi||'');
+        const aLast = a.decidido_en || a.creado_en || '';
+        const bLast = b.decidido_en || b.creado_en || '';
+        return bLast.localeCompare(aLast);
       }
       const fn = sorters[sortKey] || sorters.fecha;
-      const cmp = String(fn(a)).localeCompare(String(fn(b)), 'es', { numeric:true });
+      const va = String(fn(a)), vb = String(fn(b));
+      // En 'decidida' desc: pendientes (vacío) al final, no al inicio.
+      if(sortKey==='decidida' && (!va || !vb) && va !== vb){
+        if(!va) return sortDir==='asc' ? -1 : 1;
+        if(!vb) return sortDir==='asc' ? 1 : -1;
+      }
+      const cmp = va.localeCompare(vb, 'es', { numeric:true });
       return sortDir==='asc' ? cmp : -cmp;
     });
   },[ownArr, q, estado, sortKey, sortDir, salaTipoMap]);
@@ -5725,7 +5748,7 @@ function Reservas({ reservas, data, user, toast, onGoNueva, onUpdateEstado }){
             <table className="tbl">
               <thead><tr>
                 <Th k="fecha">Fecha</Th><th>Horario</th><Th k="sala">Sala</Th><Th k="tipo">Tipo</Th><th>Motivo</th><Th k="solicitante">Solicitante</Th>
-                <th title="SLA: tiempo para decidir / tiempo que tardó la decisión">⏱ SLA</th>
+                <Th k="decidida" style={{}}><span title="Ordena por la fecha en que se aprobó/rechazó la reserva">⏱ Decidida</span></Th>
                 <Th k="estado">Estado</Th><th style={{textAlign:'right'}}>Acciones</th>
               </tr></thead>
               <tbody>
