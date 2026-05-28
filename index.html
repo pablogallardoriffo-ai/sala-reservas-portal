@@ -5613,17 +5613,40 @@ function Reservas({ reservas, data, user, toast, onGoNueva, onUpdateEstado }){
     total:     ownArr.length,
   }),[ownArr]);
 
+  // Orden del historial. 'default' = pendientes primero + fecha desc (útil para
+  // aprobar). Al clickear un encabezado se ordena explícitamente por esa columna.
+  const salaTipoMap = useMemo(()=> new Map((data.salas||[]).map(s=>[s.codigo, s.tipo||''])), [data.salas]);
+  const [sortKey, setSortKey] = useState('default');
+  const [sortDir, setSortDir] = useState('desc');
+  const toggleSort = (key) => {
+    if(sortKey===key){ setSortDir(d=> d==='asc'?'desc':'asc'); }
+    else { setSortKey(key); setSortDir(key==='fecha'||key==='creada' ? 'desc' : 'asc'); }
+  };
+  const sorters = {
+    fecha:       r => r.fi||'',
+    sala:        r => r.r||'',
+    tipo:        r => salaTipoMap.get(r.r)||'',
+    estado:      r => r.es||'',
+    solicitante: r => (r.do||r.creado_por||'').toLowerCase(),
+    creada:      r => r.creado_en||'',
+  };
+
   const filtered = useMemo(()=>{
     return ownArr.filter(r =>
       (!q || (r.r||'').toLowerCase().includes(q.toLowerCase()) || (r.mo||'').toLowerCase().includes(q.toLowerCase()) || (r.do||'').toLowerCase().includes(q.toLowerCase())) &&
       (!estado || r.es===estado)
     ).sort((a,b)=>{
-      // pendientes primero, luego por fecha desc
-      if(a.es==='pendiente' && b.es!=='pendiente') return -1;
-      if(b.es==='pendiente' && a.es!=='pendiente') return 1;
-      return (b.fi||'').localeCompare(a.fi||'');
+      if(sortKey==='default'){
+        // pendientes primero, luego por fecha desc
+        if(a.es==='pendiente' && b.es!=='pendiente') return -1;
+        if(b.es==='pendiente' && a.es!=='pendiente') return 1;
+        return (b.fi||'').localeCompare(a.fi||'');
+      }
+      const fn = sorters[sortKey] || sorters.fecha;
+      const cmp = String(fn(a)).localeCompare(String(fn(b)), 'es', { numeric:true });
+      return sortDir==='asc' ? cmp : -cmp;
     });
-  },[ownArr, q, estado]);
+  },[ownArr, q, estado, sortKey, sortDir, salaTipoMap]);
 
   const setEstadoReserva = async (id, nuevo) => {
     try {
@@ -5649,6 +5672,13 @@ function Reservas({ reservas, data, user, toast, onGoNueva, onUpdateEstado }){
       className={`state-chip ${estado===v?'sel':''} ${cls}`}>
       <span>{label}</span><b>{count}</b>
     </button>
+  );
+
+  // Encabezado de columna ordenable (click alterna asc/desc).
+  const Th = ({ k, children, style }) => (
+    <th onClick={()=>toggleSort(k)} title="Ordenar por esta columna" style={{cursor:'pointer', userSelect:'none', whiteSpace:'nowrap', ...style}}>
+      {children}<span style={{opacity: sortKey===k?1:.25, marginLeft:3}}>{sortKey===k ? (sortDir==='asc'?'▲':'▼') : '↕'}</span>
+    </th>
   );
 
   return (
@@ -5693,9 +5723,9 @@ function Reservas({ reservas, data, user, toast, onGoNueva, onUpdateEstado }){
           <div className="tbl-scroll">
             <table className="tbl">
               <thead><tr>
-                <th>Fecha</th><th>Horario</th><th>Sala</th><th>Motivo</th><th>Solicitante</th>
+                <Th k="fecha">Fecha</Th><th>Horario</th><Th k="sala">Sala</Th><Th k="tipo">Tipo</Th><th>Motivo</th><Th k="solicitante">Solicitante</Th>
                 <th title="SLA: tiempo para decidir / tiempo que tardó la decisión">⏱ SLA</th>
-                <th>Estado</th><th style={{textAlign:'right'}}>Acciones</th>
+                <Th k="estado">Estado</Th><th style={{textAlign:'right'}}>Acciones</th>
               </tr></thead>
               <tbody>
                 {filtered.map(r => {
@@ -5710,6 +5740,7 @@ function Reservas({ reservas, data, user, toast, onGoNueva, onUpdateEstado }){
                     </td>
                     <td className="nowrap">{r.hi}–{r.hf}<div className="muted" style={{fontSize:11}}>Mód. {r.mi}–{r.mf}</div></td>
                     <td><b style={{color:'var(--primary)'}}>{r.r}</b></td>
+                    <td className="nowrap"><span className="muted" style={{fontSize:12}}>{salaTipoMap.get(r.r)||'—'}</span></td>
                     <td style={{maxWidth:340}}>{r.mo}</td>
                     <td><div style={{fontSize:13}}>{r.do||'—'}</div><div className="muted" style={{fontSize:11}}>{r.co||r.ru}</div></td>
                     <td className="nowrap">
@@ -5745,7 +5776,7 @@ function Reservas({ reservas, data, user, toast, onGoNueva, onUpdateEstado }){
                   </tr>
                   );
                 })}
-                {filtered.length===0 && counts.pendiente!==0 && <tr><td colSpan="8"><div className="empty"><span className="emoji">🗂</span>Sin reservas en este filtro.</div></td></tr>}
+                {filtered.length===0 && !(canApprove && estado==='pendiente' && counts.pendiente===0) && <tr><td colSpan="9"><div className="empty"><span className="emoji">🗂</span>Sin reservas en este filtro.</div></td></tr>}
               </tbody>
             </table>
           </div>
