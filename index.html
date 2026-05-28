@@ -5870,86 +5870,97 @@ const calcHorasSemanales = (d) => {
   return 0;
 };
 
-/* Calcula desglose de horas reales por docente desde la programación efectiva
-   (SABANA o LISTA DE RECURSOS). LISTA DE RECURSOS contiene cada clase con
-   fecha exacta, así que distingue entre asignaturas RECURRENTES (semanales
-   típicas, ~18 instancias) vs ESPORÁDICAS (eventos puntuales 3-5×/semestre).
+/* Calcula desglose de horas por docente con distinción correcta entre
+   clases recurrentes (semanales típicas, pagan sueldo mensual fijo via
+   factor 19/5) y eventos esporádicos (se pagan por hora dictada, no
+   mensualmente).
 
-   Devuelve un Map<nombre_uppercase, {
-     horasSem,        // hrs/sem promedio mensualizado (lo que va al sueldo)
-     totalSemestre,   // hrs reales del semestre completo
-     instancias,      // # clases distintas dictadas (deduplicadas)
-     asignaturas,     // # asignaturas distintas (secciones)
-     recurrentes,     // hrs/sem de asignaturas semanales (≥12 instancias)
-     esporadicas,     // hrs/sem promedio mensualizado de eventos puntuales
-     instRecurrentes, // # asig recurrentes
-     instEsporadicas, // # asig esporádicas
+   Criterio para distinguir:
+   - RECURRENTE: la asignatura existe en SABANA con patrón semanal (dw).
+     Aporta hrs/sem = (hf-hi)/60 × cantidad_de_dias_en_dw al sueldo fijo.
+   - ESPORÁDICA: evento cuyo código de sección NO está en SABANA (evento
+     puntual) o cuyo docente NO coincide con el titular de SABANA
+     (reemplazo). Se cuenta por hora dictada total del semestre.
+
+   Devuelve Map<nombre_uppercase, {
+     horasSem,         // hrs/sem recurrentes (entra en sueldo mensual fijo)
+     esporadicasTotal, // hrs totales esporádicas del semestre (pago aparte)
+     esporadicasInst,  // # instancias de clases esporádicas
+     totalSemestre,    // suma horas reales semestre = recurrentes×18 + esporadicas
+     instRecurrentes,  // # asignaturas recurrentes
+     instEsporadicas,  // # asignaturas distintas esporádicas
    }>
 */
-const UMBRAL_RECURRENTE = 12; // instancias mínimas para considerar "semanal regular"
-
 const calcHorasDocenteMap = (data) => {
-  const sesiones = sesionesConsolidadas(data);
-  // Por docente, agrupar por asignatura (sección+horario) para clasificar
-  const porDocente = new Map(); // nombre → Map<asigKey, {duracion, instancias, esEvento}>
+  const sabanaIdx = buildSabanaIndex(data.programacion);
+  const porDocRec = new Map(); // recurrentes desde SABANA
+  const porDocEsp = new Map(); // esporádicas desde eventos no-SABANA o reemplazos
 
-  for(const s of sesiones){
-    if(!s.d || !s.hi || !s.hf) continue;
-    const key = (s.d||'').trim().toUpperCase();
-    const dur = (toMin(s.hf) - toMin(s.hi)) / 60;
+  // 1) Recurrentes: una fila de programacion = una asignatura semanal típica.
+  for(const p of (data.programacion||[])){
+    const key = (p.d||'').trim().toUpperCase();
+    if(!key || !p.hi || !p.hf) continue;
+    const dur = (toMin(p.hf) - toMin(p.hi)) / 60;
     if(dur <= 0) continue;
-    if(!porDocente.has(key)) porDocente.set(key, new Map());
-    const asigs = porDocente.get(key);
+    const dias = [...String(p.dw||'')].filter(c => c === '1').length;
+    if(!dias) continue;
+    const aKey = `${p.sc||''}|${p.s||''}|${p.hi}|${p.hf}|${p.dw}`;
+    let st = porDocRec.get(key);
+    if(!st){ st = { hrsSem: 0, claves: new Set(), asigs: new Set() }; porDocRec.set(key, st); }
+    if(!st.claves.has(aKey)){
+      st.claves.add(aKey);
+      st.hrsSem += dur * dias;
+      if(p.sc) st.asigs.add(p.sc);
+    }
+  }
 
-    if(s.fi){
-      // Evento puntual: cuenta como 1 instancia, agrupar por sección+horario
-      const aKey = `${s.sc||''}|${s.hi}|${s.hf}`;
-      let a = asigs.get(aKey);
-      if(!a){ a = { dur, instancias: 0, esEvento: true }; asigs.set(aKey, a); }
-      a.instancias++;
-    } else if(s.dw){
-      // SABANA recurrente: 1 fila ≡ 18 instancias del semestre
-      const dias = [...String(s.dw)].filter(c => c === '1').length;
-      if(!dias) continue;
-      const aKey = `${s.sc||''}|${s.s||''}|${s.hi}|${s.hf}|${s.dw}`;
-      let a = asigs.get(aKey);
-      if(!a){ a = { dur, instancias: 0, esEvento: false, dias }; asigs.set(aKey, a); a.instancias = SEMANAS_SEMESTRE * dias; }
+  // 2) Esporádicas: eventos cuyo código NO está en SABANA, o eventos con
+  // docente distinto al titular SABANA (reemplazos puntuales).
+  if(hasEventos(data)){
+    for(const ev of data.eventos){
+      if(!ev.hi || !ev.hf) continue;
+      const dur = (toMin(ev.hf) - toMin(ev.hi)) / 60;
+      if(dur <= 0) continue;
+      const code = secCodeFrom(ev.sc);
+      const sabanaRow = code ? sabanaIdx.get(code) : null;
+      const docTitular = (sabanaRow?.d || '').trim().toUpperCase();
+      // Docente real del evento (prioriza fila P, sino infiere de SABANA)
+      const docReal = (ev.dp || sabanaRow?.d || '').trim().toUpperCase();
+      if(!docReal) continue;
+
+      if(sabanaRow && docReal === docTitular){
+        // Caso normal: instancia recurrente del titular, ya contada en SABANA.
+        continue;
+      }
+      // Esporádica: evento sin SABANA O reemplazo (otro docente)
+      let st = porDocEsp.get(docReal);
+      if(!st){ st = { hrsTot: 0, instancias: 0, asigs: new Set() }; porDocEsp.set(docReal, st); }
+      st.hrsTot += dur;
+      st.instancias++;
+      if(ev.sc) st.asigs.add(ev.sc);
     }
   }
 
   const out = new Map();
-  for(const [nombre, asigs] of porDocente){
-    let totalSemestre = 0, recurrentes = 0, esporadicasSemestre = 0;
-    let instRec = 0, instEsp = 0;
-    for(const a of asigs.values()){
-      const hrsAsig = a.dur * a.instancias;
-      totalSemestre += hrsAsig;
-      if(a.instancias >= UMBRAL_RECURRENTE){
-        // Asignatura semanal regular: equivalente semanal = dur × días
-        recurrentes += a.esEvento ? hrsAsig / SEMANAS_SEMESTRE : a.dur * (a.dias||1);
-        instRec++;
-      } else {
-        // Esporádica: promediada sobre el semestre
-        esporadicasSemestre += hrsAsig;
-        instEsp++;
-      }
-    }
-    out.set(nombre, {
-      horasSem: recurrentes + esporadicasSemestre / SEMANAS_SEMESTRE,
-      totalSemestre,
-      instancias: [...asigs.values()].reduce((a,x)=>a+x.instancias, 0),
-      asignaturas: asigs.size,
-      recurrentes,
-      esporadicas: esporadicasSemestre / SEMANAS_SEMESTRE,
-      esporadicasTotal: esporadicasSemestre,
-      instRecurrentes: instRec,
-      instEsporadicas: instEsp,
+  const allKeys = new Set([...porDocRec.keys(), ...porDocEsp.keys()]);
+  for(const k of allKeys){
+    const r = porDocRec.get(k) || { hrsSem: 0, asigs: new Set() };
+    const e = porDocEsp.get(k) || { hrsTot: 0, instancias: 0, asigs: new Set() };
+    out.set(k, {
+      horasSem: r.hrsSem,
+      recurrentes: r.hrsSem,
+      esporadicasTotal: e.hrsTot,
+      esporadicasInst: e.instancias,
+      totalSemestre: r.hrsSem * SEMANAS_SEMESTRE + e.hrsTot,
+      instRecurrentes: r.asigs.size,
+      instEsporadicas: e.asigs.size,
+      asignaturas: r.asigs.size + e.asigs.size,
     });
   }
   return out;
 };
 
-// Compatibilidad: mantiene la signatura del map antiguo (nombre → horasSem)
+// Compatibilidad: nombre→horasSem recurrentes (las que entran al sueldo fijo).
 const calcHorasSemanalesRealesMap = (data) => {
   const detallado = calcHorasDocenteMap(data);
   const out = new Map();
@@ -6014,14 +6025,25 @@ function SimuladorSueldo({ docentes, horasRealesMap }){
   let horasSem = Number(horasInput) || 0;
   if(horasSem > HORAS_MAX_SEMANALES) horasSem = HORAS_MAX_SEMANALES;
   const valorMensualHora = Math.round(hora * FACTOR_MENSUAL);
+  // Sueldo mensual fijo (clases recurrentes): hrs/sem × 19/5 × valor_hora
   const sueldoBruto = Math.round(valorMensualHora * horasSem);
   const totalHorasSem = Math.round(horasSem * SEMANAS_SEMESTRE);
 
-  const afpDesc   = pensionado ? 0 : Math.round(sueldoBruto * afpPct/100);
-  const saludDesc = Math.round(sueldoBruto * saludPct/100);
-  const cesDesc   = pensionado ? 0 : Math.round(sueldoBruto * cesPct/100);
+  // Pago adicional por eventos esporádicos (si el docente seleccionado los
+  // tiene): se paga por hora dictada en el semestre, no se mensualiza con
+  // el factor 19/5. Total semestre = hrs_esp × valor_hora.
+  const detallado = docSel ? horasRealesMap?._detallado?.get((docSel.nombre||'').trim().toUpperCase()) : null;
+  const hrsEsporadicas = detallado?.esporadicasTotal || 0;
+  const pagoEsporadicoSemestre = Math.round(hrsEsporadicas * hora);
+  const pagoEsporadicoMensual  = Math.round(pagoEsporadicoSemestre / 4.5); // 4.5 meses por semestre
+  const sueldoBrutoTotal = sueldoBruto + pagoEsporadicoMensual;
+
+  const baseDescuento = sueldoBrutoTotal; // descuentos se aplican sobre el bruto total
+  const afpDesc   = pensionado ? 0 : Math.round(baseDescuento * afpPct/100);
+  const saludDesc = Math.round(baseDescuento * saludPct/100);
+  const cesDesc   = pensionado ? 0 : Math.round(baseDescuento * cesPct/100);
   const totalDesc = afpDesc + saludDesc + cesDesc;
-  const sueldoLiquido = sueldoBruto - totalDesc;
+  const sueldoLiquido = sueldoBrutoTotal - totalDesc;
 
   const docentesOrdenados = useMemo(()=> [...docentes].filter(d=>(d.estado||'ACTIVO')==='ACTIVO').sort((a,b)=>(a.nombre||'').localeCompare(b.nombre||'')), [docentes]);
 
@@ -6082,23 +6104,23 @@ function SimuladorSueldo({ docentes, horasRealesMap }){
                   <div style={{fontWeight:600,marginBottom:6}}>📚 Desglose de carga académica (semestre {SEMANAS_SEMESTRE} sem):</div>
                   <div className="grid grid-3" style={{gap:8}}>
                     <div style={{padding:'8px 10px',background:'rgba(48,209,88,.08)',borderRadius:6,border:'1px solid rgba(48,209,88,.25)'}}>
-                      <div style={{fontSize:11,color:'var(--text-muted)',fontWeight:600,letterSpacing:.3}}>RECURRENTES (semanales)</div>
+                      <div style={{fontSize:11,color:'var(--text-muted)',fontWeight:600,letterSpacing:.3}}>RECURRENTES (sueldo fijo)</div>
                       <div style={{fontSize:18,fontWeight:700,color:'var(--success)'}}>{detallado.recurrentes.toFixed(1)} <span style={{fontSize:12,fontWeight:400}}>hrs/sem</span></div>
-                      <div style={{fontSize:11}}>{detallado.instRecurrentes} asignatura{detallado.instRecurrentes!==1?'s':''} × ~{SEMANAS_SEMESTRE} sem</div>
+                      <div style={{fontSize:11}}>{detallado.instRecurrentes} asignatura{detallado.instRecurrentes!==1?'s':''} × {SEMANAS_SEMESTRE} sem · {(detallado.recurrentes*SEMANAS_SEMESTRE).toFixed(0)} hrs semestre</div>
                     </div>
                     <div style={{padding:'8px 10px',background:'rgba(255,159,10,.08)',borderRadius:6,border:'1px solid rgba(255,159,10,.25)'}}>
-                      <div style={{fontSize:11,color:'var(--text-muted)',fontWeight:600,letterSpacing:.3}}>ESPORÁDICAS (eventos)</div>
-                      <div style={{fontSize:18,fontWeight:700,color:'var(--warn)'}}>{detallado.esporadicas.toFixed(2)} <span style={{fontSize:12,fontWeight:400}}>hrs/sem prom.</span></div>
-                      <div style={{fontSize:11}}>{detallado.instEsporadicas} asignatura{detallado.instEsporadicas!==1?'s':''} · {detallado.esporadicasTotal.toFixed(1)} hrs total semestre</div>
+                      <div style={{fontSize:11,color:'var(--text-muted)',fontWeight:600,letterSpacing:.3}}>ESPORÁDICAS (pago aparte)</div>
+                      <div style={{fontSize:18,fontWeight:700,color:'var(--warn)'}}>{detallado.esporadicasTotal.toFixed(1)} <span style={{fontSize:12,fontWeight:400}}>hrs total</span></div>
+                      <div style={{fontSize:11}}>{detallado.instEsporadicas} asig · {detallado.esporadicasInst} clase{detallado.esporadicasInst!==1?'s':''} en el semestre</div>
                     </div>
                     <div style={{padding:'8px 10px',background:'var(--surface-2)',borderRadius:6,border:'1px solid var(--border-soft)'}}>
-                      <div style={{fontSize:11,color:'var(--text-muted)',fontWeight:600,letterSpacing:.3}}>TOTAL SEMESTRE</div>
+                      <div style={{fontSize:11,color:'var(--text-muted)',fontWeight:600,letterSpacing:.3}}>CARGA TOTAL SEMESTRE</div>
                       <div style={{fontSize:18,fontWeight:700}}>{detallado.totalSemestre.toFixed(1)} <span style={{fontSize:12,fontWeight:400}}>hrs</span></div>
-                      <div style={{fontSize:11}}>{detallado.instancias.toLocaleString('es-CL')} clases dictadas</div>
+                      <div style={{fontSize:11}}>{detallado.asignaturas} asignatura{detallado.asignaturas!==1?'s':''} distinta{detallado.asignaturas!==1?'s':''}</div>
                     </div>
                   </div>
                   <div style={{fontSize:11,color:'var(--text-muted)',marginTop:6,lineHeight:1.5}}>
-                    💡 Las horas semanales del simulador suman recurrentes + esporádicas mensualizadas (suma esporádica ÷ {SEMANAS_SEMESTRE} sem). Esto refleja el sueldo <b>mensual promedio</b> del semestre. Si un evento se hace 4× × 2 hrs = 8 hrs reales, aporta 8/{SEMANAS_SEMESTRE} ≈ {(8/SEMANAS_SEMESTRE).toFixed(2)} hrs/sem al cálculo.
+                    💡 <b>Recurrentes</b> entran al sueldo mensual fijo (hrs/sem × 19/5 × valor_hora). <b>Esporádicas</b> se pagan por hora dictada — el total del semestre se prorratea en 4,5 meses para mostrar el aporte mensual estimado, pero el desembolso real depende del calendario de las clases.
                   </div>
                 </div>
               )}
@@ -6126,21 +6148,21 @@ function SimuladorSueldo({ docentes, horasRealesMap }){
           <div className="icon">📈</div>
         </div>
         <div className="kpi kpi-amber">
-          <span className="label">Horas semestre</span>
+          <span className="label">Horas semestre (recurrentes)</span>
           <span className="value">{totalHorasSem.toLocaleString('es-CL')}</span>
-          <span className="delta">{fmtNum(horasSem)} hrs × {SEMANAS_SEMESTRE} sem</span>
+          <span className="delta">{fmtNum(horasSem)} hrs/sem × {SEMANAS_SEMESTRE} sem{hrsEsporadicas>0?` · +${hrsEsporadicas.toFixed(1)} esp.`:''}</span>
           <div className="icon">⏱</div>
         </div>
         <div className="kpi kpi-green">
           <span className="label">Sueldo BRUTO mensual</span>
-          <span className="value" style={{fontSize:20}}>{fmtCLP(sueldoBruto)}</span>
-          <span className="delta">{fmtNum(horasSem)} hrs/sem</span>
+          <span className="value" style={{fontSize:20}}>{fmtCLP(sueldoBrutoTotal)}</span>
+          <span className="delta">{hrsEsporadicas>0?`fijo ${fmtCLP(sueldoBruto)} + esp. ${fmtCLP(pagoEsporadicoMensual)}/mes`:`${fmtNum(horasSem)} hrs/sem`}</span>
           <div className="icon">💵</div>
         </div>
         <div className="kpi kpi-red">
           <span className="label">Sueldo LÍQUIDO mensual</span>
           <span className="value" style={{fontSize:20}}>{fmtCLP(sueldoLiquido)}</span>
-          <span className="delta">{sueldoBruto>0?Math.round(sueldoLiquido/sueldoBruto*100):0}% del bruto</span>
+          <span className="delta">{sueldoBrutoTotal>0?Math.round(sueldoLiquido/sueldoBrutoTotal*100):0}% del bruto</span>
           <div className="icon">💰</div>
         </div>
       </div>
@@ -6152,11 +6174,26 @@ function SimuladorSueldo({ docentes, horasRealesMap }){
         <div className="tbl-scroll">
           <table className="tbl">
             <tbody>
+              <tr><td colSpan="2" style={{padding:'10px 12px',fontWeight:700,fontSize:12,color:'var(--text-muted)',background:'var(--surface-2)'}}>SUELDO FIJO (CLASES RECURRENTES SEMANALES)</td></tr>
               <tr><td><b>1.</b> Valor hora docente</td><td style={{textAlign:'right',fontFamily:'monospace'}}>{fmtCLP(hora)}</td></tr>
               <tr><td><b>2.</b> × Factor mensualización (19/5 = {FACTOR_MENSUAL})</td><td style={{textAlign:'right',fontFamily:'monospace'}}>×{FACTOR_MENSUAL}</td></tr>
               <tr style={{background:'var(--surface-2)'}}><td><b>= Valor mensual por hora</b></td><td style={{textAlign:'right',fontFamily:'monospace',fontWeight:700}}>{fmtCLP(valorMensualHora)}</td></tr>
-              <tr><td><b>3.</b> × Horas semanales</td><td style={{textAlign:'right',fontFamily:'monospace'}}>×{fmtNum(horasSem)}</td></tr>
-              <tr style={{background:'rgba(48,209,88,.08)'}}><td><b>= SUELDO BRUTO MENSUAL</b></td><td style={{textAlign:'right',fontFamily:'monospace',fontWeight:700,color:'var(--success)'}}>{fmtCLP(sueldoBruto)}</td></tr>
+              <tr><td><b>3.</b> × Horas semanales (recurrentes)</td><td style={{textAlign:'right',fontFamily:'monospace'}}>×{fmtNum(horasSem)}</td></tr>
+              <tr style={{background:'rgba(48,209,88,.08)'}}><td><b>= Sueldo mensual fijo</b></td><td style={{textAlign:'right',fontFamily:'monospace',fontWeight:700,color:'var(--success)'}}>{fmtCLP(sueldoBruto)}</td></tr>
+
+              {hrsEsporadicas > 0 && (
+                <>
+                  <tr><td colSpan="2" style={{padding:'10px 12px',fontWeight:700,fontSize:12,color:'var(--text-muted)',background:'var(--surface-2)'}}>PAGO ADICIONAL POR EVENTOS ESPORÁDICOS</td></tr>
+                  <tr><td>Horas esporádicas en el semestre</td><td style={{textAlign:'right',fontFamily:'monospace'}}>{fmtNum(hrsEsporadicas)} hrs</td></tr>
+                  <tr><td>× Valor hora</td><td style={{textAlign:'right',fontFamily:'monospace'}}>×{fmtCLP(hora)}</td></tr>
+                  <tr style={{background:'var(--surface-2)'}}><td><b>= Pago total esporádico semestre</b></td><td style={{textAlign:'right',fontFamily:'monospace',fontWeight:700}}>{fmtCLP(pagoEsporadicoSemestre)}</td></tr>
+                  <tr><td>÷ 4,5 meses del semestre</td><td style={{textAlign:'right',fontFamily:'monospace'}}>÷4,5</td></tr>
+                  <tr style={{background:'rgba(255,159,10,.08)'}}><td><b>= Pago esporádico prorrateado mensual</b></td><td style={{textAlign:'right',fontFamily:'monospace',fontWeight:700,color:'var(--warn)'}}>{fmtCLP(pagoEsporadicoMensual)}</td></tr>
+                </>
+              )}
+
+              <tr style={{background:'rgba(48,209,88,.15)',borderTop:'2px solid var(--success)'}}><td><b>SUELDO BRUTO MENSUAL TOTAL</b></td><td style={{textAlign:'right',fontFamily:'monospace',fontWeight:700,fontSize:15,color:'var(--success)'}}>{fmtCLP(sueldoBrutoTotal)}</td></tr>
+
               <tr><td colSpan="2" style={{padding:'10px 12px',fontWeight:700,fontSize:12,color:'var(--text-muted)',background:'var(--surface-2)'}}>DESCUENTOS LEGALES</td></tr>
               <tr><td>AFP ({pensionado?'pensionado · exento':`${afpPct}%`})</td><td style={{textAlign:'right',fontFamily:'monospace',color:'var(--danger)'}}>− {fmtCLP(afpDesc)}</td></tr>
               <tr><td>Salud ({saludPct}%)</td><td style={{textAlign:'right',fontFamily:'monospace',color:'var(--danger)'}}>− {fmtCLP(saludDesc)}</td></tr>
