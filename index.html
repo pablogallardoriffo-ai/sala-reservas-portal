@@ -6543,17 +6543,68 @@ function Reportes({ data, reservas }){
   }, [sesiones]);
 
   // === Carga docente === (misma lógica de deduplicación por sección)
+  // === Cuántas semanas dictó cada bloque recurrente del SABANA en ESTE
+  // semestre cargado === Si hay eventos (LISTA DE RECURSOS), contamos
+  // directamente las fechas reales por (sección, sala, hi, hf). Si no, caemos
+  // a 18 semanas (estándar institucional). Así las horas reflejan el semestre
+  // realmente cargado, no un supuesto fijo.
+  const semanasPorBloque = useMemo(()=>{
+    const m = new Map();
+    if(!hasEventos(data)) return m;
+    const cuenta = new Map(); // key bloque → Set(fechas)
+    for(const ev of (data.eventos||[])){
+      if(!ev.fi || !ev.hi || !ev.hf) continue;
+      const k = `${ev.sc||''}|${ev.s||''}|${ev.hi}|${ev.hf}`;
+      if(!cuenta.has(k)) cuenta.set(k, new Set());
+      cuenta.get(k).add(ev.fi);
+    }
+    for(const [k, set] of cuenta) m.set(k, set.size);
+    return m;
+  }, [data.eventos]);
+  const SEMANAS_FALLBACK = 18;
+  const MIN_POR_MODULO = 40;
+
   const reporteDocentes = useMemo(()=>{
     const m = new Map();
     const seenInstance = new Set();
     for(const s of sesiones){
       if(!s.d) continue;
-      if(!m.has(s.d)) m.set(s.d, { sesiones:0, alumnosPorSeccion:new Map(), salas:new Set(), secciones:new Set(), escuela:s.es });
+      if(!m.has(s.d)) m.set(s.d, {
+        sesiones:0, alumnosPorSeccion:new Map(), salas:new Set(),
+        secciones:new Set(), escuela:s.es,
+        modsSem:0,        // módulos pedagógicos por semana (recurrentes únicos)
+        modsSemestre:0,   // módulos totales en el semestre cargado
+        bloquesVistos:new Set(),  // para no doble-contar bloque recurrente
+      });
       const e = m.get(s.d);
       const k = `${s.d}|${s.sc||''}|${s.s||''}|${s.hi}|${s.hf}|${s.fi||s.dw||''}`;
       if(!seenInstance.has(k)){
         seenInstance.add(k);
         e.sesiones++;
+      }
+      // Conteo de módulos pedagógicos (40 min cada uno).
+      const mods = Math.max(0, Math.round((toMin(s.hf) - toMin(s.hi)) / MIN_POR_MODULO));
+      if(mods > 0){
+        if(s.fi){
+          // Sesión con fecha concreta (LISTA DE RECURSOS): suma 1 vez al
+          // semestre. La "carga semanal" se reconstruye desde el patrón único.
+          e.modsSemestre += mods;
+          const bk = `${s.sc||''}|${s.s||''}|${s.hi}|${s.hf}`;
+          if(!e.bloquesVistos.has(bk)){
+            e.bloquesVistos.add(bk);
+            e.modsSem += mods;
+          }
+        } else if(s.dw){
+          // Patrón semanal SABANA: módulos × días marcados, todo el semestre
+          // estándar (fallback 18 sem cuando no hay eventos cargados).
+          const dias = [...String(s.dw)].filter(c=>c==='1').length;
+          const bk = `${s.sc||''}|${s.s||''}|${s.hi}|${s.hf}|${s.dw}`;
+          if(!e.bloquesVistos.has(bk)){
+            e.bloquesVistos.add(bk);
+            e.modsSem += mods * dias;
+            e.modsSemestre += mods * dias * SEMANAS_FALLBACK;
+          }
+        }
       }
       if(s.sc){
         const ins = Number(s.i) || 0;
@@ -6570,8 +6621,10 @@ function Reportes({ data, reservas }){
       alumnos: [...e.alumnosPorSeccion.values()].reduce((a,b)=>a+b, 0),
       secciones: e.secciones.size,
       salas: e.salas.size,
+      modsSem: e.modsSem,
+      modsSemestre: e.modsSemestre,
     })).sort((a,b)=> b.sesiones - a.sesiones);
-  }, [sesiones]);
+  }, [sesiones, semanasPorBloque]);
 
   // === Salas subutilizadas ===
   // Calcula uso promedio (inscritos / capacidad) por sala. Excluye salas
@@ -6697,12 +6750,14 @@ function Reportes({ data, reservas }){
       { key:'topSala',      label:'Top sala' },
     ],
     docente: [
-      { key:'nombre',    label:'Docente' },
-      { key:'escuela',   label:'Escuela' },
-      { key:'sesiones',  label:'Sesiones' },
-      { key:'secciones', label:'Secciones' },
-      { key:'salas',     label:'Salas distintas' },
-      { key:'alumnos',   label:'Alumnos atendidos' },
+      { key:'nombre',       label:'Docente' },
+      { key:'escuela',      label:'Escuela' },
+      { key:'modsSem',      label:'Mód. pedag./sem' },
+      { key:'modsSemestre', label:'Mód. semestre' },
+      { key:'sesiones',     label:'Sesiones' },
+      { key:'secciones',    label:'Secciones' },
+      { key:'salas',        label:'Salas distintas' },
+      { key:'alumnos',      label:'Alumnos atendidos' },
     ],
     salas: [
       { key:'codigo',        label:'Código' },
@@ -6799,7 +6854,7 @@ function Reportes({ data, reservas }){
       {tab==='docente' && (
         <div className="card no-print-actions">
           <div className="card-header">
-            <div><h3>Carga docente</h3><div className="sub">{reporteDocentes.length} docentes · ordenados por sesiones (mayor a menor)</div></div>
+            <div><h3>Carga docente</h3><div className="sub">{reporteDocentes.length} docentes · ordenados por sesiones · módulos pedagógicos de {MIN_POR_MODULO} min · {hasEventos(data) ? 'horas del semestre cargado (LISTA DE RECURSOS)' : `sin LISTA DE RECURSOS, el semestre se estima en ${SEMANAS_FALLBACK} semanas`}</div></div>
             <div className="row" style={{gap:8}}>
               <button className="btn btn-ghost" style={{fontSize:12,padding:'6px 12px'}} onClick={()=>downloadCsv('carga_docente', toCsv(reporteDocentes, HEADERS.docente))}>📥 CSV</button>
               <button className="btn btn-ghost" style={{fontSize:12,padding:'6px 12px'}} onClick={imprimir}>🖨 Imprimir</button>
@@ -6813,6 +6868,8 @@ function Reportes({ data, reservas }){
                   <tr key={i}>
                     <td>{r.nombre}</td>
                     <td>{r.escuela}</td>
+                    <td style={{textAlign:'right',color:r.modsSem>0?'inherit':'var(--text-muted)'}}>{r.modsSem || '—'}</td>
+                    <td style={{textAlign:'right',fontWeight:600,color:r.modsSemestre>0?'var(--primary)':'var(--text-muted)'}}>{r.modsSemestre ? r.modsSemestre.toLocaleString('es-CL') : '—'}</td>
                     <td style={{textAlign:'right'}}><b>{r.sesiones.toLocaleString('es-CL')}</b></td>
                     <td style={{textAlign:'right'}}>{r.secciones}</td>
                     <td style={{textAlign:'right'}}>{r.salas}</td>
