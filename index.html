@@ -1643,6 +1643,99 @@ function createDb({ mode, supabase }){
     return st.auditorias_log || [];
   };
 
+  /* ----- DOCENTES (Gestión Docente) ----- */
+  const loadDocentes = async () => {
+    if(isCloud) return await fetchAllSafe('docentes', { order:'nombre' });
+    const st = loadStore();
+    return st.docentes || [];
+  };
+  const saveDocente = async (d) => {
+    const row = { ...d, updated_at: new Date().toISOString() };
+    if(isCloud){
+      if(row.id){
+        const { id, ...patch } = row;
+        const { data, error } = await supabase.from('docentes').update(patch).eq('id', id).select().single();
+        if(error) throw new Error(error.message);
+        return data;
+      }
+      const { data, error } = await supabase.from('docentes').insert(row).select().single();
+      if(error) throw new Error(error.message);
+      return data;
+    }
+    const st = loadStore();
+    const lista = st.docentes || [];
+    if(row.id){
+      const i = lista.findIndex(x => x.id === row.id);
+      if(i >= 0) lista[i] = { ...lista[i], ...row };
+    } else {
+      row.id = Date.now() + Math.floor(Math.random()*999);
+      lista.push(row);
+    }
+    saveStore({ ...st, docentes:lista });
+    return row;
+  };
+  const deleteDocente = async (id) => {
+    if(isCloud){
+      const { error } = await supabase.from('docentes').delete().eq('id', id);
+      if(error) throw new Error(error.message);
+      return true;
+    }
+    const st = loadStore();
+    saveStore({ ...st, docentes:(st.docentes||[]).filter(x => x.id !== id) });
+    return true;
+  };
+  // Importación masiva: upsert por RUT + inactivar los ausentes opcionalmente.
+  // Devuelve { creados, actualizados, inactivados }.
+  const bulkUpsertDocentes = async (rows, { inactivarAusentes = true } = {}) => {
+    const limpios = rows.filter(r => r.rut && r.nombre).map(r => ({ ...r, importado_en: new Date().toISOString() }));
+    let creados = 0, actualizados = 0, inactivados = 0;
+    if(isCloud){
+      // Upsert en chunks de 200 para no exceder body de Supabase
+      const CHUNK = 200;
+      for(let i=0; i<limpios.length; i+=CHUNK){
+        const slice = limpios.slice(i, i+CHUNK);
+        const { error } = await supabase.from('docentes').upsert(slice, { onConflict:'rut' });
+        if(error) throw new Error(error.message);
+      }
+      // Conteo aprox: post upsert no tenemos creado vs actualizado directo.
+      // Hacemos un select previo de RUTs para distinguir.
+      // (Omitimos por simplicidad; mostramos solo "procesados" en UI.)
+      actualizados = limpios.length;
+      // Inactivar los que no están en el Excel
+      if(inactivarAusentes){
+        const rutsExcel = new Set(limpios.map(r => r.rut));
+        const existentes = await fetchAllSafe('docentes');
+        const aInactivar = existentes.filter(x => x.estado !== 'INACTIVO' && !rutsExcel.has(x.rut)).map(x => x.id);
+        if(aInactivar.length){
+          for(let i=0; i<aInactivar.length; i+=CHUNK){
+            const ids = aInactivar.slice(i, i+CHUNK);
+            const { error } = await supabase.from('docentes').update({ estado:'INACTIVO', updated_at: new Date().toISOString() }).in('id', ids);
+            if(error) throw new Error(error.message);
+          }
+          inactivados = aInactivar.length;
+        }
+      }
+    } else {
+      // Modo local
+      const st = loadStore();
+      const lista = st.docentes || [];
+      const byRut = new Map(lista.map(x => [x.rut, x]));
+      for(const r of limpios){
+        const prev = byRut.get(r.rut);
+        if(prev){ Object.assign(prev, r); actualizados++; }
+        else { r.id = Date.now() + Math.floor(Math.random()*999999); lista.push(r); byRut.set(r.rut, r); creados++; }
+      }
+      if(inactivarAusentes){
+        const rutsExcel = new Set(limpios.map(r => r.rut));
+        for(const x of lista){
+          if(x.estado !== 'INACTIVO' && !rutsExcel.has(x.rut)){ x.estado = 'INACTIVO'; inactivados++; }
+        }
+      }
+      saveStore({ ...st, docentes:lista });
+    }
+    return { creados, actualizados, inactivados };
+  };
+
   return {
     isCloud, mode,
     loadAll, login,
@@ -1654,6 +1747,7 @@ function createDb({ mode, supabase }){
     subscribe, getStats, fetchAll, fetchAllSafe,
     loadAuditorias, saveAuditoria, deleteAuditoria,
     logAuditoria, loadAuditoriasLog,
+    loadDocentes, saveDocente, deleteDocente, bulkUpsertDocentes,
   };
 }
 
@@ -1915,6 +2009,7 @@ function Shell({ user, mode, onReconfigure, onLogout, view, setView, children, t
       ['reportes',  'Reportes',                 I.reports,   ['admin','reservador']],
       ['repDoc',    'Reporte Docente',          I.reports,   ['admin']],
       ['gestiones', '🔒 Gestiones',             I.users,     ['admin']],
+      ['gestDoc',   '🔒 Gestión Docente',       I.users,     ['admin']],
       ['usuarios',  'Usuarios',                 I.users,     ['admin']],
       ['importar',  'Importar datos',           I.upload,    ['admin']],
     ];
@@ -4952,6 +5047,812 @@ function ModalEditarRegistro({ row, onClose, onSave }){
         </div>
       </div>
     </Modal>
+  );
+}
+
+/* ========= GESTIÓN DOCENTE =========
+   Pestaña privada (admin + password). Catálogo maestro de docentes,
+   importable desde Excel y editable. Incluye dashboard de categorización
+   por categoría, banda, jefatura, costo proyectado y cruce con SABANA.
+*/
+const GD_PASSWORD_KEY = 'sr_gd_pw_v1';
+const GD_AUTH_KEY = 'sr_gd_auth_v1';
+const GD_LOCK_MIN_KEY = 'sr_gd_lock_v1';
+const GD_DEFAULT_PASSWORD = '010203';
+
+const verifyGdPw = (input) => {
+  const stored = localStorage.getItem(GD_PASSWORD_KEY);
+  if(stored) return hashPw(input) === stored;
+  return input === GD_DEFAULT_PASSWORD;
+};
+
+// Mapeo Excel → modelo. Acepta variantes de nombre de columna para ser
+// tolerante a futuros cambios menores en el formato.
+const HEADER_ALIASES = {
+  duoc_id: ['ID','ID DUOC'],
+  rut: ['RUT'],
+  estado: ['OBSERVACIÓN','OBSERVACION','ESTADO'],
+  apellido1: ['APELLIDO 1','APELLIDO1','PRIMER APELLIDO'],
+  apellido2: ['APELLIDO 2','APELLIDO2','SEGUNDO APELLIDO'],
+  nombres: ['NOMBRES','NOMBRE'],
+  nombre: ['NOMBRE COMPLETO','NOMBRE_COMPLETO'],
+  correo: ['CORREO','CORREO INSTITUCIONAL','EMAIL'],
+  correo_personal: ['CORREO PERSONAL','EMAIL PERSONAL'],
+  telefono: ['TELEFONO','TELÉFONO'],
+  fecha_nacimiento: ['FECHA DE NACIMIENTO','FECHA NACIMIENTO','NACIMIENTO'],
+  genero: ['género','GÉNERO','GENERO','SEXO'],
+  hora_docente: ['HORA DOCENTE 2026','HORA DOCENTE','VALOR HORA'],
+  valor_mensual: ['VALOR HORA MENSUAL','VALOR MENSUAL','SUELDO'],
+  banda_salarial: ['BANDA SALARIAL','BANDA'],
+  jmg_semanal: ['JMG (Semanal)','JMG SEMANAL'],
+  jmg_horas: ['JMG (horas)','JMG HORAS','HORAS JMG'],
+  sede_ceco: ['SEDE CECO','CECO','SEDE'],
+  categoria: ['CATEGORIA','CATEGORÍA'],
+  plazo_contractual: ['PLAZO CONTRACTUAL','PLAZO','CONTRATO'],
+  sindicalizacion: ['Sindicalización / Adhesión Beneficios','SINDICALIZACIÓN','SINDICATO'],
+  jefe_id: ['ID JEFATURA','ID JEFE'],
+  jefe: ['JEFATURA JERARQUICA (SEDE VIÑA)','JEFATURA JERÁRQUICA','JEFE DIRECTO','JEFATURA'],
+  region: ['Región Domicilio','REGIÓN','REGION'],
+  ciudad: ['Ciudad','CIUDAD'],
+  comuna: ['Comuna','COMUNA'],
+  direccion: ['Dirección','DIRECCIÓN','DIRECCION'],
+  adicional: ['Adicional','ADICIONAL'],
+  asignatura_activa: ['Tiene al menos una asignatura habilitada','ASIGNATURA ACTIVA','HABILITADO'],
+};
+
+// Convierte fecha Excel (serial) o string 'dd-mm-yyyy' a ISO YYYY-MM-DD
+const fechaExcelToIso = (v) => {
+  if(v == null || v === '') return null;
+  if(typeof v === 'number'){
+    // Excel serial: 1 = 1900-01-01 (con bug del año bisiesto en 1900).
+    const epoch = new Date(Date.UTC(1899, 11, 30)); // ajusta para Excel
+    const ms = v * 86400000;
+    const d = new Date(epoch.getTime() + ms);
+    return d.toISOString().slice(0,10);
+  }
+  if(typeof v === 'string'){
+    const s = v.trim();
+    let m = s.match(/^(\d{4})-(\d{2})-(\d{2})/);
+    if(m) return `${m[1]}-${m[2]}-${m[3]}`;
+    m = s.match(/^(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{2,4})$/);
+    if(m){
+      const dd = String(m[1]).padStart(2,'0');
+      const mm = String(m[2]).padStart(2,'0');
+      const yy = m[3].length === 2 ? (Number(m[3]) > 50 ? '19'+m[3] : '20'+m[3]) : m[3];
+      return `${yy}-${mm}-${dd}`;
+    }
+  }
+  return null;
+};
+
+// Lee un xlsx y devuelve filas mapeadas al modelo docente.
+const parseDocentesXLSX = async (file) => {
+  const buf = await file.arrayBuffer();
+  const XLSX = window.XLSX;
+  const wb = XLSX.read(buf, { type:'array' });
+  const sheet = wb.Sheets[wb.SheetNames[0]];
+  const json = XLSX.utils.sheet_to_json(sheet, { defval: '', raw: true });
+  if(!json.length) return [];
+  // Mapeo header → key del modelo
+  const sample = json[0];
+  const headers = Object.keys(sample);
+  const headerMap = {};
+  for(const [key, aliases] of Object.entries(HEADER_ALIASES)){
+    for(const alias of aliases){
+      const found = headers.find(h => h.trim().toLowerCase() === alias.trim().toLowerCase());
+      if(found){ headerMap[key] = found; break; }
+    }
+  }
+  const norm = (v) => v == null ? null : (typeof v === 'string' ? v.trim() : v);
+  const intOrNull = (v) => { const n = Number(v); return isNaN(n) ? null : Math.round(n); };
+  const out = [];
+  for(const row of json){
+    const get = (key) => headerMap[key] != null ? row[headerMap[key]] : null;
+    const r = {
+      duoc_id: norm(get('duoc_id')) != null ? String(get('duoc_id')) : null,
+      rut: norm(get('rut')) != null ? String(get('rut')) : null,
+      estado: norm(get('estado')) || 'ACTIVO',
+      apellido1: norm(get('apellido1')),
+      apellido2: norm(get('apellido2')),
+      nombres: norm(get('nombres')),
+      nombre: norm(get('nombre')) || `${get('apellido1')||''} ${get('apellido2')||''} ${get('nombres')||''}`.trim(),
+      correo: norm(get('correo')),
+      correo_personal: norm(get('correo_personal')),
+      telefono: norm(get('telefono')) != null ? String(get('telefono')) : null,
+      fecha_nacimiento: fechaExcelToIso(get('fecha_nacimiento')),
+      genero: norm(get('genero')),
+      hora_docente: intOrNull(get('hora_docente')),
+      valor_mensual: intOrNull(get('valor_mensual')),
+      banda_salarial: norm(get('banda_salarial')),
+      jmg_semanal: intOrNull(get('jmg_semanal')),
+      jmg_horas: intOrNull(get('jmg_horas')),
+      sede_ceco: norm(get('sede_ceco')),
+      categoria: norm(get('categoria')),
+      plazo_contractual: norm(get('plazo_contractual')),
+      sindicalizacion: norm(get('sindicalizacion')),
+      jefe_id: norm(get('jefe_id')) != null ? String(get('jefe_id')) : null,
+      jefe: norm(get('jefe')),
+      region: norm(get('region')),
+      ciudad: norm(get('ciudad')),
+      comuna: norm(get('comuna')),
+      direccion: norm(get('direccion')),
+      adicional: norm(get('adicional')),
+      asignatura_activa: !!Number(get('asignatura_activa') || 0),
+    };
+    if(r.nombre) out.push(r);
+  }
+  return out;
+};
+
+function GestionDocente({ data, user, db, toast }){
+  // === Bloqueo por contraseña ===
+  const [unlocked, setUnlocked] = useState(()=> sessionStorage.getItem(GD_AUTH_KEY)==='1');
+  const [pw, setPw] = useState('');
+  const [pwErr, setPwErr] = useState(false);
+  const [showPwChange, setShowPwChange] = useState(false);
+  const tryUnlock = (e) => {
+    if(e) e.preventDefault();
+    if(verifyGdPw(pw)){
+      sessionStorage.setItem(GD_AUTH_KEY, '1');
+      setUnlocked(true);
+      setPw(''); setPwErr(false);
+    } else { setPwErr(true); }
+  };
+  const lock = () => { sessionStorage.removeItem(GD_AUTH_KEY); setUnlocked(false); };
+
+  // Auto-bloqueo por inactividad
+  const [lockMin, setLockMin] = useState(()=>{
+    const v = Number(localStorage.getItem(GD_LOCK_MIN_KEY));
+    return isNaN(v) ? 10 : v;
+  });
+  const guardarLockMin = (n) => { setLockMin(n); localStorage.setItem(GD_LOCK_MIN_KEY, String(n)); };
+  useEffect(()=>{
+    if(!unlocked || lockMin <= 0) return;
+    let timer;
+    const reset = () => {
+      clearTimeout(timer);
+      timer = setTimeout(() => { toast(`Bloqueado por ${lockMin} min de inactividad.`); lock(); }, lockMin*60*1000);
+    };
+    const evs = ['mousemove','keydown','click','touchstart','scroll'];
+    evs.forEach(e => window.addEventListener(e, reset, { passive:true }));
+    reset();
+    return () => { clearTimeout(timer); evs.forEach(e => window.removeEventListener(e, reset)); };
+  }, [unlocked, lockMin]);
+
+  // Datos
+  const [docentes, setDocentes] = useState([]);
+  const [loading, setLoading] = useState(false);
+  const [tab, setTab] = useState('listado');
+  const recargar = async () => {
+    if(!db) return;
+    setLoading(true);
+    try { setDocentes(await db.loadDocentes()); }
+    catch(e){ console.error(e); toast(`Error: ${e.message}`); }
+    finally { setLoading(false); }
+  };
+  useEffect(()=>{ if(unlocked) recargar(); }, [unlocked, db]);
+
+  // Cambios CRUD desde el listado
+  const onSaveDoc = async (row) => {
+    try {
+      const saved = await db.saveDocente(row);
+      setDocentes(list => {
+        const i = list.findIndex(x => x.id === saved.id);
+        if(i >= 0){ const n = list.slice(); n[i] = saved; return n; }
+        return [...list, saved];
+      });
+      toast('Docente guardado.');
+      return saved;
+    } catch(e){ toast(`Error: ${e.message}`); throw e; }
+  };
+  const onDeleteDoc = async (id) => {
+    try { await db.deleteDocente(id); setDocentes(list => list.filter(x => x.id !== id)); toast('Docente eliminado.'); }
+    catch(e){ toast(`Error: ${e.message}`); }
+  };
+
+  if(!unlocked){
+    return (
+      <div className="stack">
+        <div className="card" style={{maxWidth:520,margin:'40px auto',padding:'30px 28px'}}>
+          <div style={{textAlign:'center',marginBottom:16}}>
+            <div style={{fontSize:42,marginBottom:6}}>🔒</div>
+            <h3 style={{fontSize:18}}>Acceso restringido</h3>
+            <div className="sub" style={{marginTop:6}}>Gestión Docente · Solo personal autorizado con contraseña asignada.</div>
+          </div>
+          <form onSubmit={tryUnlock} className="stack" style={{gap:12}}>
+            <div className="field">
+              <label>Contraseña</label>
+              <input type="password" value={pw} onChange={e=>{setPw(e.target.value); setPwErr(false);}} placeholder="●●●●●●" autoFocus style={pwErr?{borderColor:'var(--danger)'}:{}}/>
+              {pwErr && <div style={{color:'var(--danger)',fontSize:12,marginTop:4}}>Contraseña incorrecta.</div>}
+            </div>
+            <button type="submit" className="btn btn-primary btn-block">Ingresar</button>
+          </form>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="stack">
+      <div className="card">
+        <div className="card-header">
+          <div>
+            <h3>🔒 Gestión Docente</h3>
+            <div className="sub">
+              Usuario: <b>{user.nombre || user.username}</b> · {docentes.length.toLocaleString('es-CL')} docentes cargados.
+              {lockMin > 0 && <> · Auto-bloqueo en {lockMin} min de inactividad.</>}
+            </div>
+          </div>
+          <div className="row" style={{gap:8,flexWrap:'wrap'}}>
+            <div className="field" style={{maxWidth:160}}>
+              <label style={{fontSize:10}}>Auto-bloqueo</label>
+              <select value={lockMin} onChange={e=>guardarLockMin(Number(e.target.value))} style={{padding:'4px 8px',fontSize:12}}>
+                <option value="0">Desactivado</option>
+                <option value="5">5 min</option><option value="10">10 min</option><option value="15">15 min</option><option value="30">30 min</option><option value="60">60 min</option>
+              </select>
+            </div>
+            <button className="btn btn-ghost" style={{fontSize:12,padding:'6px 12px'}} onClick={()=>setShowPwChange(true)}>🔑 Cambiar contraseña</button>
+            <button className="btn btn-ghost" style={{fontSize:12,padding:'6px 12px'}} onClick={lock}>🔒 Bloquear</button>
+          </div>
+        </div>
+        <div className="seg" style={{marginTop:4}}>
+          <button className={tab==='listado'?'active':''} onClick={()=>setTab('listado')}>👨‍🏫 Listado</button>
+          <button className={tab==='importar'?'active':''} onClick={()=>setTab('importar')}>📥 Importar</button>
+          <button className={tab==='dashboard'?'active':''} onClick={()=>setTab('dashboard')}>📊 Dashboard</button>
+        </div>
+      </div>
+
+      {showPwChange && <ModalCambioPwGenerico onClose={()=>setShowPwChange(false)} toast={toast} storageKey={GD_PASSWORD_KEY} defaultPw={GD_DEFAULT_PASSWORD}/>}
+
+      {loading && <div className="card"><div className="loader"><div className="spinner"/><div>Cargando…</div></div></div>}
+
+      {!loading && tab==='listado' && (
+        <ListadoDocentes docentes={docentes} onSave={onSaveDoc} onDelete={onDeleteDoc} toast={toast}/>
+      )}
+      {!loading && tab==='importar' && (
+        <ImportarDocentes db={db} toast={toast} onDone={recargar} docentes={docentes}/>
+      )}
+      {!loading && tab==='dashboard' && (
+        <DashboardDocente docentes={docentes} data={data}/>
+      )}
+    </div>
+  );
+}
+
+/* ----- Modal cambio de contraseña genérico (parametrizado por storageKey) ----- */
+function ModalCambioPwGenerico({ onClose, toast, storageKey, defaultPw }){
+  const [actual, setActual] = useState('');
+  const [nueva, setNueva] = useState('');
+  const [conf, setConf] = useState('');
+  const [err, setErr] = useState('');
+  const verify = (input) => {
+    const stored = localStorage.getItem(storageKey);
+    if(stored) return hashPw(input) === stored;
+    return input === defaultPw;
+  };
+  const guardar = () => {
+    setErr('');
+    if(!verify(actual)){ setErr('Contraseña actual incorrecta.'); return; }
+    if(nueva.length < 4){ setErr('La nueva contraseña debe tener al menos 4 caracteres.'); return; }
+    if(nueva !== conf){ setErr('La confirmación no coincide.'); return; }
+    localStorage.setItem(storageKey, hashPw(nueva));
+    toast('Contraseña actualizada.');
+    onClose();
+  };
+  const restaurar = () => {
+    if(!window.confirm(`¿Restaurar la contraseña original (${defaultPw})?`)) return;
+    localStorage.removeItem(storageKey);
+    toast('Contraseña restaurada a la original.');
+    onClose();
+  };
+  return (
+    <Modal title="🔑 Cambiar contraseña" onClose={onClose} onSave={guardar}>
+      <div className="stack" style={{gap:10}}>
+        <div className="field"><label>Contraseña actual</label><input type="password" value={actual} onChange={e=>{setActual(e.target.value); setErr('');}} autoFocus/></div>
+        <div className="field"><label>Nueva contraseña (mín. 4 caracteres)</label><input type="password" value={nueva} onChange={e=>{setNueva(e.target.value); setErr('');}}/></div>
+        <div className="field"><label>Confirmar nueva contraseña</label><input type="password" value={conf} onChange={e=>{setConf(e.target.value); setErr('');}}/></div>
+        {err && <div style={{color:'var(--danger)',fontSize:12.5,padding:'8px 10px',background:'rgba(255,69,58,.08)',borderRadius:6}}>⚠ {err}</div>}
+        <div className="muted" style={{fontSize:11.5,padding:'8px 10px',background:'var(--surface-2)',borderRadius:6}}>La contraseña se guarda solo en este dispositivo.</div>
+        <button type="button" className="btn btn-ghost btn-sm" onClick={restaurar}>Restaurar contraseña original</button>
+      </div>
+    </Modal>
+  );
+}
+
+/* ----- Sub: Listado de docentes (filtros + tabla + modal edit) ----- */
+function ListadoDocentes({ docentes, onSave, onDelete, toast }){
+  const [q, setQ] = useState('');
+  const [catF, setCatF] = useState('');
+  const [jefeF, setJefeF] = useState('');
+  const [estadoF, setEstadoF] = useState('ACTIVO');
+  const [generoF, setGeneroF] = useState('');
+  const [bandaF, setBandaF] = useState('');
+  const [edit, setEdit] = useState(null);
+  const [del, setDel] = useState(null);
+
+  const cats   = useMemo(()=> [...new Set(docentes.map(d=>d.categoria).filter(Boolean))].sort(), [docentes]);
+  const jefes  = useMemo(()=> [...new Set(docentes.map(d=>d.jefe).filter(Boolean))].sort(), [docentes]);
+  const bandas = useMemo(()=> [...new Set(docentes.map(d=>d.banda_salarial).filter(Boolean))].sort(), [docentes]);
+  const estados = useMemo(()=> [...new Set(docentes.map(d=>d.estado).filter(Boolean))].sort(), [docentes]);
+
+  const filtradas = useMemo(()=>{
+    const qn = q.trim().toLowerCase();
+    return docentes.filter(d => {
+      if(catF && d.categoria !== catF) return false;
+      if(jefeF && d.jefe !== jefeF) return false;
+      if(estadoF && (d.estado||'') !== estadoF) return false;
+      if(generoF && (d.genero||'') !== generoF) return false;
+      if(bandaF && d.banda_salarial !== bandaF) return false;
+      if(qn){
+        const blob = `${d.nombre||''} ${d.rut||''} ${d.correo||''} ${d.jefe||''} ${d.categoria||''}`.toLowerCase();
+        if(!blob.includes(qn)) return false;
+      }
+      return true;
+    });
+  }, [docentes, q, catF, jefeF, estadoF, generoF, bandaF]);
+
+  const limpiar = () => { setQ(''); setCatF(''); setJefeF(''); setEstadoF(''); setGeneroF(''); setBandaF(''); };
+  const algunFiltro = !!(q||catF||jefeF||estadoF||generoF||bandaF);
+
+  const fmtCLP = (n) => n != null ? '$ '+Number(n).toLocaleString('es-CL') : '—';
+
+  const exportarCSV = () => {
+    const esc = (s) => { const str = String(s??''); return /[",\n;]/.test(str) ? `"${str.replace(/"/g,'""')}"` : str; };
+    const cols = ['rut','nombre','correo','telefono','genero','categoria','banda_salarial','hora_docente','valor_mensual','jmg_semanal','jmg_horas','plazo_contractual','jefe','estado','region','ciudad','comuna','asignatura_activa'];
+    const lines = [cols.join(';'), ...filtradas.map(d => cols.map(c => esc(d[c])).join(';'))];
+    const blob = new Blob(['﻿'+lines.join('\n')], { type:'text/csv;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url; a.download = `docentes_${new Date().toISOString().slice(0,10)}.csv`;
+    document.body.appendChild(a); a.click(); a.remove();
+    URL.revokeObjectURL(url);
+  };
+
+  return (
+    <>
+      <div className="card">
+        <div className="card-header">
+          <div>
+            <h3>👨‍🏫 Catálogo de docentes</h3>
+            <div className="sub"><b>{filtradas.length.toLocaleString('es-CL')}</b> visibles de <b>{docentes.length.toLocaleString('es-CL')}</b> totales{algunFiltro && ' · con filtros'}</div>
+          </div>
+          <div className="row" style={{gap:6}}>
+            <button className="btn btn-ghost" style={{fontSize:12,padding:'6px 12px'}} onClick={exportarCSV}>📥 CSV</button>
+            <button className="btn btn-primary" style={{fontSize:12,padding:'6px 12px'}} onClick={()=>setEdit({})}>{I.plus}Nuevo docente</button>
+          </div>
+        </div>
+        <div className="filters">
+          <div className="field" style={{flex:'1 1 220px'}}>
+            <label>Buscar</label>
+            <input value={q} onChange={e=>setQ(e.target.value)} placeholder="Nombre, RUT, correo…"/>
+          </div>
+          <div className="field"><label>Categoría</label><select value={catF} onChange={e=>setCatF(e.target.value)}><option value="">Todas</option>{cats.map(c=><option key={c}>{c}</option>)}</select></div>
+          <div className="field"><label>Jefatura</label><select value={jefeF} onChange={e=>setJefeF(e.target.value)}><option value="">Todas</option>{jefes.map(j=><option key={j}>{j}</option>)}</select></div>
+          <div className="field"><label>Banda</label><select value={bandaF} onChange={e=>setBandaF(e.target.value)}><option value="">Todas</option>{bandas.map(b=><option key={b}>{b}</option>)}</select></div>
+          <div className="field"><label>Estado</label><select value={estadoF} onChange={e=>setEstadoF(e.target.value)}><option value="">Todos</option>{estados.map(es=><option key={es}>{es}</option>)}</select></div>
+          <div className="field"><label>Género</label><select value={generoF} onChange={e=>setGeneroF(e.target.value)}><option value="">Todos</option><option value="F">F</option><option value="M">M</option></select></div>
+          {algunFiltro && <div className="field" style={{justifyContent:'flex-end'}}><label>&nbsp;</label><button className="btn btn-ghost btn-sm" onClick={limpiar}>✕ Limpiar</button></div>}
+        </div>
+      </div>
+
+      <div className="card" style={{padding:0}}>
+        <div className="tbl-scroll" style={{maxHeight:600}}>
+          <table className="tbl">
+            <thead><tr>
+              <th>Nombre</th><th>RUT</th><th>Categoría</th><th>Banda</th>
+              <th style={{textAlign:'right'}}>Hora</th><th style={{textAlign:'right'}}>Mensual</th>
+              <th style={{textAlign:'right'}}>JMG sem</th>
+              <th>Jefe</th><th>Estado</th><th>Activa</th><th></th>
+            </tr></thead>
+            <tbody>
+              {filtradas.map(d => (
+                <tr key={d.id || d.rut}>
+                  <td><b>{d.nombre}</b><br/><small className="muted">{d.correo||''}</small></td>
+                  <td className="muted" style={{fontSize:12}}>{d.rut||'—'}</td>
+                  <td><span className="chip">{d.categoria||'—'}</span></td>
+                  <td className="muted">{d.banda_salarial||'—'}</td>
+                  <td style={{textAlign:'right',fontFamily:'monospace'}}>{fmtCLP(d.hora_docente)}</td>
+                  <td style={{textAlign:'right',fontFamily:'monospace'}}>{fmtCLP(d.valor_mensual)}</td>
+                  <td style={{textAlign:'right'}}>{d.jmg_semanal||0}</td>
+                  <td style={{fontSize:12}}>{d.jefe||'—'}</td>
+                  <td><span className={`chip ${d.estado==='ACTIVO'?'success':d.estado==='INACTIVO'?'danger':''}`}>{d.estado||'—'}</span></td>
+                  <td>{d.asignatura_activa ? <span className="chip success">✓</span> : <span className="chip">—</span>}</td>
+                  <td className="nowrap" style={{textAlign:'right'}}>
+                    <button className="btn-icon" title="Editar" onClick={()=>setEdit(d)}>{I.edit}</button>
+                    <button className="btn-icon" title="Eliminar" onClick={()=>setDel(d)}>{I.trash}</button>
+                  </td>
+                </tr>
+              ))}
+              {filtradas.length===0 && <tr><td colSpan="11"><div className="empty"><span className="emoji">📭</span>{docentes.length===0 ? 'Sin docentes cargados. Importa un Excel en la pestaña 📥 Importar.' : 'Sin resultados con esos filtros.'}</div></td></tr>}
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      {edit && <ModalEditarDocente row={edit} onClose={()=>setEdit(null)} onSave={async (row)=>{ await onSave(row); setEdit(null); }} catalogos={{cats, jefes, bandas, estados}}/>}
+      {del && <Modal title="¿Eliminar docente?" onClose={()=>setDel(null)} onSave={async ()=>{ await onDelete(del.id); setDel(null); }} saveLabel="Sí, eliminar">
+        <div style={{fontSize:14,lineHeight:1.55}}>
+          Se eliminará permanentemente: <b>{del.nombre}</b> (RUT {del.rut||'—'}).
+          <div className="muted" style={{marginTop:8,fontSize:12}}>Esta acción no se puede deshacer. Considera marcar como INACTIVO en lugar de eliminar.</div>
+        </div>
+      </Modal>}
+    </>
+  );
+}
+
+/* ----- Modal editar docente ----- */
+function ModalEditarDocente({ row, onClose, onSave, catalogos }){
+  const [f, setF] = useState({
+    rut:'', nombre:'', apellido1:'', apellido2:'', nombres:'', correo:'', correo_personal:'',
+    telefono:'', fecha_nacimiento:'', genero:'', hora_docente:'', valor_mensual:'',
+    banda_salarial:'', jmg_semanal:'', jmg_horas:'', sede_ceco:'Sede Viña del Mar',
+    categoria:'', plazo_contractual:'', sindicalizacion:'', jefe_id:'', jefe:'',
+    region:'', ciudad:'', comuna:'', direccion:'', adicional:'',
+    asignatura_activa:false, estado:'ACTIVO', escuela:'', notas:'', duoc_id:'',
+    ...row,
+  });
+  const upd = (k, v) => setF(prev => ({ ...prev, [k]: v }));
+  const numOrNull = (v) => { if(v==='' || v==null) return null; const n = Number(v); return isNaN(n)?null:n; };
+  const handleSave = () => {
+    const out = {
+      ...f,
+      hora_docente: numOrNull(f.hora_docente),
+      valor_mensual: numOrNull(f.valor_mensual),
+      jmg_semanal: numOrNull(f.jmg_semanal),
+      jmg_horas: numOrNull(f.jmg_horas),
+      asignatura_activa: !!f.asignatura_activa,
+      fecha_nacimiento: f.fecha_nacimiento || null,
+    };
+    if(!out.nombre){ alert('Nombre es obligatorio.'); return; }
+    onSave(out);
+  };
+  const titulo = row.id ? `Editar docente · ${row.nombre}` : 'Nuevo docente';
+  return (
+    <Modal title={titulo} onClose={onClose} onSave={handleSave} wide>
+      <div className="col-2">
+        <div className="field"><label>Nombre completo *</label><input value={f.nombre||''} onChange={e=>upd('nombre', e.target.value)} autoFocus/></div>
+        <div className="field"><label>RUT</label><input value={f.rut||''} onChange={e=>upd('rut', e.target.value)} placeholder="sin guión"/></div>
+      </div>
+      <div className="col-2">
+        <div className="field"><label>Apellido 1</label><input value={f.apellido1||''} onChange={e=>upd('apellido1', e.target.value)}/></div>
+        <div className="field"><label>Apellido 2</label><input value={f.apellido2||''} onChange={e=>upd('apellido2', e.target.value)}/></div>
+      </div>
+      <div className="col-2">
+        <div className="field"><label>Nombres</label><input value={f.nombres||''} onChange={e=>upd('nombres', e.target.value)}/></div>
+        <div className="field"><label>Estado</label><select value={f.estado||'ACTIVO'} onChange={e=>upd('estado', e.target.value)}><option>ACTIVO</option><option>INACTIVO</option><option>SUSPENDIDO</option></select></div>
+      </div>
+      <div className="col-2">
+        <div className="field"><label>Correo institucional</label><input value={f.correo||''} onChange={e=>upd('correo', e.target.value)} type="email"/></div>
+        <div className="field"><label>Correo personal</label><input value={f.correo_personal||''} onChange={e=>upd('correo_personal', e.target.value)} type="email"/></div>
+      </div>
+      <div className="col-2">
+        <div className="field"><label>Teléfono</label><input value={f.telefono||''} onChange={e=>upd('telefono', e.target.value)}/></div>
+        <div className="field"><label>Fecha nacimiento</label><input type="date" value={f.fecha_nacimiento||''} onChange={e=>upd('fecha_nacimiento', e.target.value)}/></div>
+      </div>
+      <div className="col-2">
+        <div className="field"><label>Género</label><select value={f.genero||''} onChange={e=>upd('genero', e.target.value)}><option value="">—</option><option>F</option><option>M</option></select></div>
+        <div className="field"><label>Categoría</label><select value={f.categoria||''} onChange={e=>upd('categoria', e.target.value)}><option value="">—</option>{catalogos.cats.map(c=><option key={c}>{c}</option>)}{f.categoria && !catalogos.cats.includes(f.categoria) && <option>{f.categoria}</option>}</select></div>
+      </div>
+      <div className="col-2">
+        <div className="field"><label>Banda salarial</label><input list="ge_bandas" value={f.banda_salarial||''} onChange={e=>upd('banda_salarial', e.target.value)}/><datalist id="ge_bandas">{catalogos.bandas.map(b=><option key={b} value={b}/>)}</datalist></div>
+        <div className="field"><label>Plazo contractual</label><input value={f.plazo_contractual||''} onChange={e=>upd('plazo_contractual', e.target.value)} placeholder="Plazo Indefinido"/></div>
+      </div>
+      <div className="col-2">
+        <div className="field"><label>Hora docente ($)</label><input type="number" value={f.hora_docente??''} onChange={e=>upd('hora_docente', e.target.value)}/></div>
+        <div className="field"><label>Valor mensual ($)</label><input type="number" value={f.valor_mensual??''} onChange={e=>upd('valor_mensual', e.target.value)}/></div>
+      </div>
+      <div className="col-2">
+        <div className="field"><label>JMG semanal (horas)</label><input type="number" value={f.jmg_semanal??''} onChange={e=>upd('jmg_semanal', e.target.value)}/></div>
+        <div className="field"><label>JMG horas (período)</label><input type="number" value={f.jmg_horas??''} onChange={e=>upd('jmg_horas', e.target.value)}/></div>
+      </div>
+      <div className="col-2">
+        <div className="field"><label>Jefatura directa</label><input list="ge_jefes" value={f.jefe||''} onChange={e=>upd('jefe', e.target.value)}/><datalist id="ge_jefes">{catalogos.jefes.map(j=><option key={j} value={j}/>)}</datalist></div>
+        <div className="field"><label>ID Jefatura</label><input value={f.jefe_id||''} onChange={e=>upd('jefe_id', e.target.value)}/></div>
+      </div>
+      <div className="col-2">
+        <div className="field"><label>Región</label><input value={f.region||''} onChange={e=>upd('region', e.target.value)}/></div>
+        <div className="field"><label>Ciudad</label><input value={f.ciudad||''} onChange={e=>upd('ciudad', e.target.value)}/></div>
+      </div>
+      <div className="col-2">
+        <div className="field"><label>Comuna</label><input value={f.comuna||''} onChange={e=>upd('comuna', e.target.value)}/></div>
+        <div className="field"><label>Sindicalización</label><input value={f.sindicalizacion||''} onChange={e=>upd('sindicalizacion', e.target.value)}/></div>
+      </div>
+      <div className="field"><label>Dirección</label><input value={f.direccion||''} onChange={e=>upd('direccion', e.target.value)}/></div>
+      <div className="col-2">
+        <div className="field"><label>Adicional (edificio/sector)</label><input value={f.adicional||''} onChange={e=>upd('adicional', e.target.value)}/></div>
+        <div className="field"><label>Escuela (3 letras)</label><input value={f.escuela||''} onChange={e=>upd('escuela', e.target.value.toUpperCase())} maxLength="6"/></div>
+      </div>
+      <div className="field"><label>Notas internas</label><textarea rows="2" value={f.notas||''} onChange={e=>upd('notas', e.target.value)}/></div>
+      <div className="field">
+        <label className="row" style={{gap:8,alignItems:'center',cursor:'pointer'}}>
+          <input type="checkbox" checked={!!f.asignatura_activa} onChange={e=>upd('asignatura_activa', e.target.checked)}/>
+          Tiene al menos una asignatura habilitada
+        </label>
+      </div>
+    </Modal>
+  );
+}
+
+/* ----- Sub: Importar Excel de docentes ----- */
+function ImportarDocentes({ db, toast, onDone, docentes }){
+  const [file, setFile] = useState(null);
+  const [preview, setPreview] = useState(null);
+  const [parsing, setParsing] = useState(false);
+  const [importing, setImporting] = useState(false);
+  const [inactivar, setInactivar] = useState(true);
+  const [resultado, setResultado] = useState(null);
+
+  const handleFile = async (f) => {
+    if(!f) return;
+    setFile(f); setResultado(null); setPreview(null); setParsing(true);
+    try {
+      if(!window.XLSX){ throw new Error('Librería XLSX no cargada. Recarga la página.'); }
+      const rows = await parseDocentesXLSX(f);
+      setPreview(rows);
+    } catch(e){ console.error(e); toast(`Error parseando: ${e.message}`); }
+    finally { setParsing(false); }
+  };
+
+  const ejecutar = async () => {
+    if(!preview || !preview.length){ toast('Nada que importar.'); return; }
+    setImporting(true);
+    try {
+      const r = await db.bulkUpsertDocentes(preview, { inactivarAusentes: inactivar });
+      setResultado(r);
+      toast(`Importación lista: ${r.actualizados} procesados${r.inactivados?`, ${r.inactivados} inactivados`:''}.`);
+      onDone && onDone();
+    } catch(e){ console.error(e); toast(`Error: ${e.message}`); }
+    finally { setImporting(false); }
+  };
+
+  return (
+    <div className="card">
+      <div className="card-header">
+        <div>
+          <h3>📥 Importar Excel de docentes</h3>
+          <div className="sub">El archivo debe seguir el formato <b>DOCENTES 2026-1</b>. Las columnas se mapean automáticamente por nombre de encabezado.</div>
+        </div>
+      </div>
+      <div className="stack" style={{gap:14}}>
+        <div className="field">
+          <label>Archivo Excel (.xlsx)</label>
+          <input type="file" accept=".xlsx,.xls" onChange={e=>handleFile(e.target.files?.[0])}/>
+        </div>
+        <label className="row" style={{gap:8,alignItems:'center',fontSize:13,cursor:'pointer'}}>
+          <input type="checkbox" checked={inactivar} onChange={e=>setInactivar(e.target.checked)}/>
+          Marcar como <b>INACTIVO</b> a los docentes que ya están en la DB pero no aparecen en el Excel (recomendado)
+        </label>
+
+        {parsing && <div className="loader"><div className="spinner"/><div>Leyendo archivo…</div></div>}
+
+        {preview && (
+          <>
+            <div className="card" style={{padding:'12px 14px',background:'rgba(48,209,88,.08)',border:'1px solid rgba(48,209,88,.3)'}}>
+              <b>✓ Vista previa:</b> {preview.length.toLocaleString('es-CL')} filas listas para importar.
+              {docentes.length > 0 && <> Actualmente hay <b>{docentes.length.toLocaleString('es-CL')}</b> en la base.</>}
+            </div>
+            <div className="tbl-scroll" style={{maxHeight:300}}>
+              <table className="tbl">
+                <thead><tr><th>RUT</th><th>Nombre</th><th>Categoría</th><th>Banda</th><th>Jefe</th><th>Hora</th></tr></thead>
+                <tbody>
+                  {preview.slice(0,30).map((r,i) => (
+                    <tr key={i}>
+                      <td className="muted" style={{fontSize:12}}>{r.rut||'—'}</td>
+                      <td><b>{r.nombre}</b></td>
+                      <td><span className="chip">{r.categoria||'—'}</span></td>
+                      <td className="muted">{r.banda_salarial||'—'}</td>
+                      <td style={{fontSize:12}}>{r.jefe||'—'}</td>
+                      <td style={{textAlign:'right',fontFamily:'monospace'}}>{r.hora_docente ? '$'+r.hora_docente.toLocaleString('es-CL') : '—'}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+              {preview.length > 30 && <div className="muted" style={{padding:'8px 14px',fontSize:12}}>… y {(preview.length-30).toLocaleString('es-CL')} más.</div>}
+            </div>
+            <button className="btn btn-primary" onClick={ejecutar} disabled={importing}>
+              {importing ? '⏳ Importando…' : `📥 Importar ${preview.length.toLocaleString('es-CL')} docentes`}
+            </button>
+          </>
+        )}
+
+        {resultado && (
+          <div className="card" style={{padding:'12px 14px',background:'rgba(10,132,255,.08)',border:'1px solid rgba(10,132,255,.3)'}}>
+            <b>Resultado:</b><br/>
+            • {resultado.actualizados.toLocaleString('es-CL')} docentes procesados (upsert por RUT)<br/>
+            {resultado.inactivados>0 && <>• <b>{resultado.inactivados.toLocaleString('es-CL')}</b> marcados como INACTIVO (no estaban en el Excel)<br/></>}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+/* ----- Sub: Dashboard de gestión docente ----- */
+function DashboardDocente({ docentes, data }){
+  const fmtCLP = (n) => n != null ? '$ '+Number(n).toLocaleString('es-CL') : '—';
+  const activos = docentes.filter(d => (d.estado||'ACTIVO') === 'ACTIVO');
+
+  // KPIs
+  const total = docentes.length;
+  const totActivos = activos.length;
+  const totInactivos = docentes.filter(d => d.estado === 'INACTIVO').length;
+  const jefaturasUnicas = new Set(activos.map(d=>d.jefe).filter(Boolean)).size;
+  const costoMensualTotal = activos.reduce((a,d)=> a + (Number(d.valor_mensual)||0), 0);
+  const horasTotales = activos.reduce((a,d)=> a + (Number(d.jmg_semanal)||0), 0);
+  const conAsigActiva = activos.filter(d => d.asignatura_activa).length;
+
+  // Por categoría
+  const porCategoria = useMemo(()=>{
+    const m = new Map();
+    for(const d of activos){
+      const k = d.categoria || 'Sin categoría';
+      if(!m.has(k)) m.set(k, { categoria:k, n:0, horas:0, costo:0 });
+      const x = m.get(k);
+      x.n++; x.horas += Number(d.jmg_semanal)||0; x.costo += Number(d.valor_mensual)||0;
+    }
+    return [...m.values()].sort((a,b)=> b.n - a.n);
+  }, [activos]);
+
+  // Por banda
+  const porBanda = useMemo(()=>{
+    const m = new Map();
+    for(const d of activos){
+      const k = d.banda_salarial || 'Sin banda';
+      if(!m.has(k)) m.set(k, { banda:k, n:0, horas:0, costo:0, hora_prom:0, _horas:[] });
+      const x = m.get(k);
+      x.n++; x.horas += Number(d.jmg_semanal)||0; x.costo += Number(d.valor_mensual)||0;
+      if(d.hora_docente) x._horas.push(Number(d.hora_docente));
+    }
+    return [...m.values()].map(x => ({ ...x, hora_prom: x._horas.length ? Math.round(x._horas.reduce((a,b)=>a+b,0)/x._horas.length) : 0 })).sort((a,b)=> b.hora_prom - a.hora_prom);
+  }, [activos]);
+
+  // Por jefatura
+  const porJefatura = useMemo(()=>{
+    const m = new Map();
+    for(const d of activos){
+      const k = d.jefe || 'Sin jefatura';
+      if(!m.has(k)) m.set(k, { jefe:k, n:0, horas:0, costo:0, conAsig:0 });
+      const x = m.get(k);
+      x.n++; x.horas += Number(d.jmg_semanal)||0; x.costo += Number(d.valor_mensual)||0;
+      if(d.asignatura_activa) x.conAsig++;
+    }
+    return [...m.values()].sort((a,b)=> b.n - a.n);
+  }, [activos]);
+
+  // Cruce con SABANA: docentes que dictan según programación / eventos
+  const docentesSabana = useMemo(()=>{
+    const sesiones = sesionesConsolidadas(data);
+    return new Set(sesiones.map(s => s.d).filter(Boolean).map(n => n.trim().toUpperCase()));
+  }, [data]);
+  const cruce = useMemo(()=>{
+    const nombreUpp = (s) => (s||'').trim().toUpperCase();
+    const docNombres = new Set(activos.map(d => nombreUpp(d.nombre)));
+    const habilitadosNoEnSabana = activos.filter(d => d.asignatura_activa && !docentesSabana.has(nombreUpp(d.nombre)));
+    const sabanaNoEnDocentes   = [...docentesSabana].filter(n => !docNombres.has(n));
+    return { habilitadosNoEnSabana, sabanaNoEnDocentes };
+  }, [activos, docentesSabana]);
+
+  // Mini-gráfico de barras horizontal para Categoría
+  const maxCat = Math.max(1, ...porCategoria.map(x=>x.n));
+
+  if(docentes.length === 0){
+    return <div className="card"><div className="empty"><span className="emoji">📭</span>Sin docentes cargados. Importa un Excel en 📥 Importar.</div></div>;
+  }
+
+  return (
+    <>
+      <div className="grid grid-4">
+        <div className="kpi kpi-blue"><span className="label">Docentes activos</span><span className="value">{totActivos.toLocaleString('es-CL')}</span><span className="delta">de {total.toLocaleString('es-CL')} en catálogo · {totInactivos} inactivos</span><div className="icon">👥</div></div>
+        <div className="kpi kpi-green"><span className="label">Jefaturas únicas</span><span className="value">{jefaturasUnicas}</span><span className="delta">directores distintos</span><div className="icon">⭐</div></div>
+        <div className="kpi kpi-amber"><span className="label">Horas JMG semana</span><span className="value">{horasTotales.toLocaleString('es-CL')}</span><span className="delta">suma de docentes activos</span><div className="icon">⏱</div></div>
+        <div className="kpi kpi-red"><span className="label">Costo mensual proyectado</span><span className="value" style={{fontSize:18}}>{fmtCLP(costoMensualTotal)}</span><span className="delta">suma valor mensual activos</span><div className="icon">💰</div></div>
+      </div>
+
+      <div className="grid grid-2" style={{gap:14}}>
+        {/* Por categoría */}
+        <div className="card" style={{padding:0}}>
+          <div className="card-header" style={{padding:'14px 18px'}}><div><h3>📊 Por categoría</h3><div className="sub">Distribución de docentes activos por nivel</div></div></div>
+          <div className="tbl-scroll">
+            <table className="tbl">
+              <thead><tr><th>Categoría</th><th style={{textAlign:'right'}}>Docentes</th><th style={{textAlign:'right'}}>Horas/sem</th><th style={{textAlign:'right'}}>Costo/mes</th><th></th></tr></thead>
+              <tbody>
+                {porCategoria.map((c,i)=>(
+                  <tr key={i}>
+                    <td><b>{c.categoria}</b></td>
+                    <td style={{textAlign:'right'}}>{c.n}</td>
+                    <td style={{textAlign:'right'}}>{c.horas.toLocaleString('es-CL')}</td>
+                    <td style={{textAlign:'right',fontFamily:'monospace'}}>{fmtCLP(c.costo)}</td>
+                    <td style={{width:120}}><div style={{height:8,background:'var(--border-soft)',borderRadius:4,overflow:'hidden'}}><div style={{width:`${(c.n/maxCat)*100}%`,height:'100%',background:'var(--primary)'}}/></div></td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+        {/* Por banda salarial */}
+        <div className="card" style={{padding:0}}>
+          <div className="card-header" style={{padding:'14px 18px'}}><div><h3>💼 Por banda salarial</h3><div className="sub">Hora promedio y costo total por banda</div></div></div>
+          <div className="tbl-scroll">
+            <table className="tbl">
+              <thead><tr><th>Banda</th><th style={{textAlign:'right'}}>Docentes</th><th style={{textAlign:'right'}}>Hora prom.</th><th style={{textAlign:'right'}}>Horas/sem</th><th style={{textAlign:'right'}}>Costo/mes</th></tr></thead>
+              <tbody>
+                {porBanda.map((b,i)=>(
+                  <tr key={i}>
+                    <td><b>{b.banda}</b></td>
+                    <td style={{textAlign:'right'}}>{b.n}</td>
+                    <td style={{textAlign:'right',fontFamily:'monospace'}}>{fmtCLP(b.hora_prom)}</td>
+                    <td style={{textAlign:'right'}}>{b.horas.toLocaleString('es-CL')}</td>
+                    <td style={{textAlign:'right',fontFamily:'monospace'}}>{fmtCLP(b.costo)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+
+      {/* Por jefatura */}
+      <div className="card" style={{padding:0}}>
+        <div className="card-header" style={{padding:'14px 18px'}}><div><h3>👤 Por jefatura</h3><div className="sub">{porJefatura.length} jefaturas con docentes activos · horas y costo total por jefe directo</div></div></div>
+        <div className="tbl-scroll" style={{maxHeight:500}}>
+          <table className="tbl">
+            <thead><tr><th>Jefe directo</th><th style={{textAlign:'right'}}>Docentes</th><th style={{textAlign:'right'}}>Con asig. activa</th><th style={{textAlign:'right'}}>Horas/sem</th><th style={{textAlign:'right'}}>Costo/mes</th></tr></thead>
+            <tbody>
+              {porJefatura.map((j,i)=>(
+                <tr key={i}>
+                  <td><b>{j.jefe}</b></td>
+                  <td style={{textAlign:'right'}}>{j.n}</td>
+                  <td style={{textAlign:'right'}}>{j.conAsig} <span className="muted">({j.n>0?Math.round((j.conAsig/j.n)*100):0}%)</span></td>
+                  <td style={{textAlign:'right'}}>{j.horas.toLocaleString('es-CL')}</td>
+                  <td style={{textAlign:'right',fontFamily:'monospace'}}>{fmtCLP(j.costo)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      {/* Cruce con SABANA */}
+      <div className="card" style={{padding:0}}>
+        <div className="card-header" style={{padding:'14px 18px'}}>
+          <div>
+            <h3>🔍 Cruce con SABANA / LISTA DE RECURSOS</h3>
+            <div className="sub">Detecta discrepancias entre quienes están habilitados en el catálogo y quienes efectivamente dictan según las planillas académicas.</div>
+          </div>
+        </div>
+        <div className="grid grid-2" style={{padding:'14px 18px',gap:14}}>
+          <div>
+            <div style={{fontSize:12,fontWeight:700,color:'var(--text-muted)',marginBottom:6,letterSpacing:.3}}>HABILITADOS EN CATÁLOGO PERO NO DICTAN ({cruce.habilitadosNoEnSabana.length})</div>
+            <div className="tbl-scroll" style={{maxHeight:300,border:'1px solid var(--border-soft)',borderRadius:6}}>
+              <table className="tbl" style={{fontSize:12}}>
+                <thead><tr><th>Nombre</th><th>Categoría</th><th>Jefe</th></tr></thead>
+                <tbody>
+                  {cruce.habilitadosNoEnSabana.slice(0,100).map((d,i)=>(
+                    <tr key={i}><td><b>{d.nombre}</b></td><td>{d.categoria||'—'}</td><td className="muted">{d.jefe||'—'}</td></tr>
+                  ))}
+                  {cruce.habilitadosNoEnSabana.length===0 && <tr><td colSpan="3"><div className="empty"><span className="emoji">✓</span>Sin discrepancias.</div></td></tr>}
+                </tbody>
+              </table>
+            </div>
+          </div>
+          <div>
+            <div style={{fontSize:12,fontWeight:700,color:'var(--text-muted)',marginBottom:6,letterSpacing:.3}}>DICTAN EN SABANA PERO NO EN CATÁLOGO ({cruce.sabanaNoEnDocentes.length})</div>
+            <div className="tbl-scroll" style={{maxHeight:300,border:'1px solid var(--border-soft)',borderRadius:6}}>
+              <table className="tbl" style={{fontSize:12}}>
+                <thead><tr><th>Nombre (según SABANA)</th></tr></thead>
+                <tbody>
+                  {cruce.sabanaNoEnDocentes.slice(0,100).map((n,i)=>(
+                    <tr key={i}><td>{n}</td></tr>
+                  ))}
+                  {cruce.sabanaNoEnDocentes.length===0 && <tr><td><div className="empty"><span className="emoji">✓</span>Sin discrepancias.</div></td></tr>}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      </div>
+    </>
   );
 }
 
@@ -8445,6 +9346,7 @@ function App(){
     importar:['Importar datos','SABANA · LISTA DE RECURSOS · Jefaturas'],
     repDoc:['Reporte Docente','Carga docente agrupada por director de carrera (jefatura)'],
     gestiones:['Gestiones','Pestaña interna · sólo administradores autorizados'],
+    gestDoc:['Gestión Docente','Catálogo y categorización de docentes · sólo admin'],
     docente:['Horario docente','Agenda semanal del docente'],
     usuarios:['Usuarios','Administración de cuentas'],
     reportes:['Reportes','Ocupación y métricas'],
@@ -8475,6 +9377,7 @@ function App(){
         {view==='reportes'  && <Reportes data={data} reservas={reservas}/>}
         {view==='repDoc'    && <ReporteDocente data={data}/>}
         {view==='gestiones' && <Gestiones data={data} user={user} db={db} toast={setToast}/>}
+        {view==='gestDoc'   && <GestionDocente data={data} user={user} db={db} toast={setToast}/>}
         {view==='mapa'      && <MapaCalor data={data} user={user}/>}
       </Shell>
       {toast && <div className="toast">{toast}</div>}

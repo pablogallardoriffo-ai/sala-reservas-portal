@@ -136,6 +136,52 @@ CREATE TABLE IF NOT EXISTS auditorias_log (
 CREATE INDEX IF NOT EXISTS idx_audit_log_audit_id ON auditorias_log(audit_id);
 CREATE INDEX IF NOT EXISTS idx_audit_log_usuario  ON auditorias_log(usuario);
 
+-- DOCENTES (Gestión Docente · sólo admin)
+-- Catálogo maestro de docentes contratados. Importado desde Excel y
+-- editable desde la app. Estructura espejo del archivo DOCENTES 2026-1
+-- pero con id propio + campos extra (escuela, notas).
+CREATE TABLE IF NOT EXISTS docentes (
+  id                  BIGSERIAL PRIMARY KEY,
+  duoc_id             TEXT,                -- col A: ID interno DUOC
+  rut                 TEXT UNIQUE,         -- col B
+  estado              TEXT DEFAULT 'ACTIVO',  -- col C: OBSERVACIÓN (ACTIVO/INACTIVO/...)
+  apellido1           TEXT,                -- col D
+  apellido2           TEXT,                -- col E
+  nombres             TEXT,                -- col F
+  nombre              TEXT NOT NULL,       -- col G: nombre completo
+  correo              TEXT,                -- col H: institucional
+  correo_personal     TEXT,                -- col I
+  telefono            TEXT,                -- col J
+  fecha_nacimiento    DATE,                -- col K
+  genero              TEXT,                -- col L: F/M/—
+  hora_docente        INT,                 -- col M: HORA DOCENTE 2026 (valor por hora)
+  valor_mensual       INT,                 -- col N: VALOR HORA MENSUAL
+  banda_salarial      TEXT,                -- col O: BX, B6, B1, etc.
+  jmg_semanal         INT,                 -- col P: JMG (Semanal) horas
+  jmg_horas           INT,                 -- col Q: JMG (horas) total periodo
+  sede_ceco           TEXT,                -- col R
+  categoria           TEXT,                -- col S: Docente Asistente, Titular...
+  plazo_contractual   TEXT,                -- col T: Plazo Indefinido / Fijo
+  sindicalizacion     TEXT,                -- col U
+  jefe_id             TEXT,                -- col V: ID JEFATURA
+  jefe                TEXT,                -- col W: nombre jefe directo
+  region              TEXT,                -- col X
+  ciudad              TEXT,                -- col Y
+  comuna              TEXT,                -- col Z
+  direccion           TEXT,                -- col AA
+  adicional           TEXT,                -- col AB: edificio / sector
+  asignatura_activa   BOOLEAN,             -- col AC: 1 si tiene asignatura habilitada
+  -- Extras propios (no del Excel)
+  escuela             TEXT,                -- 3 letras (manual, opcional)
+  notas               TEXT,                -- notas internas
+  importado_en        TIMESTAMPTZ,
+  updated_at          TIMESTAMPTZ DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_docentes_categoria ON docentes(categoria);
+CREATE INDEX IF NOT EXISTS idx_docentes_jefe      ON docentes(jefe);
+CREATE INDEX IF NOT EXISTS idx_docentes_estado    ON docentes(estado);
+CREATE INDEX IF NOT EXISTS idx_docentes_rut       ON docentes(rut);
+
 -- RESERVAS
 CREATE TABLE IF NOT EXISTS reservas (
   id            BIGSERIAL PRIMARY KEY,
