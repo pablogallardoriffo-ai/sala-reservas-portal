@@ -5444,7 +5444,8 @@ function ListadoDocentes({ docentes, onSave, onDelete, toast, horasRealesMap }){
             </tr></thead>
             <tbody>
               {filtradas.map(d => {
-                const hrsReal = horasRealesMap?.get((d.nombre||'').trim().toUpperCase()) || 0;
+                const det = lookupDocenteEnMap(d.nombre, horasRealesMap?._detallado);
+                const hrsReal = det?.horasSem || 0;
                 const hrsExcel = Number(d.jmg_semanal)||0;
                 const difHoras = hrsReal > 0 && Math.abs(hrsReal - hrsExcel) >= 1;
                 return (
@@ -5859,6 +5860,51 @@ const SEMANAS_SEMESTRE = 18;
 const HORAS_MAX_SEMANALES = 40;
 const FACTOR_MENSUAL = 19 / 5; // 3.8
 
+// Normaliza nombre de docente para matching robusto: uppercase, sin acentos,
+// espacios colapsados. "Álcaino  Fernández" → "ALCAINO FERNANDEZ"
+const normalizeDocenteNombre = (s) => {
+  return (s||'')
+    .toString()
+    .normalize('NFD').replace(/\p{Mn}/gu, '')
+    .toUpperCase()
+    .replace(/[^A-Z\s]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+};
+const STOPWORDS_NOMBRE = new Set(['DE','DEL','LA','LAS','LOS','EL','Y','DA']);
+const tokenizeDocente = (s) => {
+  return normalizeDocenteNombre(s)
+    .split(' ')
+    .filter(t => t.length >= 3 && !STOPWORDS_NOMBRE.has(t));
+};
+// Busca un docente en el map de horas usando matching robusto. Devuelve el
+// objeto del map o null. Estrategia:
+// 1. Exacto por nombre normalizado.
+// 2. Por overlap de tokens (apellidos + nombres): considera match si comparten
+//    ≥2 tokens significativos (>3 letras, sin stopwords).
+const lookupDocenteEnMap = (nombreDocente, mapDetallado) => {
+  if(!mapDetallado || !nombreDocente) return null;
+  const norm = normalizeDocenteNombre(nombreDocente);
+  // 1) Match exacto
+  for(const [k, v] of mapDetallado){
+    if(normalizeDocenteNombre(k) === norm) return v;
+  }
+  // 2) Match por tokens
+  const tokensA = new Set(tokenizeDocente(nombreDocente));
+  if(tokensA.size < 2) return null;
+  let mejor = null, mejorScore = 0;
+  for(const [k, v] of mapDetallado){
+    const tokensB = new Set(tokenizeDocente(k));
+    if(tokensB.size < 2) continue;
+    let comunes = 0;
+    for(const t of tokensA) if(tokensB.has(t)) comunes++;
+    if(comunes >= 2 && comunes > mejorScore){
+      mejor = v; mejorScore = comunes;
+    }
+  }
+  return mejor;
+};
+
 const calcValorMensualHora = (horaDocente) => {
   const h = Number(horaDocente);
   if(isNaN(h) || h <= 0) return 0;
@@ -5970,11 +6016,12 @@ const calcHorasSemanalesRealesMap = (data) => {
 };
 
 // Devuelve las horas semanales del docente, prefiriendo SABANA real si está
-// disponible. Cae al campo del Excel solo si no hay datos en SABANA.
+// disponible. Usa matching robusto por tokens (no requiere coincidencia
+// exacta del nombre). Cae al campo del Excel solo si no hay datos en SABANA.
 const horasSemanalesEfectivas = (d, horasRealesMap) => {
-  if(horasRealesMap){
-    const real = horasRealesMap.get((d.nombre||'').trim().toUpperCase());
-    if(real != null && real > 0) return Math.min(real, HORAS_MAX_SEMANALES);
+  if(horasRealesMap && horasRealesMap._detallado){
+    const det = lookupDocenteEnMap(d.nombre, horasRealesMap._detallado);
+    if(det && det.horasSem > 0) return Math.min(det.horasSem, HORAS_MAX_SEMANALES);
   }
   return calcHorasSemanales(d);
 };
@@ -6003,6 +6050,7 @@ function SimuladorSueldo({ docentes, horasRealesMap }){
 
   // Si elige un docente, precarga sus datos. Prioriza horas reales SABANA
   // sobre el campo jmg_semanal del Excel (que suele estar desactualizado).
+  // Usa lookup robusto por tokens del nombre (acepta variaciones).
   const seleccionarDocente = (id) => {
     setDocenteId(id);
     if(!id){ setHoraInput(''); setHorasInput(''); setFuenteHoras(null); setDocSel(null); return; }
@@ -6010,7 +6058,8 @@ function SimuladorSueldo({ docentes, horasRealesMap }){
     if(d){
       setDocSel(d);
       setHoraInput(d.hora_docente || '');
-      const hrsReal = horasRealesMap?.get((d.nombre||'').trim().toUpperCase()) || 0;
+      const det = lookupDocenteEnMap(d.nombre, horasRealesMap?._detallado);
+      const hrsReal = det?.horasSem || 0;
       if(hrsReal > 0){
         setHorasInput(Math.min(hrsReal, HORAS_MAX_SEMANALES).toFixed(1));
         setFuenteHoras('sabana');
@@ -6032,7 +6081,7 @@ function SimuladorSueldo({ docentes, horasRealesMap }){
   // Pago adicional por eventos esporádicos (si el docente seleccionado los
   // tiene): se paga por hora dictada en el semestre, no se mensualiza con
   // el factor 19/5. Total semestre = hrs_esp × valor_hora.
-  const detallado = docSel ? horasRealesMap?._detallado?.get((docSel.nombre||'').trim().toUpperCase()) : null;
+  const detallado = docSel ? lookupDocenteEnMap(docSel.nombre, horasRealesMap?._detallado) : null;
   const hrsEsporadicas = detallado?.esporadicasTotal || 0;
   const pagoEsporadicoSemestre = Math.round(hrsEsporadicas * hora);
   const pagoEsporadicoMensual  = Math.round(pagoEsporadicoSemestre / 4.5); // 4.5 meses por semestre
@@ -6084,9 +6133,10 @@ function SimuladorSueldo({ docentes, horasRealesMap }){
         </div>
 
         {docSel && (() => {
-          const hrsReal = horasRealesMap?.get((docSel.nombre||'').trim().toUpperCase()) || 0;
+          const det = lookupDocenteEnMap(docSel.nombre, horasRealesMap?._detallado);
+          const hrsReal = det?.horasSem || 0;
           const hrsExcel = Number(docSel.jmg_semanal)||0;
-          const detallado = horasRealesMap?._detallado?.get((docSel.nombre||'').trim().toUpperCase());
+          const detallado = det;
           if(hrsReal === 0 && hrsExcel === 0 && !detallado) return null;
           const dif = Math.abs(hrsReal - hrsExcel);
           return (
@@ -6098,6 +6148,11 @@ function SimuladorSueldo({ docentes, horasRealesMap }){
                   <div>📄 <b>Excel: {hrsExcel||'—'} hrs</b> <button className="btn-ghost btn-sm" style={{padding:'2px 8px',marginLeft:4,fontSize:10.5}} disabled={!hrsExcel} onClick={()=>{setHorasInput(hrsExcel); setFuenteHoras('excel');}}>Usar</button></div>
                   {dif>=1 && <div style={{color:'var(--warn)',marginLeft:'auto'}}>⚠ Diferencia de {dif.toFixed(1)} hrs</div>}
                 </div>
+                {hrsReal === 0 && (
+                  <div style={{fontSize:11,color:'var(--text-muted)',marginTop:6,padding:'6px 8px',background:'rgba(255,69,58,.06)',borderRadius:6}}>
+                    ⚠ No se encontraron clases recurrentes para este docente en SABANA. Posibles causas: (1) docente sin programación cargada; (2) el nombre en SABANA difiere del nombre en el catálogo de docentes; (3) sus clases son solo eventos esporádicos. Verifica el Horario Docente del usuario.
+                  </div>
+                )}
               </div>
               {detallado && (detallado.instRecurrentes + detallado.instEsporadicas) > 0 && (
                 <div className="card" style={{padding:'10px 14px',fontSize:12.5}}>
@@ -6231,7 +6286,8 @@ function DashboardDocente({ docentes, data, horasRealesMap }){
   const conAsigActiva = activos.filter(d => d.asignatura_activa).length;
   // Cuántos docentes tienen diferencia significativa Excel vs SABANA
   const conDiscrepancia = activos.filter(d => {
-    const real = horasRealesMap?.get((d.nombre||'').trim().toUpperCase()) || 0;
+    const det = lookupDocenteEnMap(d.nombre, horasRealesMap?._detallado);
+    const real = det?.horasSem || 0;
     const excel = Number(d.jmg_semanal)||0;
     return real > 0 && Math.abs(real - excel) >= 1;
   }).length;
