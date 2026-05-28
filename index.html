@@ -1007,6 +1007,7 @@ const I = {
   upload:   <Icon d={<><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></>} />,
   file:     <Icon size={16} d={<><path d="M13 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V9z"/><polyline points="13 2 13 9 20 9"/></>} />,
   heatmap:  <Icon d={<><rect x="3" y="3" width="6" height="6"/><rect x="9" y="3" width="6" height="6"/><rect x="15" y="3" width="6" height="6"/><rect x="3" y="9" width="6" height="6"/><rect x="9" y="9" width="6" height="6"/><rect x="15" y="9" width="6" height="6"/><rect x="3" y="15" width="6" height="6"/><rect x="9" y="15" width="6" height="6"/><rect x="15" y="15" width="6" height="6"/></>} />,
+  calc:     <Icon d={<><rect x="4" y="2" width="16" height="20" rx="2"/><line x1="8" y1="6" x2="16" y2="6"/><line x1="8" y1="10" x2="8" y2="10"/><line x1="12" y1="10" x2="12" y2="10"/><line x1="16" y1="10" x2="16" y2="10"/><line x1="8" y1="14" x2="8" y2="14"/><line x1="12" y1="14" x2="12" y2="14"/><line x1="16" y1="14" x2="16" y2="18"/><line x1="8" y1="18" x2="12" y2="18"/></>} />,
 };
 
 /* ========= CONST ========= */
@@ -1935,6 +1936,7 @@ function Shell({ user, mode, onReconfigure, onLogout, view, setView, children, t
       ['reservas',  user.role==='usuario' ? 'Mis Reservas' : 'Solicitudes de Reservas',  I.reservas,  ['admin','reservador','usuario']],
       ['reportes',  'Reportes',                 I.reports,   ['admin','reservador']],
       ['repDoc',    'Reporte Docente',          I.reports,   ['admin']],
+      ['gestDoc',   'Gestión Docente',          I.calc,      ['admin','reservador']],
       ['gestiones', '🔒 Gestiones',             I.users,     ['admin']],
       ['usuarios',  'Usuarios',                 I.users,     ['admin']],
       ['importar',  'Importar datos',           I.upload,    ['admin']],
@@ -5041,6 +5043,161 @@ function ModalCambioPwGenerico({ onClose, toast, storageKey, defaultPw, db, user
         <button type="button" className="btn btn-ghost btn-sm" onClick={restaurar} disabled={busy}>Restaurar contraseña original</button>
       </div>
     </Modal>
+  );
+}
+
+/* ========= GESTIÓN DOCENTE · CALCULADORA DE SUELDO =========
+   Herramienta de ORIENTACIÓN sin datos sensibles: no guarda ni lee ningún
+   docente, RUT, correo ni sueldo. El usuario ingresa a mano el valor hora y
+   las horas semanales, y obtiene el sueldo bruto/líquido aplicando la
+   fórmula institucional valor_hora × 19/5 × horas_semana. Nada se persiste.
+*/
+const GD_SEMANAS_SEMESTRE   = 18;
+const GD_HORAS_MAX_SEMANALES = 40;
+const GD_FACTOR_MENSUAL     = 19 / 5; // 3.8
+const GD_DESC_AFP_PCT       = 11.5;   // AFP + comisión promedio (referencial)
+const GD_DESC_SALUD_PCT     = 7;      // Fonasa / Isapre (cotización legal mínima)
+const GD_DESC_CESANTIA_PCT  = 0.6;    // Seguro de cesantía (aporte trabajador)
+
+function GestionDocente(){
+  const [horaInput, setHoraInput]   = useState('');
+  const [horasInput, setHorasInput] = useState('');
+  const [pensionado, setPensionado] = useState(false);
+  const [afpPct, setAfpPct]   = useState(GD_DESC_AFP_PCT);
+  const [saludPct, setSaludPct] = useState(GD_DESC_SALUD_PCT);
+  const [cesPct, setCesPct]   = useState(GD_DESC_CESANTIA_PCT);
+  const [showAdvanced, setShowAdvanced] = useState(false);
+
+  const fmtCLP = (n) => '$ '+Math.round(Number(n)||0).toLocaleString('es-CL');
+  const fmtNum = (n, d=1) => (Number(n)||0).toLocaleString('es-CL', {minimumFractionDigits:d, maximumFractionDigits:d});
+
+  const hora = Number(horaInput) || 0;
+  let horasSem = Number(horasInput) || 0;
+  const sobreTope = horasSem > GD_HORAS_MAX_SEMANALES;
+  if(sobreTope) horasSem = GD_HORAS_MAX_SEMANALES;
+
+  const valorMensualHora = Math.round(hora * GD_FACTOR_MENSUAL);
+  const sueldoBruto      = Math.round(valorMensualHora * horasSem);
+  const totalHorasSem    = Math.round(horasSem * GD_SEMANAS_SEMESTRE);
+
+  const afpDesc   = pensionado ? 0 : Math.round(sueldoBruto * afpPct/100);
+  const saludDesc = Math.round(sueldoBruto * saludPct/100);
+  const cesDesc   = pensionado ? 0 : Math.round(sueldoBruto * cesPct/100);
+  const totalDesc = afpDesc + saludDesc + cesDesc;
+  const sueldoLiquido = sueldoBruto - totalDesc;
+
+  const hayDatos = hora > 0 && horasSem > 0;
+
+  return (
+    <>
+      <div className="card">
+        <div className="card-header">
+          <div>
+            <h3>💰 Calculadora de sueldo docente</h3>
+            <div className="sub">Orientación referencial. Aplica la fórmula institucional <b>valor hora × 19/5 × horas a la semana</b>. Tope normativo: <b>{GD_HORAS_MAX_SEMANALES} hrs/semana</b> · semestre de <b>{GD_SEMANAS_SEMESTRE} semanas</b>. No se guarda ningún dato.</div>
+          </div>
+        </div>
+
+        <div className="col-2">
+          <div className="field">
+            <label>Valor hora docente ($)</label>
+            <input type="number" inputMode="numeric" value={horaInput} onChange={e=>setHoraInput(e.target.value)} placeholder="Ej: 16716" autoFocus/>
+            <div className="muted" style={{fontSize:11,marginTop:4}}>El valor por hora pedagógica del contrato del docente.</div>
+          </div>
+          <div className="field">
+            <label>Horas a la semana (máx {GD_HORAS_MAX_SEMANALES})</label>
+            <input type="number" step="0.5" min="0" max={GD_HORAS_MAX_SEMANALES} value={horasInput} onChange={e=>setHorasInput(e.target.value)} placeholder="Ej: 30"/>
+            {sobreTope
+              ? <div style={{fontSize:11,marginTop:4,color:'var(--warn)'}}>⚠ Ingresaste más de {GD_HORAS_MAX_SEMANALES} hrs. Por norma se calcula con el tope de {GD_HORAS_MAX_SEMANALES}.</div>
+              : <div className="muted" style={{fontSize:11,marginTop:4}}>Horas pedagógicas semanales que dicta el docente.</div>}
+          </div>
+        </div>
+
+        <div className="field" style={{marginTop:4}}>
+          <label>¿El docente es pensionado?</label>
+          <div className="row" style={{gap:18,marginTop:6,fontSize:13}}>
+            <label style={{cursor:'pointer'}}><input type="radio" name="gd-pens" checked={!pensionado} onChange={()=>setPensionado(false)}/> No</label>
+            <label style={{cursor:'pointer'}}><input type="radio" name="gd-pens" checked={pensionado} onChange={()=>setPensionado(true)}/> Sí <span className="muted" style={{fontSize:11}}>(sin descuento de AFP ni cesantía)</span></label>
+          </div>
+        </div>
+
+        <details open={showAdvanced} onToggle={e=>setShowAdvanced(e.target.open)} style={{marginTop:8}}>
+          <summary style={{cursor:'pointer',fontSize:13,fontWeight:600,padding:'4px 0'}}>⚙ Ajustar porcentajes de descuento legales</summary>
+          <div className="col-3" style={{marginTop:8}}>
+            <div className="field"><label>AFP (%)</label><input type="number" step="0.1" value={afpPct} onChange={e=>setAfpPct(Number(e.target.value)||0)} disabled={pensionado}/></div>
+            <div className="field"><label>Salud (%)</label><input type="number" step="0.1" value={saludPct} onChange={e=>setSaludPct(Number(e.target.value)||0)}/></div>
+            <div className="field"><label>Cesantía (%)</label><input type="number" step="0.1" value={cesPct} onChange={e=>setCesPct(Number(e.target.value)||0)} disabled={pensionado}/></div>
+          </div>
+          <div className="muted" style={{fontSize:11.5,marginTop:6}}>Valores referenciales. La AFP incluye una comisión promedio; el porcentaje exacto depende de la administradora. Un pensionado solo cotiza salud.</div>
+        </details>
+      </div>
+
+      {!hayDatos && (
+        <div className="card"><div className="empty"><span className="emoji">🧮</span>Ingresa el <b>valor hora</b> y las <b>horas a la semana</b> para ver el cálculo.</div></div>
+      )}
+
+      {hayDatos && (
+        <>
+          {/* Resultados */}
+          <div className="grid grid-4">
+            <div className="kpi kpi-blue">
+              <span className="label">Valor mensual por hora</span>
+              <span className="value" style={{fontSize:20}}>{fmtCLP(valorMensualHora)}</span>
+              <span className="delta">valor hora × 19/5</span>
+              <div className="icon">📈</div>
+            </div>
+            <div className="kpi kpi-amber">
+              <span className="label">Horas del semestre</span>
+              <span className="value">{totalHorasSem.toLocaleString('es-CL')}</span>
+              <span className="delta">{fmtNum(horasSem)} hrs/sem × {GD_SEMANAS_SEMESTRE} sem</span>
+              <div className="icon">⏱</div>
+            </div>
+            <div className="kpi kpi-green">
+              <span className="label">Sueldo BRUTO mensual</span>
+              <span className="value" style={{fontSize:20}}>{fmtCLP(sueldoBruto)}</span>
+              <span className="delta">{fmtNum(horasSem)} hrs/sem</span>
+              <div className="icon">💵</div>
+            </div>
+            <div className="kpi kpi-red">
+              <span className="label">Sueldo LÍQUIDO mensual</span>
+              <span className="value" style={{fontSize:20}}>{fmtCLP(sueldoLiquido)}</span>
+              <span className="delta">{sueldoBruto>0?Math.round(sueldoLiquido/sueldoBruto*100):0}% del bruto</span>
+              <div className="icon">💰</div>
+            </div>
+          </div>
+
+          <div className="card" style={{padding:0}}>
+            <div className="card-header" style={{padding:'14px 18px'}}>
+              <div><h3>🧾 Desglose del cálculo</h3><div className="sub">Paso a paso, para explicárselo al docente</div></div>
+            </div>
+            <div className="tbl-scroll">
+              <table className="tbl">
+                <tbody>
+                  <tr><td colSpan="2" style={{padding:'10px 12px',fontWeight:700,fontSize:12,color:'var(--text-muted)',background:'var(--surface-2)'}}>SUELDO BRUTO</td></tr>
+                  <tr><td><b>1.</b> Valor hora docente</td><td style={{textAlign:'right',fontFamily:'monospace'}}>{fmtCLP(hora)}</td></tr>
+                  <tr><td><b>2.</b> × Factor mensualización (19/5 = {GD_FACTOR_MENSUAL})</td><td style={{textAlign:'right',fontFamily:'monospace'}}>×{GD_FACTOR_MENSUAL}</td></tr>
+                  <tr style={{background:'var(--surface-2)'}}><td><b>= Valor mensual por hora</b></td><td style={{textAlign:'right',fontFamily:'monospace',fontWeight:700}}>{fmtCLP(valorMensualHora)}</td></tr>
+                  <tr><td><b>3.</b> × Horas a la semana{sobreTope && <span style={{color:'var(--warn)'}}> (topado a {GD_HORAS_MAX_SEMANALES})</span>}</td><td style={{textAlign:'right',fontFamily:'monospace'}}>×{fmtNum(horasSem)}</td></tr>
+                  <tr style={{background:'rgba(48,209,88,.15)',borderTop:'2px solid var(--success)'}}><td><b>SUELDO BRUTO MENSUAL</b></td><td style={{textAlign:'right',fontFamily:'monospace',fontWeight:700,fontSize:15,color:'var(--success)'}}>{fmtCLP(sueldoBruto)}</td></tr>
+
+                  <tr><td colSpan="2" style={{padding:'10px 12px',fontWeight:700,fontSize:12,color:'var(--text-muted)',background:'var(--surface-2)'}}>DESCUENTOS LEGALES</td></tr>
+                  <tr><td>AFP ({pensionado?'pensionado · exento':`${afpPct}%`})</td><td style={{textAlign:'right',fontFamily:'monospace',color:'var(--danger)'}}>− {fmtCLP(afpDesc)}</td></tr>
+                  <tr><td>Salud ({saludPct}%)</td><td style={{textAlign:'right',fontFamily:'monospace',color:'var(--danger)'}}>− {fmtCLP(saludDesc)}</td></tr>
+                  <tr><td>Seguro cesantía ({pensionado?'pensionado · exento':`${cesPct}%`})</td><td style={{textAlign:'right',fontFamily:'monospace',color:'var(--danger)'}}>− {fmtCLP(cesDesc)}</td></tr>
+                  <tr style={{background:'rgba(255,69,58,.08)'}}><td><b>Total descuentos</b></td><td style={{textAlign:'right',fontFamily:'monospace',fontWeight:700,color:'var(--danger)'}}>− {fmtCLP(totalDesc)}</td></tr>
+                  <tr style={{background:'rgba(10,132,255,.1)'}}><td><b>SUELDO LÍQUIDO MENSUAL</b></td><td style={{textAlign:'right',fontFamily:'monospace',fontWeight:700,fontSize:15,color:'var(--primary)'}}>{fmtCLP(sueldoLiquido)}</td></tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+
+          <div className="card" style={{padding:'12px 14px',background:'var(--surface-2)',fontSize:12,lineHeight:1.6}}>
+            <b>ℹ Nota:</b> Este cálculo es <b>referencial y orientativo</b>. El sueldo bruto sale de la fórmula institucional (valor hora × 19/5 × horas semanales). Los descuentos legales son aproximados — el monto real depende de la AFP, el plan de salud (Fonasa/Isapre) y otros haberes o descuentos que no se incluyen aquí. No reemplaza la liquidación oficial de remuneraciones.
+            {pensionado && <><br/><b>💡 Pensionado:</b> no se descuenta AFP ni seguro de cesantía; solo cotiza salud.</>}
+          </div>
+        </>
+      )}
+    </>
   );
 }
 
@@ -8581,6 +8738,7 @@ function App(){
     importar:['Importar datos','SABANA · LISTA DE RECURSOS · Jefaturas'],
     repDoc:['Reporte Docente','Carga docente agrupada por director de carrera (jefatura)'],
     gestiones:['Gestiones','Pestaña interna · sólo administradores autorizados'],
+    gestDoc:['Gestión Docente','Calculadora de sueldo para orientación · sin datos sensibles'],
     docente:['Horario docente','Agenda semanal del docente'],
     usuarios:['Usuarios','Administración de cuentas'],
     reportes:['Reportes','Ocupación y métricas'],
@@ -8611,6 +8769,7 @@ function App(){
         {view==='reportes'  && <Reportes data={data} reservas={reservas}/>}
         {view==='repDoc'    && <ReporteDocente data={data}/>}
         {view==='gestiones' && <Gestiones data={data} user={user} db={db} toast={setToast}/>}
+        {view==='gestDoc'   && <GestionDocente/>}
         {view==='mapa'      && <MapaCalor data={data} user={user}/>}
       </Shell>
       {toast && <div className="toast">{toast}</div>}
