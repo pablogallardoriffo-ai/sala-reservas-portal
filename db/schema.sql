@@ -46,7 +46,8 @@ CREATE TABLE IF NOT EXISTS programacion (
   s    TEXT,           -- sala (código aula)
   a    TEXT,           -- asignatura
   sc   TEXT,           -- sección
-  d    TEXT,           -- docente
+  d    TEXT,           -- docente (nombre)
+  did  TEXT,           -- ID DUOC del docente (col AH "Rut Docente")
   es   TEXT,           -- escuela (3 letras)
   j    TEXT,           -- jornada (D/V)
   n    TEXT,           -- nivel (SABANA col L)
@@ -56,7 +57,10 @@ CREATE TABLE IF NOT EXISTS programacion (
   i    INT,            -- inscritos
   p    INT             -- plazas disponibles
 );
-CREATE INDEX IF NOT EXISTS idx_prog_s ON programacion(s);
+-- Migración idempotente para BDs existentes
+ALTER TABLE programacion ADD COLUMN IF NOT EXISTS did TEXT;
+CREATE INDEX IF NOT EXISTS idx_prog_s   ON programacion(s);
+CREATE INDEX IF NOT EXISTS idx_prog_did ON programacion(did);
 
 -- EVENTOS (LISTA DE RECURSOS) — una fila por clase real con fecha exacta
 -- Complementa el patrón semanal de `programacion` con sesiones por fecha.

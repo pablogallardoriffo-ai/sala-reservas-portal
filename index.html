@@ -5881,16 +5881,23 @@ const tokenizeDocente = (s) => {
     .split(' ')
     .filter(t => t.length >= 3 && !STOPWORDS_NOMBRE.has(t));
 };
-// Construye un índice nombre_normalizado → duoc_id usando dos fuentes:
-// 1) Catálogo docentes (importado del Excel DOCENTES) → fuente principal
-// 2) Filas P de eventos (LISTA DE RECURSOS) → cuando trae dp + dpid juntos
+// Construye un índice nombre_normalizado → duoc_id usando tres fuentes:
+// 1) Catálogo docentes (Excel DOCENTES) → fuente principal
+// 2) SABANA (col did "Rut Docente" = ID DUOC) → muy confiable, una fila por
+//    docente-asignatura
+// 3) Filas P de eventos (LISTA DE RECURSOS, dp + dpid)
 // Esto permite resolver el ID DUOC estable de un docente aunque su nombre
-// aparezca con variantes en SABANA, eventos o catálogo.
+// aparezca con variantes entre los tres sistemas.
 const buildDocenteIdIndex = (data) => {
   const idx = new Map();
   for(const d of (data?.docentes||[])){
     if(!d.duoc_id || !d.nombre) continue;
     idx.set(normalizeDocenteNombre(d.nombre), String(d.duoc_id));
+  }
+  for(const p of (data?.programacion||[])){
+    if(!p.did || !p.d) continue;
+    const key = normalizeDocenteNombre(p.d);
+    if(key && !idx.has(key)) idx.set(key, String(p.did));
   }
   for(const e of (data?.eventos||[])){
     if(!e.dp || !e.dpid) continue;
@@ -6013,15 +6020,15 @@ const calcHorasDocenteMap = (data) => {
   const porDocEsp = new Map(); // idem → esporádicas
   const nombres = new Map();   // key → nombre representativo para mostrar
 
-  // 1) Recurrentes: SABANA. SABANA solo tiene nombre, así que resolvemos
-  // su ID DUOC vía el índice y usamos eso como clave canónica.
+  // 1) Recurrentes: SABANA. Si la fila tiene did (col AH del Excel "Rut
+  // Docente" = ID DUOC), lo usamos directo. Sino, resolvemos via índice.
   for(const p of (data.programacion||[])){
     if(!p.d || !p.hi || !p.hf) continue;
     const dur = (toMin(p.hf) - toMin(p.hi)) / 60;
     if(dur <= 0) continue;
     const dias = [...String(p.dw||'')].filter(c => c === '1').length;
     if(!dias) continue;
-    const key = getDocenteKey(p.d, null, idIdx);
+    const key = getDocenteKey(p.d, p.did, idIdx);
     if(!nombres.has(key)) nombres.set(key, p.d.trim());
     const aKey = `${p.sc||''}|${p.s||''}|${p.hi}|${p.hf}|${p.dw}`;
     let st = porDocRec.get(key);
@@ -6043,6 +6050,7 @@ const calcHorasDocenteMap = (data) => {
       const code = secCodeFrom(ev.sc);
       const sabanaRow = code ? sabanaIdx.get(code) : null;
       const docTitular = sabanaRow?.d || '';
+      const idTitular  = sabanaRow?.did || null;
       // Docente real del evento. Prioriza fila P (ev.dp + ev.dpid):
       let docRealNombre, docRealId = null;
       if(ev.dp){
@@ -6050,10 +6058,11 @@ const calcHorasDocenteMap = (data) => {
         if(ev.dpid) docRealId = String(ev.dpid).split('·')[0].trim();
       } else {
         docRealNombre = docTitular;
+        docRealId = idTitular;
       }
-      if(!docRealNombre) continue;
+      if(!docRealNombre && !docRealId) continue;
       const keyReal = getDocenteKey(docRealNombre, docRealId, idIdx);
-      const keyTitular = sabanaRow ? getDocenteKey(docTitular, null, idIdx) : null;
+      const keyTitular = sabanaRow ? getDocenteKey(docTitular, idTitular, idIdx) : null;
 
       if(sabanaRow && keyReal === keyTitular){
         // Mismo docente que el titular del SABANA: instancia recurrente,
@@ -8751,6 +8760,9 @@ function ImportarSabana({ data, toast, onReplace, onSeed, isCloud }){
       const cAsig = findCol(headers, ['Nom. Asignatura','Nombre Asignatura','Asignatura']);
       const cSec  = findCol(headers, ['Nombre Seccion','Seccion','Sección']);
       const cDoc  = findCol(headers, ['Instruct','Docente','Profesor']);
+      // Col AH "Rut Docente" en realidad contiene el ID DUOC. Es la clave
+      // estable para identificar al docente (el nombre varía entre sistemas).
+      const cDid  = findCol(headers, ['Rut Docente','RUT Docente','RUT_DOC','IdDocente','ID Docente']);
       const cEsc  = findCol(headers, ['Escuela']);
       const cJor  = findCol(headers, ['Nom.Jornada','Nom Jornada','Jornada']);
       const cNiv  = findCol(headers, ['Nivel','Nivel.','Nivel ']);
@@ -8829,6 +8841,7 @@ function ImportarSabana({ data, toast, onReplace, onSeed, isCloud }){
           a: cAsig>=0 ? row[cAsig] : null,
           sc: cSec>=0 ? row[cSec] : null,
           d: cDoc>=0 ? row[cDoc] : null,
+          did: cDid>=0 && row[cDid]!=null && row[cDid]!=='' ? String(row[cDid]) : null,
           es: String(escuela).slice(0,3),
           j: cJor>=0 ? String(row[cJor]||'').slice(0,1) : '',
           n: cNiv>=0 && row[cNiv]!=null ? String(row[cNiv]) : null,
