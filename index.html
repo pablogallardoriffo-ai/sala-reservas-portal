@@ -1135,9 +1135,12 @@ const buildSabanaIndex = (programacion) => {
 };
 const enrichEvento = (ev, sabanaIdx) => {
   const meta = sabanaIdx.get(secCodeFrom(ev.sc));
-  if(meta) return { ...ev, a:meta.a, es:meta.es, j:meta.j, n:meta.n, d:meta.d, i:meta.i, p:meta.p };
+  // Si el evento trae docente real (dp) de la fila P, ese prevalece sobre el
+  // docente "regular" de SABANA. Útil para reemplazos y eventos esporádicos.
+  const docReal = ev.dp || null;
+  if(meta) return { ...ev, a:meta.a, es:meta.es, j:meta.j, n:meta.n, d: docReal || meta.d, i:meta.i, p:meta.p };
   // Sin SABANA: provee fallbacks útiles para la UI (que normalmente lee p.a/p.d).
-  return { ...ev, a: ev.de || ev.sc || '', d:'', es:'', j:'', n:null, i:null, p:null };
+  return { ...ev, a: ev.de || ev.sc || '', d: docReal || '', es:'', j:'', n:null, i:null, p:null };
 };
 // Día de la semana (0=Lun ... 6=Dom) para un ISO YYYY-MM-DD.
 const dowFromIso = (iso) => {
@@ -5866,52 +5869,91 @@ const calcHorasSemanales = (d) => {
   return 0;
 };
 
-/* Calcula horas semanales reales por docente desde la programación efectiva
-   (SABANA o LISTA DE RECURSOS). Esta es la fuente "fidedigna" - lo que
-   realmente dicta el docente esta semana - vs el campo jmg_semanal del Excel
-   que en muchos casos está desactualizado o subestimado.
+/* Calcula desglose de horas reales por docente desde la programación efectiva
+   (SABANA o LISTA DE RECURSOS). LISTA DE RECURSOS contiene cada clase con
+   fecha exacta, así que distingue entre asignaturas RECURRENTES (semanales
+   típicas, ~18 instancias) vs ESPORÁDICAS (eventos puntuales 3-5×/semestre).
 
-   Devuelve un Map<nombre_uppercase, horasPorSemana>. Lógica:
-   - SABANA (sesiones con dw): suma (hf-hi)/60 × cantidad de días en dw.
-     Deduplica por (sección + sala + horario + dw) para no contar 2 veces.
-   - LISTA DE RECURSOS (sesiones con fi): suma duración total del semestre
-     y divide entre 18 semanas para sacar el promedio semanal.
-   Si hay datos de ambas fuentes para el mismo docente, prevalece eventos.
+   Devuelve un Map<nombre_uppercase, {
+     horasSem,        // hrs/sem promedio mensualizado (lo que va al sueldo)
+     totalSemestre,   // hrs reales del semestre completo
+     instancias,      // # clases distintas dictadas (deduplicadas)
+     asignaturas,     // # asignaturas distintas (secciones)
+     recurrentes,     // hrs/sem de asignaturas semanales (≥12 instancias)
+     esporadicas,     // hrs/sem promedio mensualizado de eventos puntuales
+     instRecurrentes, // # asig recurrentes
+     instEsporadicas, // # asig esporádicas
+   }>
 */
-const calcHorasSemanalesRealesMap = (data) => {
+const UMBRAL_RECURRENTE = 12; // instancias mínimas para considerar "semanal regular"
+
+const calcHorasDocenteMap = (data) => {
   const sesiones = sesionesConsolidadas(data);
-  const sabana = new Map();  // nombre → { horas, keys:Set para dedupe }
-  const eventos = new Map(); // nombre → minutos totales
+  // Por docente, agrupar por asignatura (sección+horario) para clasificar
+  const porDocente = new Map(); // nombre → Map<asigKey, {duracion, instancias, esEvento}>
+
   for(const s of sesiones){
     if(!s.d || !s.hi || !s.hf) continue;
     const key = (s.d||'').trim().toUpperCase();
-    if(!key) continue;
     const dur = (toMin(s.hf) - toMin(s.hi)) / 60;
     if(dur <= 0) continue;
+    if(!porDocente.has(key)) porDocente.set(key, new Map());
+    const asigs = porDocente.get(key);
+
     if(s.fi){
-      // Evento puntual con fecha específica → suma total → /18
-      eventos.set(key, (eventos.get(key)||0) + dur);
+      // Evento puntual: cuenta como 1 instancia, agrupar por sección+horario
+      const aKey = `${s.sc||''}|${s.hi}|${s.hf}`;
+      let a = asigs.get(aKey);
+      if(!a){ a = { dur, instancias: 0, esEvento: true }; asigs.set(aKey, a); }
+      a.instancias++;
     } else if(s.dw){
-      // SABANA - patrón semanal
+      // SABANA recurrente: 1 fila ≡ 18 instancias del semestre
       const dias = [...String(s.dw)].filter(c => c === '1').length;
       if(!dias) continue;
-      const dedupeKey = `${s.sc||''}|${s.s||''}|${s.hi}|${s.hf}|${s.dw}`;
-      let st = sabana.get(key);
-      if(!st){ st = { horas: 0, keys: new Set() }; sabana.set(key, st); }
-      if(!st.keys.has(dedupeKey)){
-        st.keys.add(dedupeKey);
-        st.horas += dur * dias;
-      }
+      const aKey = `${s.sc||''}|${s.s||''}|${s.hi}|${s.hf}|${s.dw}`;
+      let a = asigs.get(aKey);
+      if(!a){ a = { dur, instancias: 0, esEvento: false, dias }; asigs.set(aKey, a); a.instancias = SEMANAS_SEMESTRE * dias; }
     }
   }
-  // Fusión: si hay eventos para un docente, prevalece sobre SABANA
+
   const out = new Map();
-  for(const [nombre, total] of eventos){
-    out.set(nombre, total / SEMANAS_SEMESTRE);
+  for(const [nombre, asigs] of porDocente){
+    let totalSemestre = 0, recurrentes = 0, esporadicasSemestre = 0;
+    let instRec = 0, instEsp = 0;
+    for(const a of asigs.values()){
+      const hrsAsig = a.dur * a.instancias;
+      totalSemestre += hrsAsig;
+      if(a.instancias >= UMBRAL_RECURRENTE){
+        // Asignatura semanal regular: equivalente semanal = dur × días
+        recurrentes += a.esEvento ? hrsAsig / SEMANAS_SEMESTRE : a.dur * (a.dias||1);
+        instRec++;
+      } else {
+        // Esporádica: promediada sobre el semestre
+        esporadicasSemestre += hrsAsig;
+        instEsp++;
+      }
+    }
+    out.set(nombre, {
+      horasSem: recurrentes + esporadicasSemestre / SEMANAS_SEMESTRE,
+      totalSemestre,
+      instancias: [...asigs.values()].reduce((a,x)=>a+x.instancias, 0),
+      asignaturas: asigs.size,
+      recurrentes,
+      esporadicas: esporadicasSemestre / SEMANAS_SEMESTRE,
+      esporadicasTotal: esporadicasSemestre,
+      instRecurrentes: instRec,
+      instEsporadicas: instEsp,
+    });
   }
-  for(const [nombre, st] of sabana){
-    if(!out.has(nombre)) out.set(nombre, st.horas);
-  }
+  return out;
+};
+
+// Compatibilidad: mantiene la signatura del map antiguo (nombre → horasSem)
+const calcHorasSemanalesRealesMap = (data) => {
+  const detallado = calcHorasDocenteMap(data);
+  const out = new Map();
+  for(const [k, v] of detallado) out.set(k, v.horasSem);
+  out._detallado = detallado;
   return out;
 };
 
@@ -6021,16 +6063,44 @@ function SimuladorSueldo({ docentes, horasRealesMap }){
         {docSel && (() => {
           const hrsReal = horasRealesMap?.get((docSel.nombre||'').trim().toUpperCase()) || 0;
           const hrsExcel = Number(docSel.jmg_semanal)||0;
-          if(hrsReal === 0 && hrsExcel === 0) return null;
+          const detallado = horasRealesMap?._detallado?.get((docSel.nombre||'').trim().toUpperCase());
+          if(hrsReal === 0 && hrsExcel === 0 && !detallado) return null;
           const dif = Math.abs(hrsReal - hrsExcel);
           return (
-            <div className="card" style={{padding:'10px 14px',background: dif>=1?'rgba(255,159,10,.08)':'var(--surface-2)',border:'1px solid '+(dif>=1?'rgba(255,159,10,.35)':'var(--border-soft)'),fontSize:12.5}}>
-              <div className="row" style={{gap:14,flexWrap:'wrap',alignItems:'center'}}>
-                <div><b>Horas semanales del docente:</b></div>
-                <div>📊 <b style={{color:hrsReal>0?'var(--success)':'var(--text-muted)'}}>SABANA: {hrsReal>0?hrsReal.toFixed(1):'—'} hrs</b> <button className="btn-ghost btn-sm" style={{padding:'2px 8px',marginLeft:4,fontSize:10.5}} disabled={!hrsReal} onClick={()=>{setHorasInput(Math.min(hrsReal,HORAS_MAX_SEMANALES).toFixed(1)); setFuenteHoras('sabana');}}>Usar</button></div>
-                <div>📄 <b>Excel: {hrsExcel||'—'} hrs</b> <button className="btn-ghost btn-sm" style={{padding:'2px 8px',marginLeft:4,fontSize:10.5}} disabled={!hrsExcel} onClick={()=>{setHorasInput(hrsExcel); setFuenteHoras('excel');}}>Usar</button></div>
-                {dif>=1 && <div style={{color:'var(--warn)',marginLeft:'auto'}}>⚠ Diferencia de {dif.toFixed(1)} hrs</div>}
+            <div className="stack" style={{gap:8}}>
+              <div className="card" style={{padding:'10px 14px',background: dif>=1?'rgba(255,159,10,.08)':'var(--surface-2)',border:'1px solid '+(dif>=1?'rgba(255,159,10,.35)':'var(--border-soft)'),fontSize:12.5}}>
+                <div className="row" style={{gap:14,flexWrap:'wrap',alignItems:'center'}}>
+                  <div><b>Horas semanales del docente:</b></div>
+                  <div>📊 <b style={{color:hrsReal>0?'var(--success)':'var(--text-muted)'}}>SABANA/RECURSOS: {hrsReal>0?hrsReal.toFixed(1):'—'} hrs</b> <button className="btn-ghost btn-sm" style={{padding:'2px 8px',marginLeft:4,fontSize:10.5}} disabled={!hrsReal} onClick={()=>{setHorasInput(Math.min(hrsReal,HORAS_MAX_SEMANALES).toFixed(1)); setFuenteHoras('sabana');}}>Usar</button></div>
+                  <div>📄 <b>Excel: {hrsExcel||'—'} hrs</b> <button className="btn-ghost btn-sm" style={{padding:'2px 8px',marginLeft:4,fontSize:10.5}} disabled={!hrsExcel} onClick={()=>{setHorasInput(hrsExcel); setFuenteHoras('excel');}}>Usar</button></div>
+                  {dif>=1 && <div style={{color:'var(--warn)',marginLeft:'auto'}}>⚠ Diferencia de {dif.toFixed(1)} hrs</div>}
+                </div>
               </div>
+              {detallado && (detallado.instRecurrentes + detallado.instEsporadicas) > 0 && (
+                <div className="card" style={{padding:'10px 14px',fontSize:12.5}}>
+                  <div style={{fontWeight:600,marginBottom:6}}>📚 Desglose de carga académica (semestre {SEMANAS_SEMESTRE} sem):</div>
+                  <div className="grid grid-3" style={{gap:8}}>
+                    <div style={{padding:'8px 10px',background:'rgba(48,209,88,.08)',borderRadius:6,border:'1px solid rgba(48,209,88,.25)'}}>
+                      <div style={{fontSize:11,color:'var(--text-muted)',fontWeight:600,letterSpacing:.3}}>RECURRENTES (semanales)</div>
+                      <div style={{fontSize:18,fontWeight:700,color:'var(--success)'}}>{detallado.recurrentes.toFixed(1)} <span style={{fontSize:12,fontWeight:400}}>hrs/sem</span></div>
+                      <div style={{fontSize:11}}>{detallado.instRecurrentes} asignatura{detallado.instRecurrentes!==1?'s':''} × ~{SEMANAS_SEMESTRE} sem</div>
+                    </div>
+                    <div style={{padding:'8px 10px',background:'rgba(255,159,10,.08)',borderRadius:6,border:'1px solid rgba(255,159,10,.25)'}}>
+                      <div style={{fontSize:11,color:'var(--text-muted)',fontWeight:600,letterSpacing:.3}}>ESPORÁDICAS (eventos)</div>
+                      <div style={{fontSize:18,fontWeight:700,color:'var(--warn)'}}>{detallado.esporadicas.toFixed(2)} <span style={{fontSize:12,fontWeight:400}}>hrs/sem prom.</span></div>
+                      <div style={{fontSize:11}}>{detallado.instEsporadicas} asignatura{detallado.instEsporadicas!==1?'s':''} · {detallado.esporadicasTotal.toFixed(1)} hrs total semestre</div>
+                    </div>
+                    <div style={{padding:'8px 10px',background:'var(--surface-2)',borderRadius:6,border:'1px solid var(--border-soft)'}}>
+                      <div style={{fontSize:11,color:'var(--text-muted)',fontWeight:600,letterSpacing:.3}}>TOTAL SEMESTRE</div>
+                      <div style={{fontSize:18,fontWeight:700}}>{detallado.totalSemestre.toFixed(1)} <span style={{fontSize:12,fontWeight:400}}>hrs</span></div>
+                      <div style={{fontSize:11}}>{detallado.instancias.toLocaleString('es-CL')} clases dictadas</div>
+                    </div>
+                  </div>
+                  <div style={{fontSize:11,color:'var(--text-muted)',marginTop:6,lineHeight:1.5}}>
+                    💡 Las horas semanales del simulador suman recurrentes + esporádicas mensualizadas (suma esporádica ÷ {SEMANAS_SEMESTRE} sem). Esto refleja el sueldo <b>mensual promedio</b> del semestre. Si un evento se hace 4× × 2 hrs = 8 hrs reales, aporta 8/{SEMANAS_SEMESTRE} ≈ {(8/SEMANAS_SEMESTRE).toFixed(2)} hrs/sem al cálculo.
+                  </div>
+                </div>
+              )}
             </div>
           );
         })()}
@@ -8707,8 +8777,14 @@ function ImportarSabana({ data, toast, onReplace, onSeed, isCloud }){
 /* ========= IMPORTAR LISTA DE RECURSOS =========
    Lee un Excel de "recursos por eventos": una fila por clase real con fecha
    exacta. Columnas:
-   A=sección, B=tipo recurso, D=código sala, E=denom sala, F=fecha (F=G),
-   H=hora inicio, I=hora fin, K=denom evento, N=código evento, R='G' (sala). */
+   A=sección, B=tipo recurso, D=código (sala o RUT/ID docente), E=denominación
+   (nombre sala o nombre docente), F=fecha, H=hora inicio, I=hora fin,
+   K=denom evento, N=código evento, R='G' (sala/recurso) o 'P' (persona/docente).
+
+   Cada clase tiene típicamente 1 fila G (sala) + 1 o más filas P (docentes
+   asignados). Cruzamos por (sección + fecha + hora) para asignar el docente
+   real a cada evento. Si un evento tiene varios docentes (codocencia), se
+   guardan separados por " · ". */
 function ImportarRecursos({ data, toast, onReplace, isCloud }){
   const [parsing, setParsing] = useState(false);
   const [preview, setPreview] = useState(null);
@@ -8768,12 +8844,38 @@ function ImportarRecursos({ data, toast, onReplace, isCloud }){
       const nuevosEventos = [];
       const seccionesSet = new Set();
       const fechas = new Set();
-      let descartadasNoG = 0, descartadasIncompletas = 0;
+      // Índice de filas P (docentes) cruzables por (sección + fecha + hi + hf)
+      const docentesPorClase = new Map();
+      let descartadasNoG = 0, descartadasIncompletas = 0, filasP = 0;
 
+      // PRIMERA PASADA: capturar filas P (docentes asignados a cada clase)
       for(const row of dataRows){
         if(!row) continue;
         const tipoRec = row[17]; // col R
-        if(tipoRec !== 'G'){ descartadasNoG++; continue; }
+        if(tipoRec !== 'P') continue;
+        const sc = row[0] ? String(row[0]) : '';
+        const fechaCl = row[5];
+        const hInic = row[7];
+        const hFin  = row[8];
+        if(!sc || !fechaCl || !hInic || !hFin) continue;
+        const fi = fmtIso(fechaCl);
+        const hi = fmtHora(hInic);
+        const hf = fmtHora(hFin);
+        if(!fi || !hi || !hf) continue;
+        const idDoc = row[3] ? String(row[3]) : '';   // col D (id/rut)
+        const nomDoc = row[4] ? String(row[4]).trim().toUpperCase() : ''; // col E (nombre)
+        if(!nomDoc) continue;
+        const k = `${sc}|${fi}|${hi}|${hf}`;
+        if(!docentesPorClase.has(k)) docentesPorClase.set(k, []);
+        docentesPorClase.get(k).push({ id: idDoc, nombre: nomDoc });
+        filasP++;
+      }
+
+      // SEGUNDA PASADA: procesar filas G (sala) y enriquecer con docente real
+      for(const row of dataRows){
+        if(!row) continue;
+        const tipoRec = row[17]; // col R
+        if(tipoRec !== 'G'){ if(tipoRec !== 'P') descartadasNoG++; continue; }
         const aula = row[3];    // col D
         const fechaCl = row[5]; // col F
         const hInic = row[7];   // col H
@@ -8797,6 +8899,10 @@ function ImportarRecursos({ data, toast, onReplace, isCloud }){
         const sc = row[0] ? String(row[0]) : '';
         if(sc) seccionesSet.add(sc);
         fechas.add(fi);
+        // Cruzar con filas P para obtener docente(s) real(es) de esta clase
+        const docs = docentesPorClase.get(`${sc}|${fi}|${hi}|${hf}`) || [];
+        const dp = docs.map(x => x.nombre).join(' · ') || null;
+        const dpid = docs.map(x => x.id).filter(Boolean).join(' · ') || null;
         nuevosEventos.push({
           s:  String(aula),
           sc,
@@ -8804,10 +8910,12 @@ function ImportarRecursos({ data, toast, onReplace, isCloud }){
           de: row[10] ? String(row[10]) : '',
           ev: row[13]!=null ? String(row[13]) : '',
           fi, hi, hf,
+          dp, dpid,
         });
       }
 
       if(!nuevosEventos.length) throw new Error('No se encontraron filas válidas con tipo de recurso "G" (sala).');
+      const eventosConDocente = nuevosEventos.filter(e => e.dp).length;
 
       // Rango de fechas
       const fechasArr = [...fechas].sort();
@@ -8821,7 +8929,7 @@ function ImportarRecursos({ data, toast, onReplace, isCloud }){
         salasUnicas: nuevasSalas.size,
         secciones: seccionesSet.size,
         fechasUnicas: fechas.size,
-        descartadasNoG, descartadasIncompletas,
+        descartadasNoG, descartadasIncompletas, filasP, eventosConDocente,
         rango,
         salas: [...nuevasSalas.values()],
         eventos: nuevosEventos,
@@ -9017,9 +9125,14 @@ function ImportarRecursos({ data, toast, onReplace, isCloud }){
           {preview.rango && (
             <div className="chip info" style={{marginBottom:10}}>Rango: {fmtFecha(preview.rango.desde)} → {fmtFecha(preview.rango.hasta)}</div>
           )}
-          {(preview.descartadasNoG>0 || preview.descartadasIncompletas>0) && (
+          {(preview.filasP > 0) && (
+            <div className="chip success" style={{marginBottom:10,marginLeft:8}}>
+              👤 {preview.filasP.toLocaleString('es-CL')} filas P (docentes) detectadas · {preview.eventosConDocente.toLocaleString('es-CL')} eventos con docente real asignado
+            </div>
+          )}
+          {(preview.descartadasIncompletas>0) && (
             <div className="chip warn" style={{marginBottom:10,marginLeft:8}}>
-              Descartadas: {preview.descartadasNoG} no-sala (R≠G), {preview.descartadasIncompletas} incompletas
+              Descartadas: {preview.descartadasIncompletas} incompletas
             </div>
           )}
 

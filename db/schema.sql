@@ -69,10 +69,16 @@ CREATE TABLE IF NOT EXISTS eventos (
   ev   TEXT,           -- código de evento (col N)
   fi   DATE,           -- fecha de la clase (col F = G)
   hi   TEXT,           -- hora inicio HH:MM (col H)
-  hf   TEXT            -- hora fin    HH:MM (col I)
+  hf   TEXT,           -- hora fin    HH:MM (col I)
+  dp   TEXT,           -- docente real (nombre, derivado de filas P del Excel)
+  dpid TEXT            -- ID(s) docente (col D de filas P), separados por " · "
 );
+-- Migración para BDs existentes (idempotente)
+ALTER TABLE eventos ADD COLUMN IF NOT EXISTS dp   TEXT;
+ALTER TABLE eventos ADD COLUMN IF NOT EXISTS dpid TEXT;
 CREATE INDEX IF NOT EXISTS idx_eventos_fi_s ON eventos(fi, s);
 CREATE INDEX IF NOT EXISTS idx_eventos_sc   ON eventos(sc);
+CREATE INDEX IF NOT EXISTS idx_eventos_dp   ON eventos(dp);
 
 -- JEFATURAS DOCENTES — mapeo docente → jefe directo (lo carga el admin)
 CREATE TABLE IF NOT EXISTS docente_jefes (
