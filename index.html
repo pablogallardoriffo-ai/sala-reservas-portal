@@ -1105,6 +1105,35 @@ const nombreRecintoInterno = (code) => {
   if(m){ const lot = ESTACIONAMIENTOS[m[1]]; return `Estac. ${lot?lot.nombre:m[1]} · E${Number(m[2])}`; }
   return code;
 };
+
+// Asignaciones fijas de estacionamientos a jefaturas: Lun-Vie 08:30–18:15
+// (módulos 1–14), todo el año 2026. Son reservas "del sistema" que ocupan
+// automáticamente los espacios nominativos del plano de Aromos. No se aprueban
+// ni se cancelan (representan la asignación permanente); se inyectan en la
+// vista de recintos internos para que el mapa, el horario y los conflictos las
+// consideren, sin necesidad de escribir en la base de datos.
+const ASIGNACIONES_JEFATURAS = (() => {
+  const out = [];
+  for(const [lotId, cfg] of Object.entries(ESTACIONAMIENTOS)){
+    const layout = cfg.layout === 'aromos' ? AROMOS_LAYOUT : null;
+    if(!layout) continue;
+    for(const s of layout){
+      if(!s.jefatura) continue;
+      out.push({
+        id: `asig-${lotId}-${s.num}`,
+        r: estSpotCode(lotId, s.num - 1),
+        fi: '2026-01-01', ff: '2026-12-31',
+        dw: '1111100',            // Lun a Viernes
+        mi: 1, mf: 14, hi: '08:30', hf: '18:15',
+        mo: `Asignación fija · ${s.jefatura}`,
+        do: s.jefatura, co: '', ru: '',
+        es: 'aprobada', ts: 'SI',
+        creado_por: 'sistema', asignada: true,
+      });
+    }
+  }
+  return out;
+})();
 const DEFAULT_USERS = [
   { id:1, username:'admin',      nombre:'Coordinación Docente · Jefe de Área', email:'admin@duoc.cl',    password:'010203', role:'admin',      activo:true },
   { id:2, username:'reservador', nombre:'Asistente de Coordinación Docente',   email:'reservas@duoc.cl', password:'010203', role:'reservador', activo:true },
@@ -6590,7 +6619,9 @@ function MapaAromos({ lotId, ocupados, seleccionado, onSelect }){
 function RecintosInternos({ data, reservas, user, toast, onCreate, onUpdateEstado }){
   const canApprove = user.role==='admin' || user.role==='reservador_interno';
   const [tab, setTab] = useState('reservar');
-  const internas = useMemo(()=> reservas.filter(r => esRecintoInterno(r.r)), [reservas]);
+  // Reservas reales de recintos internos + asignaciones fijas de jefaturas
+  // (estas últimas son sintéticas: ocupan los espacios nominativos Lun-Vie).
+  const internas = useMemo(()=> [...ASIGNACIONES_JEFATURAS, ...reservas.filter(r => esRecintoInterno(r.r))], [reservas]);
 
   const [f, setF] = useState({
     recinto:'', fi: isoDate(new Date()), mi:1, mf:2,
@@ -6734,7 +6765,10 @@ function RecintosInternos({ data, reservas, user, toast, onCreate, onUpdateEstad
   };
 
   const visibles = useMemo(()=>{
-    const base = canApprove ? internas : internas.filter(r => r.co===user.email || r.creado_por===user.username);
+    // Las asignaciones fijas no son "solicitudes" — se ven en el mapa/horario,
+    // no en este listado de aprobación.
+    const reales = internas.filter(r => !r.asignada);
+    const base = canApprove ? reales : reales.filter(r => r.co===user.email || r.creado_por===user.username);
     return base.slice().sort((a,b)=>{
       if(a.es==='pendiente' && b.es!=='pendiente') return -1;
       if(b.es==='pendiente' && a.es!=='pendiente') return 1;
