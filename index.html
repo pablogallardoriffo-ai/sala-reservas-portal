@@ -1040,10 +1040,60 @@ const RECINTOS_INTERNOS_MAP = new Map(RECINTOS_INTERNOS.map(r => [r.code, r]));
 // (frontis contra el edificio) vs perpendiculares (aromos en grilla).
 const ESTACIONAMIENTOS = {
   FRONTIS: { nombre:'Frontis', n:8,  cols:8, diagonal:true,  desc:'Frente al edificio' },
-  AROMOS:  { nombre:'Aromos',  n:25, cols:5, diagonal:false, desc:'Los Aromos' },
+  AROMOS:  { nombre:'Aromos',  n:37, layout:'aromos',        desc:'Los Aromos · 36 espacios + uno bloqueado' },
   CTI1:    { nombre:'CTI 1',   n:1,  cols:1, diagonal:false, desc:'Estacionamiento CTI 1' },
   CTI2:    { nombre:'CTI 2',   n:1,  cols:1, diagonal:false, desc:'Estacionamiento CTI 2' },
 };
+// Disposición real de Aromos basada en plano de jefaturas. 37 espacios:
+// 1-5 abajo (jefaturas), 6-16 columna derecha (algunos nominativos), 17-19
+// arriba (entrada/guardia), 20-30 columna izquierda, 31-36 al medio en dos
+// hileras, 37 al medio bloqueado (cruzado en plano). Los nombres son la
+// asignación nominativa actual (referencial, solo se muestra como tooltip).
+const AROMOS_LAYOUT = [
+  // Fila inferior: 5 espacios de jefatura
+  { num:1,  x:215, y:680, w:74, h:64, jefatura:'Pablo Gallardo' },
+  { num:2,  x:293, y:680, w:74, h:64, jefatura:'Fernando Álvarez' },
+  { num:3,  x:371, y:680, w:74, h:64, jefatura:'Carolina Peña' },
+  { num:4,  x:449, y:680, w:74, h:64, jefatura:'Natalie Sánchez' },
+  { num:5,  x:527, y:680, w:74, h:64, jefatura:'María Fernanda Henríquez' },
+  // Columna derecha (de abajo hacia arriba: 6 → 16)
+  { num:6,  x:540, y:540, w:104, h:28, jefatura:'Ricardo Castro' },
+  { num:7,  x:540, y:510, w:104, h:28, jefatura:'Daniela Rojas' },
+  { num:8,  x:540, y:480, w:104, h:28, jefatura:'Carolina Donoso' },
+  { num:9,  x:540, y:450, w:104, h:28, jefatura:'Eduardo Gutiérrez' },
+  { num:10, x:540, y:420, w:104, h:28, jefatura:'Eduardo Quintana' },
+  { num:11, x:540, y:390, w:104, h:28, jefatura:'Miguel Barahona' },
+  { num:12, x:540, y:360, w:104, h:28, jefatura:'Rodrigo Niculcar' },
+  { num:13, x:540, y:330, w:104, h:28, jefatura:'Verónica Bravo' },
+  { num:14, x:540, y:300, w:104, h:28 },
+  { num:15, x:540, y:270, w:104, h:28 },
+  { num:16, x:540, y:240, w:104, h:28 },
+  // Sector entrada/guardia
+  { num:17, x:300, y:150, w:60, h:50 },
+  { num:18, x:240, y:204, w:120, h:30 },
+  { num:19, x:175, y:238, w:120, h:30 },
+  // Columna izquierda 20-30
+  { num:20, x:18,  y:280, w:124, h:28 },
+  { num:21, x:18,  y:310, w:124, h:28 },
+  { num:22, x:18,  y:340, w:124, h:28 },
+  { num:23, x:18,  y:370, w:124, h:28 },
+  { num:24, x:18,  y:400, w:124, h:28 },
+  { num:25, x:18,  y:430, w:124, h:28 },
+  { num:26, x:18,  y:460, w:124, h:28 },
+  { num:27, x:18,  y:490, w:124, h:28 },
+  { num:28, x:18,  y:520, w:124, h:28 },
+  { num:29, x:18,  y:550, w:124, h:28 },
+  { num:30, x:18,  y:580, w:124, h:28 },
+  // Centro: dos hileras 31-33 (abajo) y 34-36 (arriba)
+  { num:34, x:215, y:380, w:96, h:38 },
+  { num:35, x:313, y:380, w:96, h:38 },
+  { num:36, x:411, y:380, w:96, h:38, jefatura:'Padre Paulo' },
+  { num:31, x:215, y:472, w:96, h:38 },
+  { num:32, x:313, y:472, w:96, h:38 },
+  { num:33, x:411, y:472, w:96, h:38 },
+  // 37 al centro · bloqueado (cruzado) — no se reserva
+  { num:37, x:313, y:424, w:96, h:46, bloqueado:true },
+];
 const estSpotCode = (lotId, i) => `EST-${lotId}-${String(i+1).padStart(2,'0')}`;
 
 // ¿Un código de recinto pertenece al mundo interno? (catálogo fijo o prefijo de
@@ -6440,19 +6490,23 @@ function NuevaReserva({ data, reservas, user, toast, goReservas, prefill, onCrea
 /* ========= MAPA 2D DE ESTACIONAMIENTO =========
    Dibuja los espacios como un plano clickeable. Verde=libre, rojo=ocupado,
    azul=seleccionado. Frontis: fila diagonal contra el edificio. Aromos:
-   grilla perpendicular dentro del lote. */
+   layout custom con la distribución real (jefaturas, espacios al medio y
+   bloqueado en el centro). CTIs: un único espacio. */
+const PARK_COL = {
+  libre:    { f:'#e8f7ec', s:'#34c759', t:'#1b6b32' },
+  ocupado:  { f:'#fdecec', s:'#ff453a', t:'#a11616' },
+  sel:      { f:'#e6f0ff', s:'#0a84ff', t:'#0a3d8f' },
+  bloqueado:{ f:'#f1f1f1', s:'#9aa0a6', t:'#5b6065' },
+};
+
 function MapaEstacionamiento({ lotId, cfg, ocupados, seleccionado, onSelect }){
+  if(cfg.layout === 'aromos') return <MapaAromos lotId={lotId} cfg={cfg} ocupados={ocupados} seleccionado={seleccionado} onSelect={onSelect}/>;
   const { n, cols, diagonal, nombre } = cfg;
   const rows = Math.ceil(n / cols);
   const W = diagonal ? 38 : 42, H = diagonal ? 56 : 26, GAP = 8, SKEW = diagonal ? 14 : 0, PAD = 16, TOP = 26;
   const cellW = W + GAP, cellH = H + GAP;
   const svgW = PAD*2 + cols*cellW + SKEW;
   const svgH = PAD*2 + rows*cellH + TOP;
-  const COL = {
-    libre:   { f:'#e8f7ec', s:'#34c759', t:'#1b6b32' },
-    ocupado: { f:'#fdecec', s:'#ff453a', t:'#a11616' },
-    sel:     { f:'#e6f0ff', s:'#0a84ff', t:'#0a3d8f' },
-  };
   const spots = [];
   for(let i=0;i<n;i++){
     const col=i%cols, row=Math.floor(i/cols);
@@ -6462,7 +6516,6 @@ function MapaEstacionamiento({ lotId, cfg, ocupados, seleccionado, onSelect }){
     const estado = ocupados.has(code) ? 'ocupado' : (seleccionado===code ? 'sel' : 'libre');
     spots.push({ i, x, y, code, estado });
   }
-  // Contorno del lote (evoca la forma): aromos pentágono, frontis franja.
   const outline = diagonal
     ? `${PAD-6},${PAD+TOP-6} ${svgW-PAD+6+SKEW},${PAD+TOP-6} ${svgW-PAD+6+SKEW},${svgH-PAD+6} ${PAD-6},${svgH-PAD+6}`
     : `${PAD-8},${PAD+TOP+10} ${svgW/2},${PAD+TOP-10} ${svgW-PAD+8},${PAD+TOP+10} ${svgW-PAD+8},${svgH-PAD+8} ${PAD-8},${svgH-PAD+8}`;
@@ -6471,7 +6524,7 @@ function MapaEstacionamiento({ lotId, cfg, ocupados, seleccionado, onSelect }){
       <polygon points={outline} fill="rgba(127,127,127,.06)" stroke="var(--border-soft)" strokeWidth="1.5" strokeDasharray="4 4"/>
       <text x={PAD} y={18} fontSize="12" fontWeight="700" fill="var(--text-muted)">{nombre} · {n} espacios</text>
       {spots.map(s=>{
-        const c = COL[s.estado];
+        const c = PARK_COL[s.estado];
         const cx = s.x + W/2 + (diagonal?SKEW/2:0);
         return (
           <g key={s.i} onClick={()=> s.estado!=='ocupado' && onSelect(s.code)} style={{cursor: s.estado==='ocupado'?'not-allowed':'pointer'}}>
@@ -6479,6 +6532,49 @@ function MapaEstacionamiento({ lotId, cfg, ocupados, seleccionado, onSelect }){
               ? <polygon points={`${s.x+SKEW},${s.y} ${s.x+W+SKEW},${s.y} ${s.x+W},${s.y+H} ${s.x},${s.y+H}`} fill={c.f} stroke={c.s} strokeWidth="2"/>
               : <rect x={s.x} y={s.y} width={W} height={H} rx="3" fill={c.f} stroke={c.s} strokeWidth="2"/>}
             <text x={cx} y={s.y+H/2+4} fontSize="12" fontWeight="700" textAnchor="middle" fill={c.t} style={{pointerEvents:'none'}}>{s.i+1}</text>
+          </g>
+        );
+      })}
+    </svg>
+  );
+}
+
+// Mapa de Aromos con disposición real (3 zonas + entrada + bloqueado central).
+function MapaAromos({ lotId, ocupados, seleccionado, onSelect }){
+  const W = 660, H = 770;
+  return (
+    <svg viewBox={`0 0 ${W} ${H}`} style={{width:'100%',maxWidth:660,height:'auto',background:'var(--surface-2)',borderRadius:10,border:'1px solid var(--border-soft)'}}>
+      {/* Contorno orgánico del lote (referencia visual) */}
+      <ellipse cx={W/2} cy={420} rx={W/2-6} ry={310} fill="rgba(127,127,127,.05)" stroke="var(--border-soft)" strokeWidth="1.5" strokeDasharray="5 5"/>
+      <text x={16} y={26} fontSize="13" fontWeight="700" fill="var(--text-muted)">Aromos · 36 espacios (1 bloqueado)</text>
+      {/* Iconos referenciales: GUARDIA + ENTRADA + acceso peatonal abajo */}
+      <rect x={245} y={48} width={130} height={42} rx={4} fill="#60a5fa" opacity=".25" stroke="#3b82f6"/>
+      <text x={310} y={74} fontSize="11" fontWeight="700" textAnchor="middle" fill="#1e40af">GUARDIA</text>
+      <rect x={390} y={48} width={110} height={28} rx={4} fill="#fbbf24" opacity=".4" stroke="#d97706"/>
+      <text x={445} y={67} fontSize="10" fontWeight="700" textAnchor="middle" fill="#92400e">ENTRADA →</text>
+      <rect x={48} y={650} width={42} height={64} rx={3} fill="none" stroke="var(--text-muted)" strokeDasharray="4 3"/>
+      <text x={69} y={687} fontSize="10" textAnchor="middle" fill="var(--text-muted)">acceso</text>
+      {/* Espacios */}
+      {AROMOS_LAYOUT.map(s => {
+        const code = estSpotCode(lotId, s.num - 1);
+        let estado;
+        if(s.bloqueado) estado = 'bloqueado';
+        else if(ocupados.has(code)) estado = 'ocupado';
+        else if(seleccionado === code) estado = 'sel';
+        else estado = 'libre';
+        const c = PARK_COL[estado];
+        const cx = s.x + s.w/2, cy = s.y + s.h/2;
+        const clickable = estado !== 'ocupado' && estado !== 'bloqueado';
+        return (
+          <g key={s.num} onClick={()=> clickable && onSelect(code)} style={{cursor: clickable?'pointer':'not-allowed'}}>
+            <title>{s.bloqueado ? `Espacio ${s.num} · bloqueado` : `Espacio ${s.num}${s.jefatura?` · ${s.jefatura}`:''}`}</title>
+            <rect x={s.x} y={s.y} width={s.w} height={s.h} rx={3} fill={c.f} stroke={c.s} strokeWidth="2"/>
+            {s.bloqueado && <>
+              <line x1={s.x} y1={s.y} x2={s.x+s.w} y2={s.y+s.h} stroke={c.s} strokeWidth="2"/>
+              <line x1={s.x+s.w} y1={s.y} x2={s.x} y2={s.y+s.h} stroke={c.s} strokeWidth="2"/>
+            </>}
+            <text x={cx} y={cy + (s.jefatura?-2:4)} fontSize="12" fontWeight="700" textAnchor="middle" fill={c.t} style={{pointerEvents:'none'}}>{s.num}</text>
+            {s.jefatura && <text x={cx} y={cy + 11} fontSize="8" textAnchor="middle" fill={c.t} style={{pointerEvents:'none',opacity:.85}}>{s.jefatura.length>22?s.jefatura.slice(0,22)+'…':s.jefatura}</text>}
           </g>
         );
       })}
@@ -6538,8 +6634,9 @@ function RecintosInternos({ data, reservas, user, toast, onCreate, onUpdateEstad
     return set;
   },[internas, lot, f.fi, f.mi, f.mf]);
 
-  // --- Vista de horario semanal (Lun-Dom × módulos) de un recinto interno ---
+  // --- Vista de horario (Día por columnas de recinto / Semana de un recinto) ---
   const now = useNowMinutes();
+  // Catálogo agrupado de recintos visibles en el horario (salas + espacios).
   const opcionesHorario = useMemo(()=>{
     const grupos = [];
     const byG = new Map();
@@ -6547,15 +6644,46 @@ function RecintosInternos({ data, reservas, user, toast, onCreate, onUpdateEstad
     for(const [g, items] of byG) grupos.push([g, items]);
     for(const [id, cfg] of Object.entries(ESTACIONAMIENTOS)){
       const items = [];
-      for(let i=0;i<cfg.n;i++) items.push({ code: estSpotCode(id,i), label: cfg.n>1 ? `${cfg.nombre} · E${i+1}` : cfg.nombre });
+      // Excluye espacios bloqueados del horario (el 37 cruzado en Aromos).
+      const bloqueados = cfg.layout==='aromos' ? new Set(AROMOS_LAYOUT.filter(s=>s.bloqueado).map(s=>s.num)) : new Set();
+      for(let i=0;i<cfg.n;i++){
+        if(bloqueados.has(i+1)) continue;
+        items.push({ code: estSpotCode(id,i), label: cfg.n>1 ? `${cfg.nombre} ${i+1}` : cfg.nombre });
+      }
       grupos.push([`🅿 ${cfg.nombre}`, items]);
     }
     return grupos;
   },[]);
+  // Categorías para el modo Día (filtrar las columnas que se ven a la vez).
+  const CAT_HORARIO = [
+    { id:'salas',           label:'Salas y reuniones', match:r => r.grupo==='Salas y espacios' || r.grupo==='Salas de reuniones' },
+    { id:'fol',             label:'FOL',               match:r => r.grupo==='FOL' },
+    { id:'vehiculo',        label:'Vehículo de sede',  match:r => r.grupo==='Vehículo de sede' },
+  ];
+  const [catH, setCatH] = useState('estacion-FRONTIS');
+  const recintosColumnas = useMemo(()=>{
+    if(catH.startsWith('estacion-')){
+      const id = catH.slice('estacion-'.length);
+      const cfg = ESTACIONAMIENTOS[id];
+      if(!cfg) return [];
+      const bloqueados = cfg.layout==='aromos' ? new Set(AROMOS_LAYOUT.filter(s=>s.bloqueado).map(s=>s.num)) : new Set();
+      const cols = [];
+      for(let i=0;i<cfg.n;i++){
+        if(bloqueados.has(i+1)) continue;
+        cols.push({ code: estSpotCode(id,i), label: cfg.n>1 ? `${cfg.nombre} ${i+1}` : cfg.nombre });
+      }
+      return cols;
+    }
+    const cat = CAT_HORARIO.find(c=>c.id===catH);
+    if(!cat) return [];
+    return RECINTOS_INTERNOS.filter(cat.match).map(r=>({ code:r.code, label:r.nombre }));
+  },[catH]);
+  const [vistaH, setVistaH] = useState('dia'); // 'dia' | 'semana'
   const [recintoH, setRecintoH] = useState(RECINTOS_INTERNOS[0]?.code || '');
   const [fechaH, setFechaH] = useState(isoDate(new Date()));
   const mondayH = useMemo(()=> getMonday(fechaH), [fechaH]);
   const weekH = useMemo(()=> [0,1,2,3,4,5,6].map(i => addDays(mondayH, i)), [mondayH]);
+  // Grilla Semana: módulo × día, para UN recinto.
   const gridH = useMemo(()=>{
     const resPorDia = weekH.map(d => {
       const dIso = isoDate(d);
@@ -6563,6 +6691,11 @@ function RecintosInternos({ data, reservas, user, toast, onCreate, onUpdateEstad
     });
     return data.modulos.map(mod => weekH.map((d,dw)=> resPorDia[dw].filter(r => mod.num>=Number(r.mi||0) && mod.num<=Number(r.mf||0))));
   },[internas, recintoH, weekH, data.modulos]);
+  // Grilla Día: módulo × recinto (cada columna es un recinto/espacio).
+  const gridDia = useMemo(()=>{
+    const resPorRec = recintosColumnas.map(c => internas.filter(r => r.r===c.code && reservaOcurreEn(r, fechaH) && r.es!=='rechazada'));
+    return data.modulos.map(mod => recintosColumnas.map((c,ci)=> resPorRec[ci].filter(r => mod.num>=Number(r.mi||0) && mod.num<=Number(r.mf||0))));
+  },[internas, recintosColumnas, fechaH, data.modulos]);
   const todayIso = isoDate(new Date());
 
   const submit = () => {
@@ -6729,67 +6862,137 @@ function RecintosInternos({ data, reservas, user, toast, onCreate, onUpdateEstad
       {tab==='horario' && (
         <div className="stack">
           <div className="filters">
-            <div className="field" style={{maxWidth:280}}>
-              <label>Recinto</label>
-              <select value={recintoH} onChange={e=>setRecintoH(e.target.value)}>
-                {opcionesHorario.map(([g, items])=> <optgroup key={g} label={g}>{items.map(it => <option key={it.code} value={it.code}>{it.label}</option>)}</optgroup>)}
-              </select>
+            <div className="seg" style={{maxWidth:'fit-content'}}>
+              <button className={vistaH==='dia'?'on':''} onClick={()=>setVistaH('dia')}>Día</button>
+              <button className={vistaH==='semana'?'on':''} onClick={()=>setVistaH('semana')}>Semana</button>
             </div>
+            {vistaH==='dia' ? (
+              <div className="field" style={{maxWidth:260}}>
+                <label>Categoría</label>
+                <select value={catH} onChange={e=>setCatH(e.target.value)}>
+                  <optgroup label="🅿 Estacionamientos">
+                    {Object.entries(ESTACIONAMIENTOS).map(([id,cfg])=> <option key={id} value={`estacion-${id}`}>{cfg.nombre}</option>)}
+                  </optgroup>
+                  <optgroup label="Otros recintos">
+                    {CAT_HORARIO.map(c => <option key={c.id} value={c.id}>{c.label}</option>)}
+                  </optgroup>
+                </select>
+              </div>
+            ) : (
+              <div className="field" style={{maxWidth:280}}>
+                <label>Recinto</label>
+                <select value={recintoH} onChange={e=>setRecintoH(e.target.value)}>
+                  {opcionesHorario.map(([g, items])=> <optgroup key={g} label={g}>{items.map(it => <option key={it.code} value={it.code}>{it.label}</option>)}</optgroup>)}
+                </select>
+              </div>
+            )}
             <div className="field" style={{maxWidth:170}}>
               <label>Fecha</label>
               <input type="date" value={fechaH} onChange={e=>setFechaH(e.target.value)}/>
             </div>
             <div className="week-nav">
-              <button className="btn-icon" title="Semana anterior" onClick={()=>setFechaH(isoDate(addDays(new Date(fechaH+'T00:00:00'), -7)))}>‹</button>
-              <span className="label">{mondayH.toLocaleDateString('es-CL',{day:'2-digit',month:'short'})} – {addDays(mondayH,6).toLocaleDateString('es-CL',{day:'2-digit',month:'short',year:'numeric'})}</span>
-              <button className="btn-icon" title="Semana siguiente" onClick={()=>setFechaH(isoDate(addDays(new Date(fechaH+'T00:00:00'), 7)))}>›</button>
+              {vistaH==='dia' ? (
+                <>
+                  <button className="btn-icon" title="Día anterior" onClick={()=>setFechaH(isoDate(addDays(new Date(fechaH+'T00:00:00'), -1)))}>‹</button>
+                  <span className="label">{new Date(fechaH+'T00:00:00').toLocaleDateString('es-CL',{weekday:'long',day:'2-digit',month:'long',year:'numeric'})}</span>
+                  <button className="btn-icon" title="Día siguiente" onClick={()=>setFechaH(isoDate(addDays(new Date(fechaH+'T00:00:00'), 1)))}>›</button>
+                </>
+              ) : (
+                <>
+                  <button className="btn-icon" title="Semana anterior" onClick={()=>setFechaH(isoDate(addDays(new Date(fechaH+'T00:00:00'), -7)))}>‹</button>
+                  <span className="label">{mondayH.toLocaleDateString('es-CL',{day:'2-digit',month:'short'})} – {addDays(mondayH,6).toLocaleDateString('es-CL',{day:'2-digit',month:'short',year:'numeric'})}</span>
+                  <button className="btn-icon" title="Semana siguiente" onClick={()=>setFechaH(isoDate(addDays(new Date(fechaH+'T00:00:00'), 7)))}>›</button>
+                </>
+              )}
               <button className="btn btn-sm btn-ghost" onClick={()=>setFechaH(todayIso)}>Hoy</button>
             </div>
             <div style={{marginLeft:'auto'}} className="legend">
-              <span><i style={{background:'#D9941A'}}/>Reserva</span>
+              <span><i style={{background:'#D9941A'}}/>Reserva aprobada</span>
+              <span><i style={{background:'#0a84ff'}}/>Pendiente</span>
               <span><i style={{background:'#FBFEFB',border:'1px solid #C7E0CC'}}/>Libre</span>
             </div>
           </div>
 
-          <div className="card" style={{padding:0,overflow:'auto'}}>
-            <div className="hgrid" style={{minWidth:980}}>
-              <div className="hh">Módulo</div>
-              {weekH.map((d, i) => {
-                const isToday = isoDate(d)===todayIso;
-                return <div key={i} className={`hh ${isToday?'today':''}`}>{DIA_CORTO[i]}<small>{d.toLocaleDateString('es-CL',{day:'2-digit',month:'2-digit'})}</small></div>;
-              })}
-              {data.modulos.map((mod, mi) => {
-                const modIsNow = moduleRunningNow(mod, now);
-                return (
-                  <React.Fragment key={mod.num}>
-                    <div className={`mod ${modIsNow?'now':''}`}><b>Mód. {mod.num}</b>{mod.inicio}<br/>{mod.fin}</div>
-                    {gridH[mi].map((ress, di) => {
-                      const isWeekend = di>=5;
-                      const dIso = isoDate(weekH[di]);
-                      const cellIsNow = isTodayIso(dIso) && modIsNow;
-                      if(ress.length===0){
-                        return <div key={di} className={`cl libre ${isWeekend?'weekend':''} ${cellIsNow?'now-cell':''}`} title="Espacio disponible"><div className="blk-libre">LIBRE</div></div>;
-                      }
-                      return (
-                        <div key={di} className={`cl ${isWeekend?'weekend':''} ${cellIsNow?'now-cell':''}`}>
-                          {ress.map((r,i)=>{
-                            const mIni = moduloInfo(data.modulos, r.mi), mFin = moduloInfo(data.modulos, r.mf);
-                            const enCurso = isTodayIso(dIso) && mIni && mFin && inRangeNow(mIni.inicio, mFin.fin, now);
-                            return (
-                              <div key={'r'+i} className={`blk ${r.es==='pendiente'?'blk-pen':'blk-rs'} ${enCurso?'now':''}`} title={`${r.mo} · ${r.do||''} · Mód.${r.mi}-${r.mf}${enCurso?' · EN CURSO':''}`}>
-                                <b>{r.es==='pendiente'?'⏳ ':'📌 '}{(r.mo||'').slice(0,24)}</b>
-                                {r.do && <div style={{opacity:.8,fontSize:9.5}}>👤 {(r.do||'').slice(0,22)}</div>}
-                              </div>
-                            );
-                          })}
-                        </div>
-                      );
-                    })}
-                  </React.Fragment>
-                );
-              })}
+          {vistaH==='dia' && (
+            <div className="card" style={{padding:0,overflow:'auto'}}>
+              {recintosColumnas.length === 0 ? (
+                <div className="empty" style={{padding:30}}><span className="emoji">📭</span>Sin recintos en esta categoría.</div>
+              ) : (
+                <div className="hgrid" style={{minWidth: 100 + recintosColumnas.length*140, gridTemplateColumns:`90px repeat(${recintosColumnas.length}, minmax(130px, 1fr))`}}>
+                  <div className="hh">Módulo</div>
+                  {recintosColumnas.map(c => <div key={c.code} className="hh" title={c.code}>{c.label}</div>)}
+                  {data.modulos.map((mod, mi) => {
+                    const modIsNow = moduleRunningNow(mod, now);
+                    const cellIsNow = isTodayIso(fechaH) && modIsNow;
+                    return (
+                      <React.Fragment key={mod.num}>
+                        <div className={`mod ${modIsNow?'now':''}`}><b>Mód. {mod.num}</b>{mod.inicio}<br/>{mod.fin}</div>
+                        {gridDia[mi].map((ress, ci) => {
+                          if(ress.length===0) return <div key={ci} className={`cl libre ${cellIsNow?'now-cell':''}`} title="Espacio disponible"><div className="blk-libre">LIBRE</div></div>;
+                          return (
+                            <div key={ci} className={`cl ${cellIsNow?'now-cell':''}`}>
+                              {ress.map((r,i)=>{
+                                const mIni = moduloInfo(data.modulos, r.mi), mFin = moduloInfo(data.modulos, r.mf);
+                                const enCurso = isTodayIso(fechaH) && mIni && mFin && inRangeNow(mIni.inicio, mFin.fin, now);
+                                return (
+                                  <div key={'r'+i} className={`blk ${r.es==='pendiente'?'blk-pen':'blk-rs'} ${enCurso?'now':''}`} title={`${r.mo} · ${r.do||''} · Mód.${r.mi}-${r.mf}${enCurso?' · EN CURSO':''}`}>
+                                    <b>{r.es==='pendiente'?'⏳ ':'📌 '}{(r.mo||'').slice(0,22)}</b>
+                                    {r.do && <div style={{opacity:.8,fontSize:9.5}}>👤 {(r.do||'').slice(0,20)}</div>}
+                                  </div>
+                                );
+                              })}
+                            </div>
+                          );
+                        })}
+                      </React.Fragment>
+                    );
+                  })}
+                </div>
+              )}
             </div>
-          </div>
+          )}
+
+          {vistaH==='semana' && (
+            <div className="card" style={{padding:0,overflow:'auto'}}>
+              <div className="hgrid" style={{minWidth:980}}>
+                <div className="hh">Módulo</div>
+                {weekH.map((d, i) => {
+                  const isToday = isoDate(d)===todayIso;
+                  return <div key={i} className={`hh ${isToday?'today':''}`}>{DIA_CORTO[i]}<small>{d.toLocaleDateString('es-CL',{day:'2-digit',month:'2-digit'})}</small></div>;
+                })}
+                {data.modulos.map((mod, mi) => {
+                  const modIsNow = moduleRunningNow(mod, now);
+                  return (
+                    <React.Fragment key={mod.num}>
+                      <div className={`mod ${modIsNow?'now':''}`}><b>Mód. {mod.num}</b>{mod.inicio}<br/>{mod.fin}</div>
+                      {gridH[mi].map((ress, di) => {
+                        const isWeekend = di>=5;
+                        const dIso = isoDate(weekH[di]);
+                        const cellIsNow = isTodayIso(dIso) && modIsNow;
+                        if(ress.length===0){
+                          return <div key={di} className={`cl libre ${isWeekend?'weekend':''} ${cellIsNow?'now-cell':''}`} title="Espacio disponible"><div className="blk-libre">LIBRE</div></div>;
+                        }
+                        return (
+                          <div key={di} className={`cl ${isWeekend?'weekend':''} ${cellIsNow?'now-cell':''}`}>
+                            {ress.map((r,i)=>{
+                              const mIni = moduloInfo(data.modulos, r.mi), mFin = moduloInfo(data.modulos, r.mf);
+                              const enCurso = isTodayIso(dIso) && mIni && mFin && inRangeNow(mIni.inicio, mFin.fin, now);
+                              return (
+                                <div key={'r'+i} className={`blk ${r.es==='pendiente'?'blk-pen':'blk-rs'} ${enCurso?'now':''}`} title={`${r.mo} · ${r.do||''} · Mód.${r.mi}-${r.mf}${enCurso?' · EN CURSO':''}`}>
+                                  <b>{r.es==='pendiente'?'⏳ ':'📌 '}{(r.mo||'').slice(0,24)}</b>
+                                  {r.do && <div style={{opacity:.8,fontSize:9.5}}>👤 {(r.do||'').slice(0,22)}</div>}
+                                </div>
+                              );
+                            })}
+                          </div>
+                        );
+                      })}
+                    </React.Fragment>
+                  );
+                })}
+              </div>
+            </div>
+          )}
         </div>
       )}
 
