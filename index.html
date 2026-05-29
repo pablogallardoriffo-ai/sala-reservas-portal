@@ -1070,7 +1070,17 @@ const fmtFecha = (iso) => {
   return d.toLocaleDateString('es-CL',{day:'2-digit',month:'short',year:'numeric'});
 };
 
-const isoDate = (d) => d.toISOString().slice(0,10);
+// Fecha local del navegador en formato YYYY-MM-DD. Usamos getFullYear/Month/
+// Date (locales) en vez de toISOString() (UTC) porque sino la fecha "salta"
+// al día siguiente en horas vespertinas (Chile = UTC-4/-3): a las 21:00 jueves
+// CLT, toISOString() ya devuelve viernes y la pestaña Horario marcaba el
+// viernes como "hoy".
+const isoDate = (d) => {
+  const y = d.getFullYear();
+  const m = String(d.getMonth()+1).padStart(2,'0');
+  const day = String(d.getDate()).padStart(2,'0');
+  return `${y}-${m}-${day}`;
+};
 const addDays = (d, n) => { const x = new Date(d); x.setDate(x.getDate()+n); return x; };
 const getMonday = (iso) => {
   const d = new Date(iso+'T00:00:00');
@@ -2145,8 +2155,8 @@ function Dashboard({ data, reservas, user, db, onGoView, onGoNuevaPrefill }){
     const t = setInterval(()=> setNow(new Date()), 60*1000);
     return ()=> clearInterval(t);
   },[]);
-  const todayIso = now.toISOString().slice(0,10);
-  const mañanaIso = (()=>{ const d = new Date(now); d.setDate(d.getDate()+1); return d.toISOString().slice(0,10); })();
+  const todayIso = isoDate(now);
+  const mañanaIso = isoDate(addDays(now, 1));
   const dow = now.getDay()===0 ? 6 : now.getDay()-1;
   const hhmmNow = `${String(now.getHours()).padStart(2,'0')}:${String(now.getMinutes()).padStart(2,'0')}`;
   const hhmmIn2h = (()=>{ const d = new Date(now.getTime() + 2*60*60*1000); return `${String(d.getHours()).padStart(2,'0')}:${String(d.getMinutes()).padStart(2,'0')}`; })();
@@ -4595,7 +4605,7 @@ function GestionesPanel({ data, auditorias, loading, onReload, onSave, onDelete,
     const blob = new Blob(['﻿'+lines.join('\n')], { type:'text/csv;charset=utf-8' });
     const url = URL.createObjectURL(blob);
     const link = document.createElement('a');
-    link.href = url; link.download = `gestiones_${new Date().toISOString().slice(0,10)}.csv`;
+    link.href = url; link.download = `gestiones_${isoDate(new Date())}.csv`;
     document.body.appendChild(link); link.click(); link.remove();
     URL.revokeObjectURL(url);
   };
@@ -6731,7 +6741,7 @@ function Reportes({ data, reservas }){
     const blob = new Blob(['﻿'+csv], { type:'text/csv;charset=utf-8' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
-    a.href = url; a.download = `${name}_${new Date().toISOString().slice(0,10)}.csv`;
+    a.href = url; a.download = `${name}_${isoDate(new Date())}.csv`;
     document.body.appendChild(a); a.click(); a.remove();
     URL.revokeObjectURL(url);
   };
@@ -7167,7 +7177,7 @@ function ReporteDocente({ data }){
     const blob = new Blob(['﻿'+csv], { type:'text/csv;charset=utf-8' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
-    a.href = url; a.download = `reporte_docente_${new Date().toISOString().slice(0,10)}.csv`;
+    a.href = url; a.download = `reporte_docente_${isoDate(new Date())}.csv`;
     document.body.appendChild(a); a.click(); a.remove();
     URL.revokeObjectURL(url);
   };
