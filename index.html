@@ -1037,10 +1037,24 @@ const RECINTOS_INTERNOS = [
   { code:'INT-VEH',  nombre:'Camioneta institucional',       tipo:'Vehículo',          grupo:'Vehículo de sede' },
 ];
 const RECINTOS_INTERNOS_MAP = new Map(RECINTOS_INTERNOS.map(r => [r.code, r]));
+// Estacionamientos con mapa 2D. Cada espacio se reserva con código
+// EST-<LOTE>-<NN>. cols define cuántos por fila; diagonal = plazas en ángulo
+// (frontis contra el edificio) vs perpendiculares (aromos en grilla).
+const ESTACIONAMIENTOS = {
+  FRONTIS: { nombre:'Frontis', n:8,  cols:8, diagonal:true,  desc:'Frente al edificio' },
+  AROMOS:  { nombre:'Aromos',  n:25, cols:5, diagonal:false, desc:'Los Aromos' },
+};
+const estSpotCode = (lotId, i) => `EST-${lotId}-${String(i+1).padStart(2,'0')}`;
+
 // ¿Un código de recinto pertenece al mundo interno? (catálogo fijo o prefijo de
 // estacionamiento EST-...). Sirve para enrutar la aprobación y separar listados.
 const esRecintoInterno = (code) => !!code && (RECINTOS_INTERNOS_MAP.has(code) || /^EST-/.test(code));
-const nombreRecintoInterno = (code) => RECINTOS_INTERNOS_MAP.get(code)?.nombre || code;
+const nombreRecintoInterno = (code) => {
+  if(RECINTOS_INTERNOS_MAP.has(code)) return RECINTOS_INTERNOS_MAP.get(code).nombre;
+  const m = /^EST-([A-Z0-9]+)-(\d+)$/.exec(code||'');
+  if(m){ const lot = ESTACIONAMIENTOS[m[1]]; return `Estac. ${lot?lot.nombre:m[1]} · E${Number(m[2])}`; }
+  return code;
+};
 const DEFAULT_USERS = [
   { id:1, username:'admin',      nombre:'Coordinación Docente · Jefe de Área', email:'admin@duoc.cl',    password:'010203', role:'admin',      activo:true },
   { id:2, username:'reservador', nombre:'Asistente de Coordinación Docente',   email:'reservas@duoc.cl', password:'010203', role:'reservador', activo:true },
@@ -6423,6 +6437,55 @@ function NuevaReserva({ data, reservas, user, toast, goReservas, prefill, onCrea
   );
 }
 
+/* ========= MAPA 2D DE ESTACIONAMIENTO =========
+   Dibuja los espacios como un plano clickeable. Verde=libre, rojo=ocupado,
+   azul=seleccionado. Frontis: fila diagonal contra el edificio. Aromos:
+   grilla perpendicular dentro del lote. */
+function MapaEstacionamiento({ lotId, cfg, ocupados, seleccionado, onSelect }){
+  const { n, cols, diagonal, nombre } = cfg;
+  const rows = Math.ceil(n / cols);
+  const W = diagonal ? 38 : 42, H = diagonal ? 56 : 26, GAP = 8, SKEW = diagonal ? 14 : 0, PAD = 16, TOP = 26;
+  const cellW = W + GAP, cellH = H + GAP;
+  const svgW = PAD*2 + cols*cellW + SKEW;
+  const svgH = PAD*2 + rows*cellH + TOP;
+  const COL = {
+    libre:   { f:'#e8f7ec', s:'#34c759', t:'#1b6b32' },
+    ocupado: { f:'#fdecec', s:'#ff453a', t:'#a11616' },
+    sel:     { f:'#e6f0ff', s:'#0a84ff', t:'#0a3d8f' },
+  };
+  const spots = [];
+  for(let i=0;i<n;i++){
+    const col=i%cols, row=Math.floor(i/cols);
+    const x = PAD + col*cellW;
+    const y = PAD + TOP + row*cellH;
+    const code = estSpotCode(lotId, i);
+    const estado = ocupados.has(code) ? 'ocupado' : (seleccionado===code ? 'sel' : 'libre');
+    spots.push({ i, x, y, code, estado });
+  }
+  // Contorno del lote (evoca la forma): aromos pentágono, frontis franja.
+  const outline = diagonal
+    ? `${PAD-6},${PAD+TOP-6} ${svgW-PAD+6+SKEW},${PAD+TOP-6} ${svgW-PAD+6+SKEW},${svgH-PAD+6} ${PAD-6},${svgH-PAD+6}`
+    : `${PAD-8},${PAD+TOP+10} ${svgW/2},${PAD+TOP-10} ${svgW-PAD+8},${PAD+TOP+10} ${svgW-PAD+8},${svgH-PAD+8} ${PAD-8},${svgH-PAD+8}`;
+  return (
+    <svg viewBox={`0 0 ${svgW} ${svgH}`} style={{width:'100%',maxWidth:diagonal?660:560,height:'auto',background:'var(--surface-2)',borderRadius:10,border:'1px solid var(--border-soft)'}}>
+      <polygon points={outline} fill="rgba(127,127,127,.06)" stroke="var(--border-soft)" strokeWidth="1.5" strokeDasharray="4 4"/>
+      <text x={PAD} y={18} fontSize="12" fontWeight="700" fill="var(--text-muted)">{nombre} · {n} espacios</text>
+      {spots.map(s=>{
+        const c = COL[s.estado];
+        const cx = s.x + W/2 + (diagonal?SKEW/2:0);
+        return (
+          <g key={s.i} onClick={()=> s.estado!=='ocupado' && onSelect(s.code)} style={{cursor: s.estado==='ocupado'?'not-allowed':'pointer'}}>
+            {diagonal
+              ? <polygon points={`${s.x+SKEW},${s.y} ${s.x+W+SKEW},${s.y} ${s.x+W},${s.y+H} ${s.x},${s.y+H}`} fill={c.f} stroke={c.s} strokeWidth="2"/>
+              : <rect x={s.x} y={s.y} width={W} height={H} rx="3" fill={c.f} stroke={c.s} strokeWidth="2"/>}
+            <text x={cx} y={s.y+H/2+4} fontSize="12" fontWeight="700" textAnchor="middle" fill={c.t} style={{pointerEvents:'none'}}>{s.i+1}</text>
+          </g>
+        );
+      })}
+    </svg>
+  );
+}
+
 /* ========= RECINTOS INTERNOS (estacionamientos, salas de reuniones, etc.) =========
    Reusa el motor de reservas (módulos, conflictos, recurrencia) pero su
    aprobación la maneja el rol reservador_interno (+admin), separado del
@@ -6460,6 +6523,20 @@ function RecintosInternos({ data, reservas, user, toast, onCreate, onUpdateEstad
     for(const r of RECINTOS_INTERNOS){ if(!g.has(r.grupo)) g.set(r.grupo, []); g.get(r.grupo).push(r); }
     return [...g.entries()];
   },[]);
+
+  // Estacionamiento seleccionado en el mapa + ocupación de sus espacios para
+  // la fecha/módulos elegidos (rojo en el plano).
+  const [lot, setLot] = useState('FRONTIS');
+  const ocupadosMapa = useMemo(()=>{
+    const set = new Set();
+    const miN = Number(f.mi), mfN = Number(f.mf);
+    for(const r of internas){
+      if(r.es==='rechazada') continue;
+      if(!String(r.r).startsWith(`EST-${lot}-`)) continue;
+      if(reservaOcurreEn(r, f.fi) && miN <= Number(r.mf||0) && Number(r.mi||0) <= mfN) set.add(r.r);
+    }
+    return set;
+  },[internas, lot, f.fi, f.mi, f.mf]);
 
   const submit = () => {
     if(!f.recinto) return toast('Elige un recinto.');
@@ -6514,6 +6591,50 @@ function RecintosInternos({ data, reservas, user, toast, onCreate, onUpdateEstad
     } catch(e){ console.error('decidir reserva interna:', e); toast(`No se pudo actualizar: ${e.message}`); }
   };
 
+  // Bloque común a "Reservar recinto" y al panel del mapa de estacionamiento:
+  // repetición + responsable/correo + motivo + banner de conflicto + botón.
+  const renderExtra = () => (
+    <>
+      <div style={{marginTop:6,paddingTop:10,borderTop:'1px solid var(--border-soft)'}}>
+        <div className="row" style={{gap:18,alignItems:'center',flexWrap:'wrap'}}>
+          <b style={{fontSize:13}}>Repetición:</b>
+          <label style={{cursor:'pointer',fontSize:13}}><input type="radio" name="ri-rec" checked={!f.recurrente} onChange={()=>setF({...f,recurrente:false,dw:''})}/> Puntual</label>
+          <label style={{cursor:'pointer',fontSize:13}}><input type="radio" name="ri-rec" checked={f.recurrente} onChange={()=>{const d=[...'0000000']; d[fechaToDow(f.fi)]='1'; setF({...f,recurrente:true,dw:d.join(''),ff:f.ff||finSemestreIso(f.fi)});}}/> Semanal</label>
+        </div>
+        {f.recurrente && (
+          <div className="stack" style={{gap:10,marginTop:10}}>
+            <div className="row" style={{gap:6,flexWrap:'wrap'}}>
+              {DOW_LBL.map((lbl,i)=>{ const on=(f.dw||'')[i]==='1'; return <button key={i} type="button" className={on?'btn btn-sm btn-primary':'btn btn-sm btn-ghost'} style={{padding:'4px 12px'}} onClick={()=>{const arr=[...(f.dw||'0000000')];arr[i]=on?'0':'1';setF({...f,dw:arr.join('')});}}>{lbl}</button>; })}
+            </div>
+            <div className="row" style={{gap:12,alignItems:'flex-end',flexWrap:'wrap'}}>
+              <div className="field" style={{maxWidth:200,marginBottom:0}}><label>Repetir hasta</label><input type="date" value={f.ff} min={f.fi} onChange={e=>setF({...f,ff:e.target.value})}/></div>
+              <button type="button" className="btn btn-ghost btn-sm" style={{fontSize:11}} onClick={()=>setF({...f,ff:finSemestreIso(f.fi)})}>Todo el semestre (18 sem)</button>
+              <span style={{flex:1}}/>
+              <div className="muted" style={{fontSize:11.5}}>{!/1/.test(f.dw||'')?'⚠ Marca al menos un día.':!f.ff?'⚠ Indica "hasta".':`📅 ${ocurrencias.length} reserva(s): ${dwLabel(f.dw)}`}</div>
+            </div>
+          </div>
+        )}
+      </div>
+      <div className="muted" style={{fontSize:11.5,padding:'8px 10px',background:'var(--surface-2)',borderRadius:6,marginTop:8}}>✓ Responsable y correo rellenados desde tu cuenta (<b>{user.username}</b>). Edítalos si reservas a nombre de otra persona.</div>
+      <div className="col-2">
+        <div className="field"><label>Responsable</label><input value={f.docente} onChange={e=>setF({...f,docente:e.target.value})}/></div>
+        <div className="field"><label>Correo</label><input type="email" value={f.correo} onChange={e=>setF({...f,correo:e.target.value})}/></div>
+      </div>
+      <div className="field"><label>Motivo *</label><input value={f.motivo} onChange={e=>setF({...f,motivo:e.target.value})} placeholder="Reunión, evento, uso de equipo…"/></div>
+      <div className="field"><label>Observación</label><textarea value={f.observacion} onChange={e=>setF({...f,observacion:e.target.value})}/></div>
+      {f.recinto && (
+        <div className="card" style={{padding:'10px 14px',background: conflictos.length?'rgba(255,69,58,.08)':'var(--surface-2)', border:'1px solid '+(conflictos.length?'rgba(255,69,58,.3)':'var(--border-soft)'),fontSize:12.5}}>
+          {conflictos.length
+            ? <><b style={{color:'var(--danger)'}}>⚠ Conflicto:</b> {nombreRecintoInterno(f.recinto)} ya está reservado en {conflictos.length} de {ocurrencias.length} fecha(s).</>
+            : <><b style={{color:'var(--success)'}}>✓ Disponible:</b> {nombreRecintoInterno(f.recinto)} · {f.recurrente?`${ocurrencias.length} fecha(s)`:fmtFecha(f.fi)} · Mód. {f.mi}–{f.mf} ({modIni?.inicio}–{modFin?.fin})</>}
+        </div>
+      )}
+      <div className="row" style={{justifyContent:'flex-end',marginTop:8}}>
+        <button className="btn btn-primary" onClick={submit}>{I.check}{canApprove?'Reservar':'Enviar solicitud'}</button>
+      </div>
+    </>
+  );
+
   return (
     <div className="stack">
       <div className="seg">
@@ -6539,57 +6660,42 @@ function RecintosInternos({ data, reservas, user, toast, onCreate, onUpdateEstad
             <div className="field"><label>Módulo fin</label><select value={f.mf} onChange={e=>setF({...f,mf:Number(e.target.value)})}>{data.modulos.map(m=> <option key={m.num} value={m.num}>Mód. {m.num} ({m.fin})</option>)}</select></div>
           </div>
           <button type="button" className="btn btn-ghost btn-sm" style={{fontSize:11,alignSelf:'flex-start'}} onClick={()=>setF({...f, mi:data.modulos[0].num, mf:data.modulos[data.modulos.length-1].num})}>Día completo</button>
-
-          <div style={{marginTop:6,paddingTop:10,borderTop:'1px solid var(--border-soft)'}}>
-            <div className="row" style={{gap:18,alignItems:'center',flexWrap:'wrap'}}>
-              <b style={{fontSize:13}}>Repetición:</b>
-              <label style={{cursor:'pointer',fontSize:13}}><input type="radio" name="ri-rec" checked={!f.recurrente} onChange={()=>setF({...f,recurrente:false,dw:''})}/> Puntual</label>
-              <label style={{cursor:'pointer',fontSize:13}}><input type="radio" name="ri-rec" checked={f.recurrente} onChange={()=>{const d=[...'0000000']; d[fechaToDow(f.fi)]='1'; setF({...f,recurrente:true,dw:d.join(''),ff:f.ff||finSemestreIso(f.fi)});}}/> Semanal</label>
-            </div>
-            {f.recurrente && (
-              <div className="stack" style={{gap:10,marginTop:10}}>
-                <div className="row" style={{gap:6,flexWrap:'wrap'}}>
-                  {DOW_LBL.map((lbl,i)=>{ const on=(f.dw||'')[i]==='1'; return <button key={i} type="button" className={on?'btn btn-sm btn-primary':'btn btn-sm btn-ghost'} style={{padding:'4px 12px'}} onClick={()=>{const arr=[...(f.dw||'0000000')];arr[i]=on?'0':'1';setF({...f,dw:arr.join('')});}}>{lbl}</button>; })}
-                </div>
-                <div className="row" style={{gap:12,alignItems:'flex-end',flexWrap:'wrap'}}>
-                  <div className="field" style={{maxWidth:200,marginBottom:0}}><label>Repetir hasta</label><input type="date" value={f.ff} min={f.fi} onChange={e=>setF({...f,ff:e.target.value})}/></div>
-                  <button type="button" className="btn btn-ghost btn-sm" style={{fontSize:11}} onClick={()=>setF({...f,ff:finSemestreIso(f.fi)})}>Todo el semestre (18 sem)</button>
-                  <span style={{flex:1}}/>
-                  <div className="muted" style={{fontSize:11.5}}>{!/1/.test(f.dw||'')?'⚠ Marca al menos un día.':!f.ff?'⚠ Indica "hasta".':`📅 ${ocurrencias.length} reserva(s): ${dwLabel(f.dw)}`}</div>
-                </div>
-              </div>
-            )}
-          </div>
-
-          <div className="muted" style={{fontSize:11.5,padding:'8px 10px',background:'var(--surface-2)',borderRadius:6,marginTop:8}}>✓ Responsable y correo rellenados desde tu cuenta (<b>{user.username}</b>). Edítalos si reservas a nombre de otra persona.</div>
-          <div className="col-2">
-            <div className="field"><label>Responsable</label><input value={f.docente} onChange={e=>setF({...f,docente:e.target.value})}/></div>
-            <div className="field"><label>Correo</label><input type="email" value={f.correo} onChange={e=>setF({...f,correo:e.target.value})}/></div>
-          </div>
-          <div className="field"><label>Motivo *</label><input value={f.motivo} onChange={e=>setF({...f,motivo:e.target.value})} placeholder="Reunión, evento, uso de equipo…"/></div>
-          <div className="field"><label>Observación</label><textarea value={f.observacion} onChange={e=>setF({...f,observacion:e.target.value})}/></div>
-
-          {f.recinto && (
-            <div className="card" style={{padding:'10px 14px',background: conflictos.length?'rgba(255,69,58,.08)':'var(--surface-2)', border:'1px solid '+(conflictos.length?'rgba(255,69,58,.3)':'var(--border-soft)'),fontSize:12.5}}>
-              {conflictos.length
-                ? <><b style={{color:'var(--danger)'}}>⚠ Conflicto:</b> {nombreRecintoInterno(f.recinto)} ya está reservado en {conflictos.length} de {ocurrencias.length} fecha(s).</>
-                : <><b style={{color:'var(--success)'}}>✓ Disponible:</b> {nombreRecintoInterno(f.recinto)} · {f.recurrente?`${ocurrencias.length} fecha(s)`:fmtFecha(f.fi)} · Mód. {f.mi}–{f.mf} ({modIni?.inicio}–{modFin?.fin})</>}
-            </div>
-          )}
-          <div className="row" style={{justifyContent:'flex-end',marginTop:8}}>
-            <button className="btn btn-primary" onClick={submit}>{I.check}{canApprove?'Reservar':'Enviar solicitud'}</button>
-          </div>
+          {renderExtra()}
         </div>
       )}
 
       {tab==='estacion' && (
-        <div className="card"><div className="empty" style={{padding:'30px 20px'}}>
-          <span className="emoji">🅿</span>
-          <b>Estacionamientos — en configuración</b>
-          <div className="muted" style={{fontSize:12.5,marginTop:8,maxWidth:540,lineHeight:1.5}}>
-            Aquí irá el mapa 2D para reservar espacios en <b>FRONTIS</b>, <b>AROMOS</b> y el tercer estacionamiento. Para dibujarlo fiel a la realidad necesito: el nombre del 3er estacionamiento, cuántos espacios tiene cada uno y cómo están dispuestos (filas/columnas).
+        <div className="stack">
+          <div className="card">
+            <div className="card-header"><div><h3>🅿 Reservar estacionamiento</h3><div className="sub">Elige el estacionamiento, fecha y horario; luego haz click en un espacio libre del plano.</div></div></div>
+            <div className="row" style={{gap:8,flexWrap:'wrap',marginBottom:10}}>
+              {Object.entries(ESTACIONAMIENTOS).map(([id,c])=>(
+                <button key={id} className={lot===id?'btn btn-primary btn-sm':'btn btn-ghost btn-sm'} onClick={()=>{ setLot(id); if(!String(f.recinto).startsWith(`EST-${id}-`)) setF({...f, recinto:''}); }}>{c.nombre} ({c.n})</button>
+              ))}
+            </div>
+            <div className="col-3">
+              <div className="field"><label>{f.recurrente?'Primera fecha':'Fecha'}</label><input type="date" value={f.fi} onChange={e=>setF({...f,fi:e.target.value})}/></div>
+              <div className="field"><label>Módulo inicio</label><select value={f.mi} onChange={e=>setF({...f,mi:Number(e.target.value)})}>{data.modulos.map(m=> <option key={m.num} value={m.num}>Mód. {m.num} ({m.inicio})</option>)}</select></div>
+              <div className="field"><label>Módulo fin</label><select value={f.mf} onChange={e=>setF({...f,mf:Number(e.target.value)})}>{data.modulos.map(m=> <option key={m.num} value={m.num}>Mód. {m.num} ({m.fin})</option>)}</select></div>
+            </div>
+            <button type="button" className="btn btn-ghost btn-sm" style={{fontSize:11,alignSelf:'flex-start'}} onClick={()=>setF({...f, mi:data.modulos[0].num, mf:data.modulos[data.modulos.length-1].num})}>Día completo</button>
+            <div className="row" style={{gap:16,fontSize:11.5,margin:'10px 0',flexWrap:'wrap'}}>
+              <span><span style={{display:'inline-block',width:12,height:12,background:'#e8f7ec',border:'2px solid #34c759',borderRadius:3,verticalAlign:'-2px',marginRight:4}}/>Libre</span>
+              <span><span style={{display:'inline-block',width:12,height:12,background:'#fdecec',border:'2px solid #ff453a',borderRadius:3,verticalAlign:'-2px',marginRight:4}}/>Ocupado</span>
+              <span><span style={{display:'inline-block',width:12,height:12,background:'#e6f0ff',border:'2px solid #0a84ff',borderRadius:3,verticalAlign:'-2px',marginRight:4}}/>Seleccionado</span>
+              <span className="muted">· {ocupadosMapa.size} de {ESTACIONAMIENTOS[lot].n} ocupados para esa fecha/horario</span>
+            </div>
+            <div style={{overflowX:'auto',display:'flex',justifyContent:'center'}}>
+              <MapaEstacionamiento lotId={lot} cfg={ESTACIONAMIENTOS[lot]} ocupados={ocupadosMapa} seleccionado={f.recinto} onSelect={code=>setF({...f, recinto:code})}/>
+            </div>
           </div>
-        </div></div>
+          {f.recinto && String(f.recinto).startsWith('EST-') && (
+            <div className="card">
+              <div className="card-header"><div><h3>Reservar {nombreRecintoInterno(f.recinto)}</h3><div className="sub">Completa los datos para confirmar la reserva del espacio.</div></div></div>
+              {renderExtra()}
+            </div>
+          )}
+        </div>
       )}
 
       {tab==='solicitudes' && (
