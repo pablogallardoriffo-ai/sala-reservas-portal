@@ -1014,8 +1014,33 @@ const I = {
 const ROLES = {
   admin:      { label:'Administrador', badge:'ADMIN', desc:'Coordinación docente, jefatura de área y subdirección académica' },
   reservador: { label:'Reservador',    badge:'RSV',   desc:'Asistentes de coordinación docente que recepcionan y gestionan solicitudes' },
+  reservador_interno: { label:'Reservador Interno', badge:'RSV-IN', desc:'Autoriza reservas de recintos internos (estacionamientos, salas de reuniones, etc.) — no ve las de salas académicas' },
   usuario:    { label:'Usuario',       badge:'USR',   desc:'Cliente de la sede que consulta disponibilidad y solicita reservas' },
 };
+
+// Catálogo de RECINTOS INTERNOS (no académicos). Se reservan con el mismo motor
+// que las salas (módulos, conflictos, recurrencia, aprobación), pero su
+// aprobación la maneja el rol "reservador_interno" (+admin), no el reservador
+// académico. Los códigos NO colisionan con las salas académicas para poder
+// separar ambos mundos. Los estacionamientos se agregan aparte (con su mapa 2D).
+const RECINTOS_INTERNOS = [
+  { code:'INT-CN',   nombre:'Centro de negocios',            tipo:'Sala',              grupo:'Salas y espacios' },
+  { code:'INT-CTI1', nombre:'CTI 1',                         tipo:'Sala',              grupo:'Salas y espacios' },
+  { code:'INT-CTI2', nombre:'CTI 2',                         tipo:'Sala',              grupo:'Salas y espacios' },
+  { code:'INT-LED',  nombre:'Pantalla LED',                  tipo:'Equipo',            grupo:'Salas y espacios' },
+  { code:'INT-LACT', nombre:'Sala de lactancia',            tipo:'Sala',              grupo:'Salas y espacios' },
+  { code:'INT-SR1',  nombre:'Sala de reuniones 1 (4º piso)', tipo:'Sala de reuniones', grupo:'Salas de reuniones' },
+  { code:'INT-SR2',  nombre:'Sala de reuniones 2 (3er piso)',tipo:'Sala de reuniones', grupo:'Salas de reuniones' },
+  { code:'INT-FOL1', nombre:'FOL1',                          tipo:'Sala',              grupo:'FOL' },
+  { code:'INT-FOL2', nombre:'FOL2',                          tipo:'Sala',              grupo:'FOL' },
+  { code:'INT-FOL3', nombre:'FOL3',                          tipo:'Sala',              grupo:'FOL' },
+  { code:'INT-VEH',  nombre:'Camioneta institucional',       tipo:'Vehículo',          grupo:'Vehículo de sede' },
+];
+const RECINTOS_INTERNOS_MAP = new Map(RECINTOS_INTERNOS.map(r => [r.code, r]));
+// ¿Un código de recinto pertenece al mundo interno? (catálogo fijo o prefijo de
+// estacionamiento EST-...). Sirve para enrutar la aprobación y separar listados.
+const esRecintoInterno = (code) => !!code && (RECINTOS_INTERNOS_MAP.has(code) || /^EST-/.test(code));
+const nombreRecintoInterno = (code) => RECINTOS_INTERNOS_MAP.get(code)?.nombre || code;
 const DEFAULT_USERS = [
   { id:1, username:'admin',      nombre:'Coordinación Docente · Jefe de Área', email:'admin@duoc.cl',    password:'010203', role:'admin',      activo:true },
   { id:2, username:'reservador', nombre:'Asistente de Coordinación Docente',   email:'reservas@duoc.cl', password:'010203', role:'reservador', activo:true },
@@ -1970,13 +1995,16 @@ function Clock(){
 /* ========= APP SHELL ========= */
 function Shell({ user, mode, onReconfigure, onLogout, view, setView, children, title, crumbs, pendientes = 0 }){
   const menu = useMemo(()=>{
+    const ALL = ['admin','reservador','reservador_interno','usuario'];
+    const esAcad = user.role==='admin' || user.role==='reservador';
     const base = [
-      ['dashboard', 'Dashboard',                I.dashboard, ['admin','reservador','usuario']],
-      ['horario',   'Horario Sala',             I.horario,   ['admin','reservador','usuario']],
-      ['docente',   'Horario docente',          I.users,     ['admin','reservador','usuario']],
-      ['mapa',      'Mapa de calor',            I.heatmap,   ['admin','reservador','usuario']],
-      ['nueva',     'Solicitar reserva',        I.nueva,     ['admin','reservador','usuario']],
-      ['reservas',  user.role==='usuario' ? 'Mis Reservas' : 'Solicitudes de Reservas',  I.reservas,  ['admin','reservador','usuario']],
+      ['dashboard', 'Dashboard',                I.dashboard, ALL],
+      ['horario',   'Horario Sala',             I.horario,   ALL],
+      ['docente',   'Horario docente',          I.users,     ALL],
+      ['mapa',      'Mapa de calor',            I.heatmap,   ALL],
+      ['nueva',     'Solicitar reserva',        I.nueva,     ALL],
+      ['reservas',  esAcad ? 'Solicitudes de Reservas' : 'Mis Reservas',  I.reservas,  ALL],
+      ['recintos',  'Recintos Internos',        I.salas,     ALL],
       ['reportes',  'Reportes',                 I.reports,   ['admin','reservador']],
       ['repDoc',    'Reporte Docente',          I.reports,   ['admin']],
       ['gestDoc',   'Gestión Docente',          I.calc,      ['admin','reservador']],
@@ -5609,11 +5637,16 @@ function Reservas({ reservas, data, user, toast, onGoNueva, onUpdateEstado }){
   // Aprobadores arrancan en pendientes (las accionables); usuario ve todas las suyas
   const [estado, setEstado] = useState(canApprove ? 'pendiente' : '');
 
-  // Subconjunto base: si es usuario, solo sus propias reservas
+  // Esta pestaña es SOLO de salas académicas. Las reservas de recintos
+  // internos (estacionamientos, salas de reuniones, etc.) se gestionan en su
+  // propia pestaña y las aprueba otro rol, así que se excluyen aquí.
+  const academicas = useMemo(()=> reservas.filter(r => !esRecintoInterno(r.r)), [reservas]);
+  // Subconjunto base: los aprobadores académicos ven todas; el resto solo las
+  // suyas (un reservador_interno aquí es un usuario más).
   const ownArr = useMemo(()=>{
-    if(user.role==='usuario') return reservas.filter(r => r.co===user.email || r.creado_por===user.username);
-    return reservas;
-  },[reservas, user]);
+    if(canApprove) return academicas;
+    return academicas.filter(r => r.co===user.email || r.creado_por===user.username);
+  },[academicas, user, canApprove]);
 
   // Contadores por estado para los chips
   const counts = useMemo(()=>({
@@ -6386,6 +6419,215 @@ function NuevaReserva({ data, reservas, user, toast, goReservas, prefill, onCrea
           </div>
         </>);
       })()}
+    </div>
+  );
+}
+
+/* ========= RECINTOS INTERNOS (estacionamientos, salas de reuniones, etc.) =========
+   Reusa el motor de reservas (módulos, conflictos, recurrencia) pero su
+   aprobación la maneja el rol reservador_interno (+admin), separado del
+   reservador académico. Las reservas internas no aparecen en la pestaña de
+   salas académicas (se filtran por esRecintoInterno). */
+function RecintosInternos({ data, reservas, user, toast, onCreate, onUpdateEstado }){
+  const canApprove = user.role==='admin' || user.role==='reservador_interno';
+  const [tab, setTab] = useState('reservar');
+  const internas = useMemo(()=> reservas.filter(r => esRecintoInterno(r.r)), [reservas]);
+
+  const [f, setF] = useState({
+    recinto:'', fi: isoDate(new Date()), mi:1, mf:2,
+    recurrente:false, dw:'', ff:'',
+    motivo:'', observacion:'', docente:user.nombre, correo:user.email,
+  });
+  const finSemestreIso = (fi) => fi ? isoDate(addDays(new Date(fi+'T00:00:00'), 7*18 - 1)) : '';
+  const ocurrencias = useMemo(
+    ()=> f.recurrente ? ocurrenciasEntre(f.fi, f.ff, f.dw) : (f.fi ? [f.fi] : []),
+    [f.recurrente, f.fi, f.ff, f.dw]
+  );
+  const modIni = moduloInfo(data.modulos, f.mi);
+  const modFin = moduloInfo(data.modulos, f.mf);
+
+  const conflictos = useMemo(()=>{
+    if(!f.recinto) return [];
+    const miN = Number(f.mi), mfN = Number(f.mf);
+    return ocurrencias.filter(iso => internas.some(r =>
+      r.r===f.recinto && r.es!=='rechazada' && reservaOcurreEn(r, iso) &&
+      miN <= Number(r.mf||0) && Number(r.mi||0) <= mfN
+    ));
+  },[f.recinto, f.mi, f.mf, ocurrencias, internas]);
+
+  const grupos = useMemo(()=>{
+    const g = new Map();
+    for(const r of RECINTOS_INTERNOS){ if(!g.has(r.grupo)) g.set(r.grupo, []); g.get(r.grupo).push(r); }
+    return [...g.entries()];
+  },[]);
+
+  const submit = () => {
+    if(!f.recinto) return toast('Elige un recinto.');
+    if(!f.motivo) return toast('Indica el motivo de la reserva.');
+    if(Number(f.mi) > Number(f.mf)) return toast('El módulo inicio debe ser ≤ módulo fin.');
+    if(f.recurrente){
+      if(!/1/.test(f.dw||'')) return toast('Marca al menos un día para la repetición.');
+      if(!f.ff) return toast('Indica hasta cuándo se repite.');
+      if(f.ff < f.fi) return toast('La fecha "Repetir hasta" debe ser igual o posterior a la primera.');
+      if(!ocurrencias.length) return toast('El rango no genera ninguna fecha en esos días.');
+    }
+    if(conflictos.length){
+      const muestra = conflictos.slice(0,6).map(fmtFecha).join(', ') + (conflictos.length>6?'…':'');
+      if(!canApprove) return toast(`No disponible: el recinto ya está reservado en ${conflictos.length} de ${ocurrencias.length} fecha(s) (${muestra}).`);
+      if(!window.confirm(`⚠ Conflicto en ${conflictos.length} de ${ocurrencias.length} fecha(s):\n${muestra}\n\n¿Reservar igualmente? (acción excepcional)`)) return;
+    }
+    const nuevo = {
+      fi: f.fi, ff: f.recurrente ? f.ff : f.fi,
+      hi: modIni?.inicio || '', hf: modFin?.fin || '',
+      mi: Number(f.mi), mf: Number(f.mf),
+      r: f.recinto, ts: f.recurrente ? 'SI' : 'NO',
+      mo: f.motivo, do: f.docente, ru:'', co: f.correo, observacion: f.observacion,
+      es: canApprove ? 'aprobada' : 'pendiente',
+      creado_por: user.username, creado_en: new Date().toISOString(),
+    };
+    if(f.recurrente) nuevo.dw = f.dw;
+    (async ()=>{
+      try {
+        await onCreate(nuevo);
+        toast(nuevo.es==='aprobada' ? 'Reserva creada y aprobada.' : 'Solicitud enviada. Pendiente del reservador interno.');
+        setF(s => ({...s, motivo:'', observacion:''}));
+        setTab('solicitudes');
+      } catch(e){ console.error('crear reserva interna:', e); toast(`No se pudo crear la reserva: ${e.message}`); }
+    })();
+  };
+
+  const visibles = useMemo(()=>{
+    const base = canApprove ? internas : internas.filter(r => r.co===user.email || r.creado_por===user.username);
+    return base.slice().sort((a,b)=>{
+      if(a.es==='pendiente' && b.es!=='pendiente') return -1;
+      if(b.es==='pendiente' && a.es!=='pendiente') return 1;
+      const al=a.decidido_en||a.creado_en||'', bl=b.decidido_en||b.creado_en||'';
+      return bl.localeCompare(al);
+    });
+  },[internas, canApprove, user]);
+  const pendientes = internas.filter(r => r.es==='pendiente').length;
+
+  const decidir = async (id, nuevo) => {
+    try {
+      await onUpdateEstado(id, { es:nuevo, decidido_por:user.username, decidido_en:new Date().toISOString() });
+      toast(`Reserva ${nuevo==='aprobada'?'aprobada':'rechazada'}.`);
+    } catch(e){ console.error('decidir reserva interna:', e); toast(`No se pudo actualizar: ${e.message}`); }
+  };
+
+  return (
+    <div className="stack">
+      <div className="seg">
+        <button className={tab==='reservar'?'on':''} onClick={()=>setTab('reservar')}>➕ Reservar</button>
+        <button className={tab==='estacion'?'on':''} onClick={()=>setTab('estacion')}>🅿 Estacionamientos</button>
+        <button className={tab==='solicitudes'?'on':''} onClick={()=>setTab('solicitudes')}>📋 Solicitudes{canApprove && pendientes>0 ? ` (${pendientes})` : ''}</button>
+      </div>
+
+      {tab==='reservar' && (
+        <div className="card">
+          <div className="card-header"><div><h3>Reservar recinto interno</h3><div className="sub">Salas de reuniones, CTI, Centro de negocios, Pantalla LED, lactancia, FOL y vehículo de sede.</div></div></div>
+          <div className="col-2">
+            <div className="field"><label>Recinto *</label>
+              <select value={f.recinto} onChange={e=>setF({...f,recinto:e.target.value})}>
+                <option value="">— Elige un recinto —</option>
+                {grupos.map(([g, items])=> <optgroup key={g} label={g}>{items.map(it => <option key={it.code} value={it.code}>{it.nombre}</option>)}</optgroup>)}
+              </select>
+            </div>
+            <div className="field"><label>{f.recurrente?'Primera fecha':'Fecha'}</label><input type="date" value={f.fi} onChange={e=>setF({...f,fi:e.target.value})}/></div>
+          </div>
+          <div className="col-2">
+            <div className="field"><label>Módulo inicio</label><select value={f.mi} onChange={e=>setF({...f,mi:Number(e.target.value)})}>{data.modulos.map(m=> <option key={m.num} value={m.num}>Mód. {m.num} ({m.inicio})</option>)}</select></div>
+            <div className="field"><label>Módulo fin</label><select value={f.mf} onChange={e=>setF({...f,mf:Number(e.target.value)})}>{data.modulos.map(m=> <option key={m.num} value={m.num}>Mód. {m.num} ({m.fin})</option>)}</select></div>
+          </div>
+          <button type="button" className="btn btn-ghost btn-sm" style={{fontSize:11,alignSelf:'flex-start'}} onClick={()=>setF({...f, mi:data.modulos[0].num, mf:data.modulos[data.modulos.length-1].num})}>Día completo</button>
+
+          <div style={{marginTop:6,paddingTop:10,borderTop:'1px solid var(--border-soft)'}}>
+            <div className="row" style={{gap:18,alignItems:'center',flexWrap:'wrap'}}>
+              <b style={{fontSize:13}}>Repetición:</b>
+              <label style={{cursor:'pointer',fontSize:13}}><input type="radio" name="ri-rec" checked={!f.recurrente} onChange={()=>setF({...f,recurrente:false,dw:''})}/> Puntual</label>
+              <label style={{cursor:'pointer',fontSize:13}}><input type="radio" name="ri-rec" checked={f.recurrente} onChange={()=>{const d=[...'0000000']; d[fechaToDow(f.fi)]='1'; setF({...f,recurrente:true,dw:d.join(''),ff:f.ff||finSemestreIso(f.fi)});}}/> Semanal</label>
+            </div>
+            {f.recurrente && (
+              <div className="stack" style={{gap:10,marginTop:10}}>
+                <div className="row" style={{gap:6,flexWrap:'wrap'}}>
+                  {DOW_LBL.map((lbl,i)=>{ const on=(f.dw||'')[i]==='1'; return <button key={i} type="button" className={on?'btn btn-sm btn-primary':'btn btn-sm btn-ghost'} style={{padding:'4px 12px'}} onClick={()=>{const arr=[...(f.dw||'0000000')];arr[i]=on?'0':'1';setF({...f,dw:arr.join('')});}}>{lbl}</button>; })}
+                </div>
+                <div className="row" style={{gap:12,alignItems:'flex-end',flexWrap:'wrap'}}>
+                  <div className="field" style={{maxWidth:200,marginBottom:0}}><label>Repetir hasta</label><input type="date" value={f.ff} min={f.fi} onChange={e=>setF({...f,ff:e.target.value})}/></div>
+                  <button type="button" className="btn btn-ghost btn-sm" style={{fontSize:11}} onClick={()=>setF({...f,ff:finSemestreIso(f.fi)})}>Todo el semestre (18 sem)</button>
+                  <span style={{flex:1}}/>
+                  <div className="muted" style={{fontSize:11.5}}>{!/1/.test(f.dw||'')?'⚠ Marca al menos un día.':!f.ff?'⚠ Indica "hasta".':`📅 ${ocurrencias.length} reserva(s): ${dwLabel(f.dw)}`}</div>
+                </div>
+              </div>
+            )}
+          </div>
+
+          <div className="muted" style={{fontSize:11.5,padding:'8px 10px',background:'var(--surface-2)',borderRadius:6,marginTop:8}}>✓ Responsable y correo rellenados desde tu cuenta (<b>{user.username}</b>). Edítalos si reservas a nombre de otra persona.</div>
+          <div className="col-2">
+            <div className="field"><label>Responsable</label><input value={f.docente} onChange={e=>setF({...f,docente:e.target.value})}/></div>
+            <div className="field"><label>Correo</label><input type="email" value={f.correo} onChange={e=>setF({...f,correo:e.target.value})}/></div>
+          </div>
+          <div className="field"><label>Motivo *</label><input value={f.motivo} onChange={e=>setF({...f,motivo:e.target.value})} placeholder="Reunión, evento, uso de equipo…"/></div>
+          <div className="field"><label>Observación</label><textarea value={f.observacion} onChange={e=>setF({...f,observacion:e.target.value})}/></div>
+
+          {f.recinto && (
+            <div className="card" style={{padding:'10px 14px',background: conflictos.length?'rgba(255,69,58,.08)':'var(--surface-2)', border:'1px solid '+(conflictos.length?'rgba(255,69,58,.3)':'var(--border-soft)'),fontSize:12.5}}>
+              {conflictos.length
+                ? <><b style={{color:'var(--danger)'}}>⚠ Conflicto:</b> {nombreRecintoInterno(f.recinto)} ya está reservado en {conflictos.length} de {ocurrencias.length} fecha(s).</>
+                : <><b style={{color:'var(--success)'}}>✓ Disponible:</b> {nombreRecintoInterno(f.recinto)} · {f.recurrente?`${ocurrencias.length} fecha(s)`:fmtFecha(f.fi)} · Mód. {f.mi}–{f.mf} ({modIni?.inicio}–{modFin?.fin})</>}
+            </div>
+          )}
+          <div className="row" style={{justifyContent:'flex-end',marginTop:8}}>
+            <button className="btn btn-primary" onClick={submit}>{I.check}{canApprove?'Reservar':'Enviar solicitud'}</button>
+          </div>
+        </div>
+      )}
+
+      {tab==='estacion' && (
+        <div className="card"><div className="empty" style={{padding:'30px 20px'}}>
+          <span className="emoji">🅿</span>
+          <b>Estacionamientos — en configuración</b>
+          <div className="muted" style={{fontSize:12.5,marginTop:8,maxWidth:540,lineHeight:1.5}}>
+            Aquí irá el mapa 2D para reservar espacios en <b>FRONTIS</b>, <b>AROMOS</b> y el tercer estacionamiento. Para dibujarlo fiel a la realidad necesito: el nombre del 3er estacionamiento, cuántos espacios tiene cada uno y cómo están dispuestos (filas/columnas).
+          </div>
+        </div></div>
+      )}
+
+      {tab==='solicitudes' && (
+        <div className="card" style={{padding:0}}>
+          <div className="card-header" style={{padding:'14px 18px'}}>
+            <div><h3>Solicitudes de recintos internos</h3><div className="sub">{visibles.length} {canApprove?'en total':'tuyas'}{canApprove && pendientes>0?` · ${pendientes} pendientes`:''}</div></div>
+          </div>
+          <div className="tbl-scroll">
+            <table className="tbl">
+              <thead><tr><th>Recinto</th><th>Fecha</th><th>Horario</th><th>Motivo</th><th>Solicitante</th><th>Estado</th>{canApprove && <th style={{textAlign:'right'}}>Acciones</th>}</tr></thead>
+              <tbody>
+                {visibles.map(r => (
+                  <tr key={r.id} className={r.es==='pendiente'?'row-pending':''}>
+                    <td><b>{nombreRecintoInterno(r.r)}</b></td>
+                    <td className="nowrap">{r.dw && /1/.test(r.dw) ? <><span className="chip" style={{fontSize:9,padding:'1px 6px'}}>🔁 {dwLabel(r.dw)}</span><div className="muted" style={{fontSize:11}}>{fmtFecha(r.fi)} → {fmtFecha(r.ff)}</div></> : fmtFecha(r.fi)}</td>
+                    <td className="nowrap">{r.hi}–{r.hf}<div className="muted" style={{fontSize:11}}>Mód. {r.mi}–{r.mf}</div></td>
+                    <td style={{maxWidth:280}}>{r.mo}</td>
+                    <td><div style={{fontSize:13}}>{r.do||'—'}</div><div className="muted" style={{fontSize:11}}>{r.co}</div></td>
+                    <td>
+                      {r.es==='aprobada' && <span className="chip success">Aprobada</span>}
+                      {r.es==='pendiente' && <span className="chip warn">Pendiente</span>}
+                      {r.es==='rechazada' && <span className="chip danger">Rechazada</span>}
+                      {r.es!=='pendiente' && r.decidido_por && <div className="muted" style={{fontSize:10.5,marginTop:3}}>por <b>{r.decidido_por}</b></div>}
+                    </td>
+                    {canApprove && <td className="nowrap" style={{textAlign:'right'}}>
+                      {r.es==='pendiente' && <>
+                        <button className="btn btn-sm btn-success" onClick={()=>decidir(r.id,'aprobada')}>{I.check}</button>{' '}
+                        <button className="btn btn-sm btn-danger" onClick={()=>decidir(r.id,'rechazada')}>{I.x}</button>
+                      </>}
+                    </td>}
+                  </tr>
+                ))}
+                {visibles.length===0 && <tr><td colSpan={canApprove?7:6}><div className="empty"><span className="emoji">📭</span>Sin solicitudes de recintos internos.</div></td></tr>}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -9115,6 +9357,7 @@ function App(){
         {view==='usuarios'  && <Usuarios users={users} toast={setToast} onCreate={createUser} onUpdate={updateUser} onDelete={deleteUser}/>}
         {view==='reportes'  && <Reportes data={data} reservas={reservas}/>}
         {view==='repDoc'    && <ReporteDocente data={data}/>}
+        {view==='recintos'  && <RecintosInternos data={data} reservas={reservas} user={user} toast={setToast} onCreate={createReserva} onUpdateEstado={updateReservaEstado}/>}
         {view==='gestiones' && <Gestiones data={data} user={user} db={db} toast={setToast}/>}
         {view==='gestDoc'   && <GestionDocente/>}
         {view==='mapa'      && <MapaCalor data={data} user={user}/>}

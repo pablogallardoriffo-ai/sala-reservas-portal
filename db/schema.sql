@@ -11,7 +11,7 @@ CREATE TABLE IF NOT EXISTS app_users (
   nombre      TEXT NOT NULL,
   email       TEXT,
   password    TEXT NOT NULL,
-  role        TEXT NOT NULL CHECK (role IN ('admin','reservador','usuario')),
+  role        TEXT NOT NULL CHECK (role IN ('admin','reservador','reservador_interno','usuario')),
   activo      BOOLEAN DEFAULT TRUE,
   created_at  TIMESTAMPTZ DEFAULT NOW()
 );
@@ -173,6 +173,9 @@ CREATE INDEX IF NOT EXISTS idx_reservas_fi_r ON reservas(fi, r);
 CREATE INDEX IF NOT EXISTS idx_reservas_es   ON reservas(es);
 -- Migración idempotente para BDs ya creadas (reservas recurrentes):
 ALTER TABLE reservas ADD COLUMN IF NOT EXISTS dw CHAR(7);
+-- Rol "reservador_interno" (aprobador de recintos internos):
+ALTER TABLE app_users DROP CONSTRAINT IF EXISTS app_users_role_check;
+ALTER TABLE app_users ADD CONSTRAINT app_users_role_check CHECK (role IN ('admin','reservador','reservador_interno','usuario'));
 
 -- ============================================================
 -- DATOS INICIALES (usuarios demo + módulos)
