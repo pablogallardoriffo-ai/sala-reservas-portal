@@ -1025,8 +1025,6 @@ const ROLES = {
 // separar ambos mundos. Los estacionamientos se agregan aparte (con su mapa 2D).
 const RECINTOS_INTERNOS = [
   { code:'INT-CN',   nombre:'Centro de negocios',            tipo:'Sala',              grupo:'Salas y espacios' },
-  { code:'INT-CTI1', nombre:'CTI 1',                         tipo:'Sala',              grupo:'Salas y espacios' },
-  { code:'INT-CTI2', nombre:'CTI 2',                         tipo:'Sala',              grupo:'Salas y espacios' },
   { code:'INT-LED',  nombre:'Pantalla LED',                  tipo:'Equipo',            grupo:'Salas y espacios' },
   { code:'INT-LACT', nombre:'Sala de lactancia',            tipo:'Sala',              grupo:'Salas y espacios' },
   { code:'INT-SR1',  nombre:'Sala de reuniones 1 (4º piso)', tipo:'Sala de reuniones', grupo:'Salas de reuniones' },
@@ -1043,6 +1041,8 @@ const RECINTOS_INTERNOS_MAP = new Map(RECINTOS_INTERNOS.map(r => [r.code, r]));
 const ESTACIONAMIENTOS = {
   FRONTIS: { nombre:'Frontis', n:8,  cols:8, diagonal:true,  desc:'Frente al edificio' },
   AROMOS:  { nombre:'Aromos',  n:25, cols:5, diagonal:false, desc:'Los Aromos' },
+  CTI1:    { nombre:'CTI 1',   n:1,  cols:1, diagonal:false, desc:'Estacionamiento CTI 1' },
+  CTI2:    { nombre:'CTI 2',   n:1,  cols:1, diagonal:false, desc:'Estacionamiento CTI 2' },
 };
 const estSpotCode = (lotId, i) => `EST-${lotId}-${String(i+1).padStart(2,'0')}`;
 
@@ -6538,6 +6538,33 @@ function RecintosInternos({ data, reservas, user, toast, onCreate, onUpdateEstad
     return set;
   },[internas, lot, f.fi, f.mi, f.mf]);
 
+  // --- Vista de horario semanal (Lun-Dom × módulos) de un recinto interno ---
+  const now = useNowMinutes();
+  const opcionesHorario = useMemo(()=>{
+    const grupos = [];
+    const byG = new Map();
+    for(const r of RECINTOS_INTERNOS){ if(!byG.has(r.grupo)) byG.set(r.grupo, []); byG.get(r.grupo).push({ code:r.code, label:r.nombre }); }
+    for(const [g, items] of byG) grupos.push([g, items]);
+    for(const [id, cfg] of Object.entries(ESTACIONAMIENTOS)){
+      const items = [];
+      for(let i=0;i<cfg.n;i++) items.push({ code: estSpotCode(id,i), label: cfg.n>1 ? `${cfg.nombre} · E${i+1}` : cfg.nombre });
+      grupos.push([`🅿 ${cfg.nombre}`, items]);
+    }
+    return grupos;
+  },[]);
+  const [recintoH, setRecintoH] = useState(RECINTOS_INTERNOS[0]?.code || '');
+  const [fechaH, setFechaH] = useState(isoDate(new Date()));
+  const mondayH = useMemo(()=> getMonday(fechaH), [fechaH]);
+  const weekH = useMemo(()=> [0,1,2,3,4,5,6].map(i => addDays(mondayH, i)), [mondayH]);
+  const gridH = useMemo(()=>{
+    const resPorDia = weekH.map(d => {
+      const dIso = isoDate(d);
+      return internas.filter(r => r.r===recintoH && reservaOcurreEn(r, dIso) && r.es!=='rechazada');
+    });
+    return data.modulos.map(mod => weekH.map((d,dw)=> resPorDia[dw].filter(r => mod.num>=Number(r.mi||0) && mod.num<=Number(r.mf||0))));
+  },[internas, recintoH, weekH, data.modulos]);
+  const todayIso = isoDate(new Date());
+
   const submit = () => {
     if(!f.recinto) return toast('Elige un recinto.');
     if(!f.motivo) return toast('Indica el motivo de la reserva.');
@@ -6640,6 +6667,7 @@ function RecintosInternos({ data, reservas, user, toast, onCreate, onUpdateEstad
       <div className="seg">
         <button className={tab==='reservar'?'on':''} onClick={()=>setTab('reservar')}>➕ Reservar</button>
         <button className={tab==='estacion'?'on':''} onClick={()=>setTab('estacion')}>🅿 Estacionamientos</button>
+        <button className={tab==='horario'?'on':''} onClick={()=>setTab('horario')}>📅 Horario semanal</button>
         <button className={tab==='solicitudes'?'on':''} onClick={()=>setTab('solicitudes')}>📋 Solicitudes{canApprove && pendientes>0 ? ` (${pendientes})` : ''}</button>
       </div>
 
@@ -6695,6 +6723,73 @@ function RecintosInternos({ data, reservas, user, toast, onCreate, onUpdateEstad
               {renderExtra()}
             </div>
           )}
+        </div>
+      )}
+
+      {tab==='horario' && (
+        <div className="stack">
+          <div className="filters">
+            <div className="field" style={{maxWidth:280}}>
+              <label>Recinto</label>
+              <select value={recintoH} onChange={e=>setRecintoH(e.target.value)}>
+                {opcionesHorario.map(([g, items])=> <optgroup key={g} label={g}>{items.map(it => <option key={it.code} value={it.code}>{it.label}</option>)}</optgroup>)}
+              </select>
+            </div>
+            <div className="field" style={{maxWidth:170}}>
+              <label>Fecha</label>
+              <input type="date" value={fechaH} onChange={e=>setFechaH(e.target.value)}/>
+            </div>
+            <div className="week-nav">
+              <button className="btn-icon" title="Semana anterior" onClick={()=>setFechaH(isoDate(addDays(new Date(fechaH+'T00:00:00'), -7)))}>‹</button>
+              <span className="label">{mondayH.toLocaleDateString('es-CL',{day:'2-digit',month:'short'})} – {addDays(mondayH,6).toLocaleDateString('es-CL',{day:'2-digit',month:'short',year:'numeric'})}</span>
+              <button className="btn-icon" title="Semana siguiente" onClick={()=>setFechaH(isoDate(addDays(new Date(fechaH+'T00:00:00'), 7)))}>›</button>
+              <button className="btn btn-sm btn-ghost" onClick={()=>setFechaH(todayIso)}>Hoy</button>
+            </div>
+            <div style={{marginLeft:'auto'}} className="legend">
+              <span><i style={{background:'#D9941A'}}/>Reserva</span>
+              <span><i style={{background:'#FBFEFB',border:'1px solid #C7E0CC'}}/>Libre</span>
+            </div>
+          </div>
+
+          <div className="card" style={{padding:0,overflow:'auto'}}>
+            <div className="hgrid" style={{minWidth:980}}>
+              <div className="hh">Módulo</div>
+              {weekH.map((d, i) => {
+                const isToday = isoDate(d)===todayIso;
+                return <div key={i} className={`hh ${isToday?'today':''}`}>{DIA_CORTO[i]}<small>{d.toLocaleDateString('es-CL',{day:'2-digit',month:'2-digit'})}</small></div>;
+              })}
+              {data.modulos.map((mod, mi) => {
+                const modIsNow = moduleRunningNow(mod, now);
+                return (
+                  <React.Fragment key={mod.num}>
+                    <div className={`mod ${modIsNow?'now':''}`}><b>Mód. {mod.num}</b>{mod.inicio}<br/>{mod.fin}</div>
+                    {gridH[mi].map((ress, di) => {
+                      const isWeekend = di>=5;
+                      const dIso = isoDate(weekH[di]);
+                      const cellIsNow = isTodayIso(dIso) && modIsNow;
+                      if(ress.length===0){
+                        return <div key={di} className={`cl libre ${isWeekend?'weekend':''} ${cellIsNow?'now-cell':''}`} title="Espacio disponible"><div className="blk-libre">LIBRE</div></div>;
+                      }
+                      return (
+                        <div key={di} className={`cl ${isWeekend?'weekend':''} ${cellIsNow?'now-cell':''}`}>
+                          {ress.map((r,i)=>{
+                            const mIni = moduloInfo(data.modulos, r.mi), mFin = moduloInfo(data.modulos, r.mf);
+                            const enCurso = isTodayIso(dIso) && mIni && mFin && inRangeNow(mIni.inicio, mFin.fin, now);
+                            return (
+                              <div key={'r'+i} className={`blk ${r.es==='pendiente'?'blk-pen':'blk-rs'} ${enCurso?'now':''}`} title={`${r.mo} · ${r.do||''} · Mód.${r.mi}-${r.mf}${enCurso?' · EN CURSO':''}`}>
+                                <b>{r.es==='pendiente'?'⏳ ':'📌 '}{(r.mo||'').slice(0,24)}</b>
+                                {r.do && <div style={{opacity:.8,fontSize:9.5}}>👤 {(r.do||'').slice(0,22)}</div>}
+                              </div>
+                            );
+                          })}
+                        </div>
+                      );
+                    })}
+                  </React.Fragment>
+                );
+              })}
+            </div>
+          </div>
         </div>
       )}
 
