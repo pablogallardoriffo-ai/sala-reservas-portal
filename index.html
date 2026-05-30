@@ -5081,19 +5081,26 @@ function GestionesPanel({ data, auditorias, loading, onReload, onSave, onDelete,
   };
   const filtroActivo = !!(escuela||auditor||salaF||estadoF||siglaF||q);
 
-  const exportarCSV = () => {
-    const esc = (s) => {
-      const str = String(s ?? '');
-      return /[",\n;]/.test(str) ? `"${str.replace(/"/g, '""')}"` : str;
-    };
-    const headers = ['fecha','auditor','sala','seccion','asignatura','docente','escuela','hora_inicio','hora_fin','llego_a_hora','hora_llegada','obs_inicio','termino_a_hora','hora_salida','obs_fin'];
-    const lines = [headers.join(';'), ...filtradas.map(a => headers.map(h => esc(a[h])).join(';'))];
-    const blob = new Blob(['﻿'+lines.join('\n')], { type:'text/csv;charset=utf-8' });
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement('a');
-    link.href = url; link.download = `gestiones_${isoDate(new Date())}.csv`;
-    document.body.appendChild(link); link.click(); link.remove();
-    URL.revokeObjectURL(url);
+  // Exporta auditorías filtradas a .xlsx (formato único de descarga).
+  const exportarXLSX = () => {
+    const headers = [
+      { key:'fecha',          label:'Fecha' },
+      { key:'auditor',        label:'Auditor' },
+      { key:'sala',           label:'Sala' },
+      { key:'seccion',        label:'Sección' },
+      { key:'asignatura',     label:'Asignatura' },
+      { key:'docente',        label:'Docente' },
+      { key:'escuela',        label:'Escuela' },
+      { key:'hora_inicio',    label:'Hora inicio' },
+      { key:'hora_fin',       label:'Hora fin' },
+      { key:'llego_a_hora',   label:'¿Llegó a hora?' },
+      { key:'hora_llegada',   label:'Hora llegada' },
+      { key:'obs_inicio',     label:'Obs. inicio' },
+      { key:'termino_a_hora', label:'¿Terminó a hora?' },
+      { key:'hora_salida',    label:'Hora salida' },
+      { key:'obs_fin',        label:'Obs. fin' },
+    ];
+    downloadXlsx('gestiones', filtradas, headers);
   };
 
   // Reporte por jefatura: agrupa los registros filtrados por jefe directo
@@ -5177,7 +5184,7 @@ ${g.filas.sort((a,b)=> (b.fecha||'').localeCompare(a.fecha||'')).map(r => {
           </div>
           <div className="row" style={{gap:6,flexWrap:'wrap'}}>
             <button className="btn btn-ghost" style={{fontSize:12,padding:'6px 12px'}} onClick={onReload}>🔄 Recargar</button>
-            <button className="btn btn-ghost" style={{fontSize:12,padding:'6px 12px'}} onClick={exportarCSV}>📥 CSV</button>
+            <button className="btn btn-ghost" style={{fontSize:12,padding:'6px 12px'}} onClick={exportarXLSX}>📊 Excel</button>
             <button className="btn btn-ghost" style={{fontSize:12,padding:'6px 12px'}} onClick={reportePorJefatura}>📄 PDF por jefatura</button>
           </div>
         </div>
@@ -8396,7 +8403,7 @@ function Reportes({ data, reservas }){
   // === Helpers de exportación ===
   const imprimir = () => window.print();
 
-  // Headers de cada reporte (configurables para CSV y tabla)
+  // Headers de cada reporte (configurables para la tabla y la exportación a Excel)
   const HEADERS = {
     escuela: [
       { key:'codigo',       label:'Código' },
@@ -8578,7 +8585,7 @@ function Reportes({ data, reservas }){
               </tbody>
             </table>
           </div>
-          {reporteDocentes.length > 500 && <div className="muted" style={{padding:10,textAlign:'center',fontSize:12}}>Mostrando primeros 500 de {reporteDocentes.length}. Exporta CSV para tener todos.</div>}
+          {reporteDocentes.length > 500 && <div className="muted" style={{padding:10,textAlign:'center',fontSize:12}}>Mostrando primeros 500 de {reporteDocentes.length}. Exporta a Excel para tener todos.</div>}
         </div>
       )}
 
@@ -8831,18 +8838,8 @@ function ReporteDocente({ data }){
     return arr;
   }, [statsDocente, jefaturaIdx]);
 
-  // Exportar CSV plano (1 fila por docente con su jefatura)
-  const toCsv = (rows, headers) => {
-    const escape = (s) => {
-      const str = String(s ?? '');
-      return /[",\n;]/.test(str) ? `"${str.replace(/"/g, '""')}"` : str;
-    };
-    return [
-      headers.map(h => escape(h.label)).join(';'),
-      ...rows.map(r => headers.map(h => escape(typeof h.value==='function' ? h.value(r) : r[h.key])).join(';'))
-    ].join('\n');
-  };
-  const exportarCSV = () => {
+  // Exporta el reporte agrupado por jefatura a .xlsx.
+  const exportarXLSX = () => {
     const filas = [];
     for(const g of grupos){
       for(const d of g.docentes){
@@ -8853,7 +8850,7 @@ function ReporteDocente({ data }){
         });
       }
     }
-    const csv = toCsv(filas, [
+    downloadXlsx('reporte_docente', filas, [
       { key:'jefe',           label:'Jefe directo' },
       { key:'jefe_correo',    label:'Correo jefe' },
       { key:'escuela',        label:'Escuela' },
@@ -8864,12 +8861,6 @@ function ReporteDocente({ data }){
       { key:'salas',          label:'Salas distintas' },
       { key:'alumnos',        label:'Alumnos atendidos' },
     ]);
-    const blob = new Blob(['﻿'+csv], { type:'text/csv;charset=utf-8' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url; a.download = `reporte_docente_${isoDate(new Date())}.csv`;
-    document.body.appendChild(a); a.click(); a.remove();
-    URL.revokeObjectURL(url);
   };
 
   const noHayJefaturas = !((data.docente_jefes||[]).length);
@@ -8932,7 +8923,7 @@ function ReporteDocente({ data }){
             <div className="sub">Click en una jefatura para ver el detalle de sus docentes</div>
           </div>
           <div className="row" style={{gap:8}}>
-            <button className="btn btn-ghost" style={{fontSize:12,padding:'6px 12px'}} onClick={exportarCSV}>📥 CSV completo</button>
+            <button className="btn btn-ghost" style={{fontSize:12,padding:'6px 12px'}} onClick={exportarXLSX}>📊 Excel completo</button>
             <button className="btn btn-ghost" style={{fontSize:12,padding:'6px 12px'}} onClick={()=>window.print()}>🖨 Imprimir</button>
           </div>
         </div>
