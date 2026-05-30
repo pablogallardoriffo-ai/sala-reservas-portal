@@ -1049,14 +1049,14 @@ const RECINTOS_INTERNOS_MAP = new Map(RECINTOS_INTERNOS.map(r => [r.code, r]));
 // (frontis contra el edificio) vs perpendiculares (aromos en grilla).
 const ESTACIONAMIENTOS = {
   FRONTIS: { nombre:'Frontis', n:8,  cols:8, diagonal:true,  desc:'Frente al edificio' },
-  AROMOS:  { nombre:'Aromos',  n:37, layout:'aromos',        desc:'Los Aromos · 36 espacios + uno bloqueado' },
+  AROMOS:  { nombre:'Aromos',  n:37, layout:'aromos',        desc:'Los Aromos · 37 espacios' },
   CTI1:    { nombre:'CTI 1',   n:1,  cols:1, diagonal:false, desc:'Estacionamiento CTI 1' },
   CTI2:    { nombre:'CTI 2',   n:1,  cols:1, diagonal:false, desc:'Estacionamiento CTI 2' },
 };
 // Disposición real de Aromos basada en plano de jefaturas. 37 espacios:
 // 1-5 abajo (jefaturas), 6-16 columna derecha (algunos nominativos), 17-19
 // arriba (entrada/guardia), 20-30 columna izquierda, 31-36 al medio en dos
-// hileras, 37 al medio bloqueado (cruzado en plano). Los nombres son la
+// hileras, 37 al medio (habilitado para reserva). Los nombres son la
 // asignación nominativa actual (referencial, solo se muestra como tooltip).
 const AROMOS_LAYOUT = [
   // Fila inferior: 5 espacios de jefatura
@@ -1100,8 +1100,8 @@ const AROMOS_LAYOUT = [
   { num:31, x:215, y:472, w:96, h:38 },
   { num:32, x:313, y:472, w:96, h:38 },
   { num:33, x:411, y:472, w:96, h:38 },
-  // 37 al centro · bloqueado (cruzado) — no se reserva
-  { num:37, x:313, y:424, w:96, h:46, bloqueado:true },
+  // 37 al centro (antes bloqueado) — ahora habilitado para reserva
+  { num:37, x:313, y:424, w:96, h:46 },
 ];
 const estSpotCode = (lotId, i) => `EST-${lotId}-${String(i+1).padStart(2,'0')}`;
 
@@ -6681,7 +6681,7 @@ function MapaAromos({ lotId, ocupados, seleccionado, onSelect }){
     <svg viewBox={`0 0 ${W} ${H}`} style={{width:'100%',maxWidth:660,height:'auto',background:'var(--surface-2)',borderRadius:10,border:'1px solid var(--border-soft)'}}>
       {/* Contorno orgánico del lote (referencia visual) */}
       <ellipse cx={W/2} cy={420} rx={W/2-6} ry={310} fill="rgba(127,127,127,.05)" stroke="var(--border-soft)" strokeWidth="1.5" strokeDasharray="5 5"/>
-      <text x={16} y={26} fontSize="13" fontWeight="700" fill="var(--text-muted)">Aromos · 36 espacios (1 bloqueado)</text>
+      <text x={16} y={26} fontSize="13" fontWeight="700" fill="var(--text-muted)">Aromos · 37 espacios</text>
       {/* Iconos referenciales: GUARDIA + ENTRADA + acceso peatonal abajo */}
       <rect x={245} y={48} width={130} height={42} rx={4} fill="#60a5fa" opacity=".25" stroke="#3b82f6"/>
       <text x={310} y={74} fontSize="11" fontWeight="700" textAnchor="middle" fill="#1e40af">GUARDIA</text>
