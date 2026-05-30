@@ -1,0 +1,12 @@
+{
+  "name": "sala-reservas-portal",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Portal de reservas de salas y recintos · Duoc UC Viña del Mar (app de un solo archivo index.html). El package.json es solo para correr las pruebas; la app no requiere build.",
+  "scripts": {
+    "test": "node --test"
+  },
+  "devDependencies": {
+    "esbuild": "^0.21.5"
+  }
+}
