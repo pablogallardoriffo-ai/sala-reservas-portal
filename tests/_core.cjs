@@ -45,7 +45,7 @@ const sandbox = {
 // Nombres de nivel módulo que queremos exponer para testear.
 const EXPORTS = [
   'toMin','isoDate','addDays','dowFromIso','fechaToDow','getMonday','fmtFecha',
-  'DOW_LBL','dwLabel','reservaOcurreEn','ocurrenciasEntre',
+  'DOW_LBL','dwLabel','reservaOcurreEn','ocurrenciasEntre','ocurrenciasMensuales','esRecurrente','recurrenciaLabel',
   'rangeOverlapsModules','moduleInTimeRange','moduloInfo',
   'estSpotCode','esRecintoInterno','nombreRecintoInterno','jefaturaDeAromos',
   'applyRecintosCfg','getRecintosCfg','buildAsignacionesJefaturas',

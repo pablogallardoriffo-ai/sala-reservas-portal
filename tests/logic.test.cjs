@@ -45,6 +45,30 @@ test('reservaOcurreEn: liberación (licencia) libera el rango', () => {
   assert.strictEqual(core.reservaOcurreEn(r, '2026-06-22'), true);  // después
 });
 
+test('reservaOcurreEn: mensual (ts=MES) ocurre el mismo día del mes', () => {
+  const r = { fi: '2026-03-15', ff: '2026-06-30', ts: 'MES' };
+  assert.strictEqual(core.reservaOcurreEn(r, '2026-03-15'), true);
+  assert.strictEqual(core.reservaOcurreEn(r, '2026-04-15'), true);
+  assert.strictEqual(core.reservaOcurreEn(r, '2026-05-15'), true);
+  assert.strictEqual(core.reservaOcurreEn(r, '2026-04-16'), false); // otro día
+  assert.strictEqual(core.reservaOcurreEn(r, '2026-07-15'), false); // fuera de rango
+});
+
+test('ocurrenciasMensuales: una por mes y salta meses sin ese día', () => {
+  const occ = core.ocurrenciasMensuales('2026-03-15', '2026-06-30');
+  assert.deepStrictEqual(occ, ['2026-03-15','2026-04-15','2026-05-15','2026-06-15']);
+  // día 31: enero, marzo, mayo... (meses sin 31 se omiten)
+  const occ31 = core.ocurrenciasMensuales('2026-01-31', '2026-05-31');
+  assert.deepStrictEqual(occ31, ['2026-01-31','2026-03-31','2026-05-31']);
+});
+
+test('esRecurrente / recurrenciaLabel cubren semanal y mensual', () => {
+  assert.strictEqual(core.esRecurrente({ dw: '1010100' }), true);
+  assert.strictEqual(core.esRecurrente({ ts: 'MES', fi: '2026-03-15' }), true);
+  assert.strictEqual(core.esRecurrente({ ts: 'NO' }), false);
+  assert.match(core.recurrenciaLabel({ ts: 'MES', fi: '2026-03-15' }), /Mensual.*15/);
+});
+
 test('ocurrenciasEntre: cuenta clases del patrón', () => {
   // Todos los martes de 18 semanas desde un martes
   const occ = core.ocurrenciasEntre('2026-03-03', core.isoDate(core.addDays(new Date('2026-03-03T00:00:00'), 7 * 18 - 1)), '0100000');
