@@ -2257,7 +2257,7 @@ function Shell({ user, mode, onReconfigure, onLogout, view, setView, children, t
       ['recintos',  'Recintos Internos',        I.salas,     ALL],
       ['reportes',  'Reportes',                 I.reports,   ['admin','reservador']],
       ['repDoc',    'Reporte Docente',          I.reports,   ['admin']],
-      ['gestDoc',   'Gestión Docente',          I.calc,      ['admin','reservador']],
+      ['gestDoc',   '🔒 Gestión Docente',       I.calc,      ['admin','reservador']],
       ['gestiones', '🔒 Gestiones',             I.users,     ['admin']],
       ['usuarios',  'Usuarios',                 I.users,     ['admin']],
       ['importar',  'Importar datos',           I.upload,    ['admin']],
@@ -3701,9 +3701,11 @@ const GESTIONES_CFG_KEY = 'sr_gestiones_cfg_v1';
 const GESTIONES_AUTH_KEY = 'sr_gestiones_auth_v1'; // sessionStorage
 const GESTIONES_LOCK_MIN_KEY = 'sr_gestiones_lock_min_v1';
 // Clave de Gestión Docente (mismo esquema compartido que Gestiones).
+// _v2: la v1 quedó con hashes parciales de intentos previos de cambio que
+// dejaban fuera la default; v2 parte limpio para que 010203 funcione.
 const GD_PASSWORD = '010203';
-const GD_PASSWORD_KEY = 'sr_gd_pw_v1';
-const GD_AUTH_KEY = 'sr_gd_auth_v1';
+const GD_PASSWORD_KEY = 'sr_gd_pw_v2';
+const GD_AUTH_KEY = 'sr_gd_auth_v2';
 
 // Hash simple (FNV-1a 32-bit) — no es criptográfico pero alcanza para no
 // guardar la contraseña en texto plano en localStorage. La PW real sigue
@@ -5407,6 +5409,14 @@ function GestionDocente({ db, user, toast }){
     } else { setPwErr(true); }
   };
   const lock = () => { sessionStorage.removeItem(GD_AUTH_KEY); setUnlocked(false); };
+  // Recuperación: si quedaste fuera (clave olvidada o hash inconsistente),
+  // restablece a la original 010203 borrando el hash guardado (local + nube).
+  const resetGate = async () => {
+    if(!window.confirm('¿Restablecer la contraseña de Gestión Docente a la original (010203)?')) return;
+    try { if(db?.setSetting) await db.setSetting(GD_PASSWORD_KEY, null, user?.username); } catch(e){ console.warn('reset gate:', e.message); }
+    localStorage.removeItem(GD_PASSWORD_KEY);
+    setStoredHash(null); setPw(''); setPwErr(false);
+  };
 
   const [horaInput, setHoraInput]   = useState('');
   const [horasInput, setHorasInput] = useState('');
@@ -5433,6 +5443,7 @@ function GestionDocente({ db, user, toast }){
             </div>
             <button type="submit" className="btn btn-primary btn-block" disabled={!hashReady}>{hashReady ? 'Ingresar' : 'Conectando…'}</button>
           </form>
+          <button type="button" className="btn btn-ghost btn-sm btn-block" style={{marginTop:10,fontSize:11.5}} onClick={resetGate}>¿Olvidaste la clave? Restaurar a 010203</button>
         </div>
       </div>
     );
