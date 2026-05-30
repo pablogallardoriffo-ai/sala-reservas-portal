@@ -667,6 +667,7 @@
     .week-grid .row-h.now{
       background:linear-gradient(180deg,#FF453A,#D70015) !important;color:#fff !important;
     }
+    .heat-scroll-hint{display:none}  /* solo se muestra en móvil */
     .heat-tbl tbody tr.now-row td.lab{
       background:linear-gradient(180deg,#FF453A,#D70015) !important;color:#fff !important;
     }
@@ -924,10 +925,15 @@
       }
       .tbl th, .tbl td{padding:8px 6px;font-size:12px}
 
-      /* Heat tbl scroll */
-      .heat-tbl thead th{padding:6px 3px;font-size:9.5px}
-      .heat-tbl tbody td{padding:5px 2px;font-size:11px;min-width:50px}
+      /* Heat tbl scroll: en móvil dejamos que la tabla mantenga ancho real
+         (no width:100% ni table-layout:fixed) para que cada día tenga su
+         columna legible y el contenedor permita scroll horizontal real. */
+      .heat-tbl{width:auto !important; table-layout:auto !important; min-width:640px}
+      .heat-tbl thead th{padding:6px 6px;font-size:9.5px;min-width:50px}
+      .heat-tbl tbody td{padding:5px 4px;font-size:11px;min-width:54px}
       .heat-tbl tbody td.lab{font-size:10px}
+      /* Hint de scroll en móvil: el contenedor del mapa de calor */
+      .heat-scroll-hint{font-size:10.5px;color:var(--text-muted);padding:4px 8px 0;display:block}
 
       /* Week grid colapsa */
       .week-grid{grid-template-columns:60px repeat(6,minmax(60px,1fr));overflow-x:auto}
@@ -3357,6 +3363,70 @@ function Dashboard({ data, reservas, user, db, onGoView, onGoNuevaPrefill }){
   );
 }
 
+/* ========= MODAL · CLASES EN CURSO / PRÓXIMAS =========
+   Lista las clases de HOY filtradas por estado temporal: "en curso" (hi<=now<hf)
+   o "próximas" (hi en los próximos 40 min, ~ un módulo). Agrupable por sala o
+   docente; click en una fila navega al horario correspondiente. */
+function ModalEnCursoProximas({ data, modo, agrupar, onClose, onIrA }){
+  const now = useNowMinutes();
+  const todayIso = isoDate(new Date());
+  const sabanaIdx = useMemo(()=> buildSabanaIndex(data.programacion), [data.programacion]);
+  const hhmm = (n) => `${String(Math.floor(n/60)).padStart(2,'0')}:${String(n%60).padStart(2,'0')}`;
+  const nowStr = hhmm(now);
+  const in40 = hhmm(now + 40);
+  const items = useMemo(()=>{
+    const ses = sesionesEnFecha(data, todayIso, null, sabanaIdx);
+    const dedup = new Set(); const out = [];
+    for(const s of ses){
+      const k = `${s.sc||''}|${s.s||''}|${s.hi}|${s.hf}`;
+      if(dedup.has(k)) continue; dedup.add(k);
+      if(modo==='enCurso'  && !(s.hi <= nowStr && nowStr < s.hf)) continue;
+      if(modo==='proximas' && !(s.hi > nowStr && s.hi <= in40))    continue;
+      if(agrupar==='docente' && !s.d) continue;
+      out.push(s);
+    }
+    out.sort((a,b)=> a.hi.localeCompare(b.hi) || (a.s||'').localeCompare(b.s||''));
+    return out;
+  },[data, sabanaIdx, todayIso, modo, agrupar, nowStr, in40]);
+
+  const titulo = modo==='enCurso' ? '🟢 Clases en curso ahora' : '🟡 Clases que empiezan en menos de 40 min';
+  const vacio  = modo==='enCurso' ? 'No hay clases en curso en este momento.' : 'No hay clases por comenzar en los próximos 40 minutos.';
+
+  return (
+    <Modal title={titulo} onClose={onClose} wide>
+      <div className="muted" style={{fontSize:12,marginBottom:8}}>
+        {fmtFecha(todayIso)} · ahora {nowStr}{modo==='proximas' && ` → ventana hasta ${in40}`} · {items.length} {agrupar==='docente'?'docente(s)':'sala(s)'}
+      </div>
+      {items.length === 0 ? (
+        <div className="empty" style={{padding:24}}><span className="emoji">📭</span>{vacio}</div>
+      ) : (
+        <div className="tbl-scroll" style={{maxHeight:480}}>
+          <table className="tbl">
+            <thead><tr>
+              {agrupar==='docente' ? <th>Docente</th> : <th>Sala</th>}
+              <th>Horario</th><th>Asignatura</th><th>Sección</th>
+              {agrupar==='docente' ? <th>Sala</th> : <th>Docente</th>}
+              <th style={{textAlign:'right'}}>Acción</th>
+            </tr></thead>
+            <tbody>
+              {items.map((s,i)=>(
+                <tr key={i}>
+                  <td><b style={{color:'var(--primary)'}}>{agrupar==='docente' ? (s.d||'—') : (s.s||'—')}</b></td>
+                  <td className="nowrap" style={{fontFamily:'monospace'}}>{s.hi}–{s.hf}</td>
+                  <td style={{maxWidth:280}}>{(s.a||s.de||'').slice(0,46)}</td>
+                  <td>{s.sc||''}</td>
+                  <td>{agrupar==='docente' ? (s.s||'—') : (s.d||'—')}</td>
+                  <td style={{textAlign:'right'}}><button className="btn btn-sm btn-primary" onClick={()=>{ onIrA && onIrA(agrupar==='docente' ? s.d : s.s); onClose(); }}>Ver horario →</button></td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </Modal>
+  );
+}
+
 /* ========= MODAL · DETALLE DE CELDA (clase o reserva) ========= */
 function ModalDetalleItem({ item:r, tipo, fecha, modulos, onClose }){
   const fmtDT = (iso)=> iso ? new Date(iso).toLocaleString('es-CL',{day:'2-digit',month:'short',year:'numeric',hour:'2-digit',minute:'2-digit'}) : '—';
@@ -3408,12 +3478,21 @@ function Horario({ data, reservas, onGoNueva }){
   const [fecha, setFecha] = useState(today);
   const [sala, setSala] = useState(data.salas[0]?.codigo || '');
   const [detalle, setDetalle] = useState(null);
+  const [enCurso, setEnCurso] = useState(null); // 'enCurso' | 'proximas' | null
   const now = useNowMinutes();
 
   const monday = useMemo(()=> getMonday(fecha), [fecha]);
   const week = useMemo(()=> [0,1,2,3,4,5,6].map(i => addDays(monday, i)), [monday]);
 
   const sabanaIdx = useMemo(()=> buildSabanaIndex(data.programacion), [data.programacion]);
+
+  // Si la sala es un recinto interno (INT-* o EST-*), sumamos las asignaciones
+  // fijas de jefaturas para que el horario muestre correctamente quién lo
+  // ocupa Lun-Vie. Para salas académicas, asignaciones queda vacío.
+  const reservasParaSala = useMemo(()=>{
+    if(!esRecintoInterno(sala)) return reservas;
+    return [...buildAsignacionesJefaturas(), ...reservas];
+  },[reservas, sala]);
 
   const grid = useMemo(()=>{
     // Pre-cálculo por día: una sola pasada de sesiones/reservas por cada uno de
@@ -3422,7 +3501,7 @@ function Horario({ data, reservas, onGoNueva }){
     const sesPorDia = week.map(d => sesionesEnFecha(data, isoDate(d), sala, sabanaIdx));
     const resPorDia = week.map(d => {
       const dIso = isoDate(d);
-      return reservas.filter(r => r.r === sala && reservaOcurreEn(r, dIso) && r.es !== 'rechazada');
+      return reservasParaSala.filter(r => r.r === sala && reservaOcurreEn(r, dIso) && r.es !== 'rechazada');
     });
     return data.modulos.map(mod => {
       return week.map((d, dw) => {
@@ -3431,9 +3510,22 @@ function Horario({ data, reservas, onGoNueva }){
         return { acads, ress };
       });
     });
-  },[data.programacion, data.eventos, data.modulos, reservas, sala, week, sabanaIdx]);
+  },[data.programacion, data.eventos, data.modulos, reservasParaSala, sala, week, sabanaIdx]);
 
-  const salaInfo = data.salas.find(s => s.codigo===sala);
+  // Catálogo unificado para el selector: salas académicas + recintos internos
+  // (catálogo + cada espacio de cada estacionamiento). Permite escribir el
+  // código directamente y ver el horario de cualquier recinto desde aquí.
+  const opcionesSala = useMemo(()=>{
+    const out = (data.salas||[]).map(s => ({ code:s.codigo, label:`${(s.nombre||'').slice(0,42)}`, grupo:'Salas académicas' }));
+    for(const r of RECINTOS_INTERNOS) out.push({ code:r.code, label:r.nombre, grupo:'🏢 Recintos internos' });
+    for(const [id, cfg] of Object.entries(ESTACIONAMIENTOS)){
+      for(let i=0;i<cfg.n;i++) out.push({ code:estSpotCode(id,i), label:`${cfg.nombre} ${cfg.n>1?(i+1):''}`.trim(), grupo:`🅿 ${cfg.nombre}` });
+    }
+    return out;
+  },[data.salas]);
+  const salaAcadInfo = data.salas.find(s => s.codigo===sala);
+  const salaInterna = esRecintoInterno(sala);
+  const salaInfo = salaAcadInfo || (salaInterna ? { codigo:sala, nombre:nombreRecintoInterno(sala), tipo:sala.startsWith('EST-')?'Estacionamiento':'Recinto interno', capacidad:'—', responsable:'—' } : null);
   const todayIso = isoDate(new Date());
   const modActivo = useMemo(()=> data.modulos.find(m => moduleRunningNow(m, now)), [data.modulos, now]);
   const nowStr = `${String(Math.floor(now/60)).padStart(2,'0')}:${String(now%60).padStart(2,'0')}`;
@@ -3442,11 +3534,11 @@ function Horario({ data, reservas, onGoNueva }){
     <div className="stack">
       <div className="filters">
         <div className="field" style={{maxWidth:280}}>
-          <label>Sala / Recinto (escribe el código o elige)</label>
-          <input list="horario-salas-list" value={sala} placeholder="Ej: VI-S82"
-            onChange={e=>{ const v=e.target.value; const hit=data.salas.find(s=>String(s.codigo).toLowerCase()===v.toLowerCase()); setSala(hit?hit.codigo:v); }}/>
+          <label>Sala / Recinto (escribe o elige)</label>
+          <input list="horario-salas-list" value={sala} placeholder="Ej: VI-S82, INT-CN, EST-AROMOS-13"
+            onChange={e=>{ const v=e.target.value; const hit=opcionesSala.find(o=>String(o.code).toLowerCase()===v.toLowerCase()); setSala(hit?hit.code:v); }}/>
           <datalist id="horario-salas-list">
-            {data.salas.map(s=> <option key={s.codigo} value={s.codigo}>{(s.nombre||'').slice(0,42)}</option>)}
+            {opcionesSala.map(o=> <option key={o.code} value={o.code}>{o.grupo} · {o.label}</option>)}
           </datalist>
         </div>
         <div className="field" style={{maxWidth:180}}>
@@ -3461,6 +3553,8 @@ function Horario({ data, reservas, onGoNueva }){
           <button className="btn-icon" title="Semana siguiente" onClick={()=>setFecha(isoDate(addDays(new Date(fecha+'T00:00:00'), 7)))}>›</button>
           <button className="btn btn-sm btn-ghost" onClick={()=>setFecha(todayIso)}>Hoy</button>
         </div>
+        <button className="btn btn-sm" style={{background:'rgba(48,209,88,.18)',color:'var(--success-text)',border:'1px solid rgba(48,209,88,.35)'}} onClick={()=>setEnCurso('enCurso')} title="Ver salas con clase en curso ahora">🟢 En curso</button>
+        <button className="btn btn-sm" style={{background:'rgba(255,159,10,.18)',color:'var(--warning-text)',border:'1px solid rgba(255,159,10,.35)'}} onClick={()=>setEnCurso('proximas')} title="Salas con clase que empieza en menos de 40 min">🟡 Próximas (40 min)</button>
         <div style={{marginLeft:'auto'}} className="legend">
           <span><i style={{background:'#3B5998'}}/>Clase</span>
           <span><i style={{background:'#D9941A'}}/>Reserva</span>
@@ -3548,6 +3642,7 @@ function Horario({ data, reservas, onGoNueva }){
         </div>
       </div>
       {detalle && <ModalDetalleItem {...detalle} modulos={data.modulos} onClose={()=>setDetalle(null)}/>}
+      {enCurso && <ModalEnCursoProximas data={data} modo={enCurso} agrupar="sala" onClose={()=>setEnCurso(null)} onIrA={(codigo)=>{ setSala(codigo); setFecha(todayIso); }}/>}
     </div>
   );
 }
@@ -3562,6 +3657,7 @@ function HorarioDocente({ data }){
   const [q, setQ] = useState('');
   const [fecha, setFecha] = useState(isoDate(new Date()));
   const [detalle, setDetalle] = useState(null);
+  const [enCurso, setEnCurso] = useState(null);
   const now = useNowMinutes();
 
   const usaEventos = hasEventos(data);
@@ -3665,6 +3761,10 @@ function HorarioDocente({ data }){
             <label>Semana</label>
             <input type="date" value={fecha} onChange={e=>setFecha(e.target.value)}/>
           </div>
+          <div className="row" style={{gap:8,alignItems:'flex-end'}}>
+            <button className="btn btn-sm" style={{background:'rgba(48,209,88,.18)',color:'var(--success-text)',border:'1px solid rgba(48,209,88,.35)'}} onClick={()=>setEnCurso('enCurso')} title="Docentes con clase en curso ahora">🟢 En curso</button>
+            <button className="btn btn-sm" style={{background:'rgba(255,159,10,.18)',color:'var(--warning-text)',border:'1px solid rgba(255,159,10,.35)'}} onClick={()=>setEnCurso('proximas')} title="Docentes con clase que empieza en menos de 40 min">🟡 Próximas (40 min)</button>
+          </div>
         </div>
       </div>
 
@@ -3759,6 +3859,7 @@ function HorarioDocente({ data }){
         </>
       )}
       {detalle && <ModalDetalleItem {...detalle} modulos={data.modulos} onClose={()=>setDetalle(null)}/>}
+      {enCurso && <ModalEnCursoProximas data={data} modo={enCurso} agrupar="docente" onClose={()=>setEnCurso(null)} onIrA={(nombre)=>{ setDocente(nombre); setFecha(isoDate(new Date())); }}/>}
     </div>
   );
 }
@@ -8983,7 +9084,8 @@ function MapaCalor({ data, user }){
             <span style={{color:'var(--text-muted)'}}>{maxCell.toLocaleString('es-CL')}</span>
           </div>
         </div>
-        <div style={{overflowX:'auto'}}>
+        <div style={{overflowX:'auto',WebkitOverflowScrolling:'touch'}}>
+          <small className="heat-scroll-hint">↔ Desliza horizontalmente para ver todos los días.</small>
           <table className="heat-tbl">
             <thead>
               <tr>
