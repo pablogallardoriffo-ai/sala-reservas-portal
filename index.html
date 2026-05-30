@@ -8500,6 +8500,93 @@ function Reportes({ data, reservas }){
     };
   }, [reservasFiltradas]);
 
+  // === Anomalías detectadas en la programación cargada ===
+  // - sobreaforo: clases con más inscritos que la capacidad de la sala
+  // - sin_alumnos: clases con 0 inscritos (¿sección cancelada o sin registrar?)
+  // - sala_virtual: clase asignada a una sala marcada como VIRTUAL (no presencial)
+  // - choque_docente: el mismo docente con clase paralela en distinto recinto
+  const reporteAnomalias = useMemo(()=>{
+    const capBySala = new Map(data.salas.map(s => [s.codigo, s.capacidad||0]));
+    const infoSala = new Map(data.salas.map(s => [s.codigo, s]));
+    const sobreaforo = [], sinAlumnos = [], salaVirtual = [], choqueDocente = [];
+    const porDocenteSlot = new Map();        // d|fi|hi → array de sesiones
+    const seenInstance = new Set();
+    for(const s of sesiones){
+      const k = `${s.s||''}|${s.sc||''}|${s.hi}|${s.hf}|${s.fi||s.dw||''}`;
+      if(seenInstance.has(k)) continue;
+      seenInstance.add(k);
+      const cap = capBySala.get(s.s) || 0;
+      const ins = Number(s.i) || 0;
+      const sInfo = infoSala.get(s.s);
+      if(cap > 0 && ins > cap) sobreaforo.push({ ...s, cap, exceso: ins - cap });
+      if(s.sc && ins === 0) sinAlumnos.push(s);
+      if(sInfo && isSalaVirtual(sInfo) && ins > 0) salaVirtual.push({ ...s, capacidad: cap });
+      if(s.d && s.fi){
+        const k2 = `${s.d}|${s.fi}|${s.hi}|${s.hf}`;
+        if(!porDocenteSlot.has(k2)) porDocenteSlot.set(k2, []);
+        porDocenteSlot.get(k2).push(s);
+      }
+    }
+    for(const [k, arr] of porDocenteSlot){
+      if(arr.length > 1){
+        const salas = [...new Set(arr.map(x => x.s))];
+        if(salas.length > 1) choqueDocente.push({ docente: arr[0].d, fi: arr[0].fi, hi: arr[0].hi, hf: arr[0].hf, salas, sesiones: arr });
+      }
+    }
+    sobreaforo.sort((a,b)=> b.exceso - a.exceso);
+    return { sobreaforo, sinAlumnos, salaVirtual, choqueDocente, total: sobreaforo.length+sinAlumnos.length+salaVirtual.length+choqueDocente.length };
+  }, [sesiones, data.salas]);
+
+  // === Comparativa con período anterior === se compara con el mismo número
+  // de días previos al rango filtrado. Sin rango, no se calcula.
+  const reporteComparativa = useMemo(()=>{
+    if(!filt.desde || !filt.hasta) return null;
+    const start = new Date(filt.desde+'T00:00:00');
+    const end   = new Date(filt.hasta+'T00:00:00');
+    const dias  = Math.round((end - start)/86400000) + 1;
+    if(dias < 1) return null;
+    const prevEnd   = new Date(start.getTime() - 86400000);
+    const prevStart = new Date(prevEnd.getTime() - (dias-1)*86400000);
+    const prevFi = isoDate(prevStart), prevFf = isoDate(prevEnd);
+    const metrics = (fi, ff) => {
+      const ses = sesionesAll.filter(s => {
+        if(filt.escuela && s.es !== filt.escuela) return false;
+        if(filt.jornada && s.j !== filt.jornada) return false;
+        if(filt.edificio && edifBySala.get(s.s) !== filt.edificio) return false;
+        return s.fi && s.fi >= fi && s.fi <= ff;
+      });
+      const seen = new Set(); let sesionesN = 0; const salas = new Set(); const docentes = new Set(); const alumPorSec = new Map();
+      for(const s of ses){
+        const k = `${s.sc||''}|${s.s||''}|${s.hi}|${s.hf}|${s.fi||''}`;
+        if(seen.has(k)) continue; seen.add(k);
+        sesionesN++;
+        if(s.s) salas.add(s.s);
+        if(s.d) docentes.add(s.d);
+        if(s.sc){ const ins=Number(s.i)||0; const p=alumPorSec.get(s.sc)||0; if(ins>p) alumPorSec.set(s.sc, ins); }
+      }
+      const reservasN = (reservas||[]).filter(r => r.fi >= fi && r.fi <= ff).length;
+      return {
+        sesiones: sesionesN, salas: salas.size, docentes: docentes.size,
+        alumnos: [...alumPorSec.values()].reduce((a,b)=>a+b,0), reservas: reservasN,
+      };
+    };
+    const actual = metrics(filt.desde, filt.hasta);
+    const prev   = metrics(prevFi, prevFf);
+    const delta = (a,b) => b===0 ? (a>0?100:0) : Math.round(((a-b)/b)*100);
+    return {
+      periodoActual: { fi: filt.desde, ff: filt.hasta, dias },
+      periodoPrev:   { fi: prevFi,     ff: prevFf },
+      actual, prev,
+      deltas: {
+        sesiones: delta(actual.sesiones, prev.sesiones),
+        alumnos:  delta(actual.alumnos,  prev.alumnos),
+        docentes: delta(actual.docentes, prev.docentes),
+        salas:    delta(actual.salas,    prev.salas),
+        reservas: delta(actual.reservas, prev.reservas),
+      },
+    };
+  }, [filt, sesionesAll, reservas, edifBySala]);
+
   // === Reporte de recintos internos === uso real del catálogo interno (salas,
   // equipos y vehículo) y de cada espacio de estacionamiento.
   const reporteRecintos = useMemo(()=>{
@@ -8544,8 +8631,10 @@ function Reportes({ data, reservas }){
     { key:'docente',  label:'👨‍🏫 Carga docente', count: reporteDocentes.length },
     { key:'salas',    label:'🏫 Salas subutilizadas', count: reporteSalas.length },
     { key:'semana',   label:'📅 Por semana', count: reporteSemanas?.semanas?.length || 0, disabled: !reporteSemanas },
-    { key:'reservas', label:'📋 Reservas', count: reporteReservas.total },
-    { key:'recintos', label:'🅿 Recintos internos', count: reporteRecintos.total },
+    { key:'reservas',  label:'📋 Reservas', count: reporteReservas.total },
+    { key:'recintos',  label:'🅿 Recintos internos', count: reporteRecintos.total },
+    { key:'anomalias', label:'⚠ Anomalías', count: reporteAnomalias.total },
+    { key:'comparar',  label:'📈 Comparativa', count: reporteComparativa ? 1 : 0, disabled: !reporteComparativa },
   ];
 
   return (
@@ -8563,6 +8652,8 @@ function Reportes({ data, reservas }){
               {tab==='semana'  && 'Reporte · Ocupación por semana del semestre'}
               {tab==='reservas'&& 'Reporte · Reservas (académicas + internas)'}
               {tab==='recintos'&& 'Reporte · Uso de recintos internos'}
+              {tab==='anomalias'&& 'Reporte · Anomalías detectadas'}
+              {tab==='comparar'&& 'Reporte · Comparativa con período anterior'}
             </div>
             <div style={{fontSize:11,color:'#888',marginTop:2}}>Portal de Salas · 2026·1</div>
           </div>
@@ -8913,6 +9004,138 @@ function Reportes({ data, reservas }){
             </table>
           </div>
         </div>
+      )}
+
+      {tab==='anomalias' && (
+        <div className="stack">
+          <div className="grid grid-4" style={{gap:12}}>
+            <div className="kpi kpi-red"><span className="label">Sobreaforo</span><span className="value">{reporteAnomalias.sobreaforo.length}</span><span className="delta">clase &gt; capacidad</span><div className="icon">🚨</div></div>
+            <div className="kpi kpi-amber"><span className="label">Sin alumnos</span><span className="value">{reporteAnomalias.sinAlumnos.length}</span><span className="delta">inscritos = 0</span><div className="icon">👻</div></div>
+            <div className="kpi kpi-blue"><span className="label">En sala virtual</span><span className="value">{reporteAnomalias.salaVirtual.length}</span><span className="delta">¿debería ser presencial?</span><div className="icon">💻</div></div>
+            <div className="kpi kpi-red"><span className="label">Docente paralelo</span><span className="value">{reporteAnomalias.choqueDocente.length}</span><span className="delta">dos salas a la vez</span><div className="icon">⚠</div></div>
+          </div>
+
+          {reporteAnomalias.sobreaforo.length > 0 && (
+            <div className="card no-print-actions">
+              <div className="card-header"><div><h3>🚨 Sobreaforo (clase con más inscritos que capacidad)</h3><div className="sub">{reporteAnomalias.sobreaforo.length} caso{reporteAnomalias.sobreaforo.length!==1?'s':''}</div></div>
+                <button className="btn btn-ghost" style={{fontSize:12,padding:'6px 12px'}} onClick={()=>downloadXlsx('anomalias_sobreaforo', reporteAnomalias.sobreaforo, [
+                  {key:'sc',label:'Sección'},{key:'a',label:'Asignatura'},{key:'d',label:'Docente'},{key:'s',label:'Sala'},{key:'cap',label:'Capacidad'},{key:'i',label:'Inscritos'},{key:'exceso',label:'Exceso'},{key:'fi',label:'Fecha'},{key:'hi',label:'Inicio'},{key:'hf',label:'Fin'},
+                ])}>📊 Excel</button>
+              </div>
+              <div className="tbl-scroll" style={{maxHeight:380}}>
+                <table className="tbl">
+                  <thead><tr><th>Sección</th><th>Asignatura</th><th>Docente</th><th>Sala</th><th style={{textAlign:'right'}}>Cap.</th><th style={{textAlign:'right'}}>Inscritos</th><th style={{textAlign:'right'}}>Exceso</th></tr></thead>
+                  <tbody>
+                    {reporteAnomalias.sobreaforo.slice(0,200).map((s,i)=>(
+                      <tr key={i}><td>{s.sc}</td><td>{(s.a||'').slice(0,40)}</td><td>{s.d||'—'}</td><td><b>{s.s}</b></td><td style={{textAlign:'right'}}>{s.cap}</td><td style={{textAlign:'right'}}><b>{s.i}</b></td><td style={{textAlign:'right',color:'var(--danger-text)',fontWeight:700}}>+{s.exceso}</td></tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          )}
+
+          {reporteAnomalias.choqueDocente.length > 0 && (
+            <div className="card no-print-actions">
+              <div className="card-header"><div><h3>⚠ Docentes con clases paralelas (mismo horario, distinta sala)</h3><div className="sub">{reporteAnomalias.choqueDocente.length} caso{reporteAnomalias.choqueDocente.length!==1?'s':''}</div></div>
+                <button className="btn btn-ghost" style={{fontSize:12,padding:'6px 12px'}} onClick={()=>downloadXlsx('anomalias_choque_docente', reporteAnomalias.choqueDocente.map(c=>({docente:c.docente,fi:c.fi,hi:c.hi,hf:c.hf,salas:c.salas.join(', ')})), [{key:'docente',label:'Docente'},{key:'fi',label:'Fecha'},{key:'hi',label:'Inicio'},{key:'hf',label:'Fin'},{key:'salas',label:'Salas'}])}>📊 Excel</button>
+              </div>
+              <div className="tbl-scroll" style={{maxHeight:380}}>
+                <table className="tbl">
+                  <thead><tr><th>Docente</th><th>Fecha</th><th>Horario</th><th>Salas</th></tr></thead>
+                  <tbody>
+                    {reporteAnomalias.choqueDocente.slice(0,200).map((c,i)=>(
+                      <tr key={i}><td><b>{c.docente}</b></td><td>{fmtFecha(c.fi)}</td><td>{c.hi}–{c.hf}</td><td><span className="chip danger">{c.salas.join(' · ')}</span></td></tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          )}
+
+          {reporteAnomalias.salaVirtual.length > 0 && (
+            <div className="card no-print-actions">
+              <div className="card-header"><div><h3>💻 Sala VIRTUAL con clase presencial registrada</h3><div className="sub">{reporteAnomalias.salaVirtual.length} caso{reporteAnomalias.salaVirtual.length!==1?'s':''}</div></div>
+                <button className="btn btn-ghost" style={{fontSize:12,padding:'6px 12px'}} onClick={()=>downloadXlsx('anomalias_salas_virtuales', reporteAnomalias.salaVirtual, [{key:'sc',label:'Sección'},{key:'a',label:'Asignatura'},{key:'d',label:'Docente'},{key:'s',label:'Sala'},{key:'i',label:'Inscritos'},{key:'fi',label:'Fecha'},{key:'hi',label:'Inicio'},{key:'hf',label:'Fin'}])}>📊 Excel</button>
+              </div>
+              <div className="tbl-scroll" style={{maxHeight:300}}>
+                <table className="tbl">
+                  <thead><tr><th>Sección</th><th>Asignatura</th><th>Docente</th><th>Sala</th><th style={{textAlign:'right'}}>Inscritos</th></tr></thead>
+                  <tbody>
+                    {reporteAnomalias.salaVirtual.slice(0,200).map((s,i)=>(
+                      <tr key={i}><td>{s.sc}</td><td>{(s.a||'').slice(0,40)}</td><td>{s.d||'—'}</td><td><b>{s.s}</b></td><td style={{textAlign:'right'}}>{s.i}</td></tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          )}
+
+          {reporteAnomalias.sinAlumnos.length > 0 && (
+            <div className="card no-print-actions">
+              <div className="card-header"><div><h3>👻 Secciones sin alumnos inscritos</h3><div className="sub">{reporteAnomalias.sinAlumnos.length} caso{reporteAnomalias.sinAlumnos.length!==1?'s':''} — pueden ser secciones canceladas o sin matrícula registrada.</div></div>
+                <button className="btn btn-ghost" style={{fontSize:12,padding:'6px 12px'}} onClick={()=>downloadXlsx('anomalias_sin_alumnos', reporteAnomalias.sinAlumnos, [{key:'sc',label:'Sección'},{key:'a',label:'Asignatura'},{key:'d',label:'Docente'},{key:'s',label:'Sala'},{key:'fi',label:'Fecha'},{key:'hi',label:'Inicio'},{key:'hf',label:'Fin'}])}>📊 Excel</button>
+              </div>
+              <div className="tbl-scroll" style={{maxHeight:300}}>
+                <table className="tbl">
+                  <thead><tr><th>Sección</th><th>Asignatura</th><th>Docente</th><th>Sala</th><th>Horario</th></tr></thead>
+                  <tbody>
+                    {reporteAnomalias.sinAlumnos.slice(0,200).map((s,i)=>(
+                      <tr key={i}><td>{s.sc}</td><td>{(s.a||'').slice(0,40)}</td><td>{s.d||'—'}</td><td>{s.s||'—'}</td><td className="nowrap">{s.hi}–{s.hf}</td></tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          )}
+
+          {reporteAnomalias.total === 0 && (
+            <div className="card"><div className="empty" style={{padding:30}}><span className="emoji">✅</span>Sin anomalías detectadas en el período/filtros seleccionados.</div></div>
+          )}
+        </div>
+      )}
+
+      {tab==='comparar' && reporteComparativa && (() => {
+        const c = reporteComparativa;
+        const Delta = ({v}) => {
+          const cls = v > 0 ? 'success' : v < 0 ? 'danger' : '';
+          const arrow = v > 0 ? '▲' : v < 0 ? '▼' : '◆';
+          return <span className={`chip ${cls}`} style={{fontSize:11}}>{arrow} {Math.abs(v)}%</span>;
+        };
+        const Row = ({label, a, b, dlt}) => (
+          <tr>
+            <td><b>{label}</b></td>
+            <td style={{textAlign:'right',fontFamily:'monospace',fontWeight:700}}>{a.toLocaleString('es-CL')}</td>
+            <td style={{textAlign:'right',fontFamily:'monospace',color:'var(--text-muted)'}}>{b.toLocaleString('es-CL')}</td>
+            <td style={{textAlign:'right'}}><Delta v={dlt}/></td>
+          </tr>
+        );
+        return (
+          <div className="card">
+            <div className="card-header"><div><h3>📈 Comparativa vs período anterior</h3><div className="sub">Período actual: {fmtFecha(c.periodoActual.fi)} → {fmtFecha(c.periodoActual.ff)} ({c.periodoActual.dias} día{c.periodoActual.dias!==1?'s':''}) · Anterior: {fmtFecha(c.periodoPrev.fi)} → {fmtFecha(c.periodoPrev.ff)}</div></div></div>
+            <div className="grid grid-2" style={{gap:14,marginBottom:14}}>
+              <div className="kpi kpi-blue"><span className="label">Sesiones (actual)</span><span className="value">{c.actual.sesiones.toLocaleString('es-CL')}</span><span className="delta">antes {c.prev.sesiones.toLocaleString('es-CL')} · <Delta v={c.deltas.sesiones}/></span><div className="icon">📚</div></div>
+              <div className="kpi kpi-green"><span className="label">Alumnos (actual)</span><span className="value">{c.actual.alumnos.toLocaleString('es-CL')}</span><span className="delta">antes {c.prev.alumnos.toLocaleString('es-CL')} · <Delta v={c.deltas.alumnos}/></span><div className="icon">👥</div></div>
+            </div>
+            <div className="tbl-scroll">
+              <table className="tbl">
+                <thead><tr><th>Métrica</th><th style={{textAlign:'right'}}>Período actual</th><th style={{textAlign:'right'}}>Período anterior</th><th style={{textAlign:'right'}}>Δ %</th></tr></thead>
+                <tbody>
+                  <Row label="Sesiones académicas" a={c.actual.sesiones} b={c.prev.sesiones} dlt={c.deltas.sesiones}/>
+                  <Row label="Alumnos·módulo"      a={c.actual.alumnos}  b={c.prev.alumnos}  dlt={c.deltas.alumnos}/>
+                  <Row label="Docentes distintos"  a={c.actual.docentes} b={c.prev.docentes} dlt={c.deltas.docentes}/>
+                  <Row label="Salas distintas"     a={c.actual.salas}    b={c.prev.salas}    dlt={c.deltas.salas}/>
+                  <Row label="Reservas creadas"    a={c.actual.reservas} b={c.prev.reservas} dlt={c.deltas.reservas}/>
+                </tbody>
+              </table>
+            </div>
+            <div className="muted" style={{fontSize:11.5,marginTop:10}}>💡 Para usar esta vista, define <b>"Desde"</b> y <b>"Hasta"</b> en los filtros de arriba. El período anterior se calcula con la misma cantidad de días justo antes.</div>
+          </div>
+        );
+      })()}
+
+      {tab==='comparar' && !reporteComparativa && (
+        <div className="card"><div className="empty" style={{padding:30}}><span className="emoji">📅</span>Define un rango de fechas en los filtros (<b>Desde</b> y <b>Hasta</b>) para activar la comparativa con el período anterior.</div></div>
       )}
     </div>
   );
