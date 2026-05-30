@@ -6566,6 +6566,33 @@ function BuscarLibres({ data, reservas, onGoNueva }){
   );
 }
 
+/* ========= SOLICITAR RESERVA (selector académico vs interno) =========
+   Punto de entrada único: el usuario elige si reserva una sala académica o
+   un recinto interno (estacionamiento, sala de reuniones, etc.) sin cambiar
+   de pestaña. Reusa NuevaReserva y RecintosInternos tal cual. */
+function SolicitarReserva(props){
+  const [tipo, setTipo] = useState('acad'); // 'acad' | 'interno'
+  return (
+    <div className="stack">
+      <div className="card" style={{padding:'12px 16px'}}>
+        <div className="row" style={{gap:14,alignItems:'center',flexWrap:'wrap'}}>
+          <b style={{fontSize:13}}>¿Qué quieres reservar?</b>
+          <div className="seg">
+            <button className={tipo==='acad'?'on':''} onClick={()=>setTipo('acad')}>🏫 Salas académicas</button>
+            <button className={tipo==='interno'?'on':''} onClick={()=>setTipo('interno')}>🅿 Recintos internos</button>
+          </div>
+          <span className="muted" style={{fontSize:12}}>
+            {tipo==='acad' ? 'Salas de clases por horario y capacidad.' : 'Estacionamientos, salas de reuniones, CTI, Pantalla LED, FOL, vehículo…'}
+          </span>
+        </div>
+      </div>
+      {tipo==='acad'
+        ? <NuevaReserva data={props.data} reservas={props.reservas} user={props.user} toast={props.toast} goReservas={props.goReservas} prefill={props.prefill} onCreate={props.onCreate}/>
+        : <RecintosInternos data={props.data} reservas={props.reservas} user={props.user} db={props.db} toast={props.toast} onCreate={props.onCreate} onUpdateEstado={props.onUpdateEstado} onUpdateReserva={props.onUpdateReserva} onDeleteReserva={props.onDeleteReserva}/>}
+    </div>
+  );
+}
+
 /* ========= NUEVA RESERVA ========= */
 function NuevaReserva({ data, reservas, user, toast, goReservas, prefill, onCreate }){
   const [f, setF] = useState({
@@ -10387,7 +10414,7 @@ function App(){
         {view==='dashboard' && <Dashboard data={data} reservas={reservas} user={user} db={db} onGoView={setView} onGoNuevaPrefill={goNueva}/>}
         {view==='horario'   && <Horario data={data} reservas={reservas} onGoNueva={goNueva}/>}
         {view==='reservas'  && <Reservas reservas={reservas} data={data} user={user} db={db} toast={setToast} onGoNueva={goNueva} onUpdateEstado={updateReservaEstado} onUpdateReserva={updateReserva} onDeleteReserva={deleteReserva}/>}
-        {view==='nueva'     && <NuevaReserva data={data} reservas={reservas} user={user} toast={setToast} goReservas={()=>setView('reservas')} prefill={prefillNueva} onCreate={createReserva}/>}
+        {view==='nueva'     && <SolicitarReserva data={data} reservas={reservas} user={user} db={db} toast={setToast} goReservas={()=>setView('reservas')} prefill={prefillNueva} onCreate={createReserva} onUpdateEstado={updateReservaEstado} onUpdateReserva={updateReserva} onDeleteReserva={deleteReserva}/>}
         {view==='importar'  && <ImportarDatos data={data} toast={setToast} db={db} user={user}
           onReplaceSabana={replaceProgramacionOp}
           onReplaceEventos={replaceEventosOp}
