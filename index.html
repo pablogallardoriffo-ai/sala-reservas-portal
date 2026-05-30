@@ -6549,9 +6549,9 @@ function MapaEstacionamiento({ lotId, cfg, ocupados, seleccionado, onSelect }){
     ? `${PAD-6},${PAD+TOP-6} ${svgW-PAD+6+SKEW},${PAD+TOP-6} ${svgW-PAD+6+SKEW},${svgH-PAD+6} ${PAD-6},${svgH-PAD+6}`
     : `${PAD-8},${PAD+TOP+10} ${svgW/2},${PAD+TOP-10} ${svgW-PAD+8},${PAD+TOP+10} ${svgW-PAD+8},${svgH-PAD+8} ${PAD-8},${svgH-PAD+8}`;
   return (
-    <svg viewBox={`0 0 ${svgW} ${svgH}`} style={{width:'100%',maxWidth:diagonal?660:560,height:'auto',background:'var(--surface-2)',borderRadius:10,border:'1px solid var(--border-soft)'}}>
+    <svg viewBox={`0 0 ${svgW} ${svgH}`} style={{width:'100%',maxWidth:Math.min(diagonal?660:560, Math.round(svgW*1.6)),height:'auto',background:'var(--surface-2)',borderRadius:10,border:'1px solid var(--border-soft)'}}>
       <polygon points={outline} fill="rgba(127,127,127,.06)" stroke="var(--border-soft)" strokeWidth="1.5" strokeDasharray="4 4"/>
-      <text x={PAD} y={18} fontSize="12" fontWeight="700" fill="var(--text-muted)">{nombre} · {n} espacios</text>
+      <text x={PAD} y={18} fontSize="12" fontWeight="700" fill="var(--text-muted)">{nombre} · {n} espacio{n!==1?'s':''}</text>
       {spots.map(s=>{
         const c = PARK_COL[s.estado];
         const cx = s.x + W/2 + (diagonal?SKEW/2:0);
@@ -7057,6 +7057,7 @@ function RecintosInternos({ data, reservas, user, toast, onCreate, onUpdateEstad
                         <button className="btn btn-sm btn-success" onClick={()=>decidir(r.id,'aprobada')}>{I.check}</button>{' '}
                         <button className="btn btn-sm btn-danger" onClick={()=>decidir(r.id,'rechazada')}>{I.x}</button>
                       </>}
+                      {r.es==='aprobada' && <button className="btn btn-sm btn-ghost" title="Liberar el espacio (anula esta reserva)" onClick={()=>{ if(window.confirm(`¿Liberar "${nombreRecintoInterno(r.r)}"? La reserva quedará anulada y el espacio disponible.`)) decidir(r.id,'rechazada'); }}>Liberar</button>}
                     </td>}
                   </tr>
                 ))}
