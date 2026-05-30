@@ -77,6 +77,31 @@ test('ocurrenciasEntre: cuenta clases del patrón', () => {
 });
 
 // ---------- Conflicto de módulos ----------
+test('moduleRunningNow: marca el próximo módulo si faltan < 15 min', () => {
+  const modulos = [
+    { num: 1, inicio: '08:01', fin: '08:40' },
+    { num: 2, inicio: '08:41', fin: '09:20' },
+    { num: 3, inicio: '09:31', fin: '10:10' },
+    { num: 4, inicio: '10:11', fin: '10:50' },
+  ];
+  const mins = (h,m) => h*60+m;
+  // Dentro del rango: módulo 2 activo a las 09:00
+  assert.strictEqual(core.moduleRunningNow(modulos[1], mins(9,0), modulos), true);
+  // Recreo 09:20–09:31, a las 09:25 faltan 6 min para el 3 → activo el 3
+  assert.strictEqual(core.moduleRunningNow(modulos[2], mins(9,25), modulos), true);
+  // El módulo 2 ya terminó (no debe seguir marcado)
+  assert.strictEqual(core.moduleRunningNow(modulos[1], mins(9,25), modulos), false);
+  // A las 09:00 (módulo 2 corriendo) el 3 NO debe marcarse aún (faltan 31 min)
+  assert.strictEqual(core.moduleRunningNow(modulos[2], mins(9,0), modulos), false);
+  // A las 10:00 (módulo 3 corriendo) el 4 NO debe activarse (faltan 11 min,
+  // pero el 3 sigue corriendo y eso tiene prioridad)
+  assert.strictEqual(core.moduleRunningNow(modulos[3], mins(10,0), modulos), false);
+  // Antes del primer módulo: 07:50 (faltan 11 min para el 1) → activo
+  assert.strictEqual(core.moduleRunningNow(modulos[0], mins(7,50), modulos), true);
+  // 07:40 (faltan 21 min) → NO activo todavía
+  assert.strictEqual(core.moduleRunningNow(modulos[0], mins(7,40), modulos), false);
+});
+
 test('rangeOverlapsModules detecta solape horario', () => {
   const modulos = [
     { num: 1, inicio: '08:01', fin: '08:40' }, { num: 2, inicio: '08:41', fin: '09:20' },

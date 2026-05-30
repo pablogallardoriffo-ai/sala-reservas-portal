@@ -1281,8 +1281,29 @@ const inRangeNow = (hi, hf, n) => {
   const a = toMin(hi), b = toMin(hf);
   return n >= a && n < b;
 };
-// ¿El módulo `mod` está corriendo ahora? (hoy + hora dentro de inicio-fin)
-const moduleRunningNow = (mod, n) => mod && inRangeNow(mod.inicio, mod.fin, n);
+// ¿El módulo `mod` está corriendo ahora? También cuenta como "activo" el
+// próximo módulo cuando estamos en el recreo y faltan menos de 15 min para
+// que empiece — útil para que el indicador no se quede en blanco entre
+// módulos. Si se pasa `modulos`, se calcula el más inmediato hacia adelante.
+const PRE_MODULO_MIN = 15;
+const moduleRunningNow = (mod, n, modulos) => {
+  if(!mod) return false;
+  if(inRangeNow(mod.inicio, mod.fin, n)) return true;
+  // Pre-arranque: estamos antes de mod.inicio y faltan < 15 min.
+  const ini = toMin(mod.inicio);
+  if(n >= ini || ini - n > PRE_MODULO_MIN) return false;
+  // Solo si NO hay otro módulo en curso o más cercano hacia atrás (evita que
+  // se marquen dos a la vez si los módulos están encimados).
+  if(modulos){
+    for(const m of modulos){
+      if(m === mod) continue;
+      if(inRangeNow(m.inicio, m.fin, n)) return false; // hay uno corriendo
+      const i = toMin(m.inicio);
+      if(i > n && i < ini) return false; // hay otro más próximo
+    }
+  }
+  return true;
+};
 
 /* ========= EXPORTACIÓN ========= */
 // Exporta filas a un .xlsx real (la librería XLSX ya está cargada). headers:
@@ -3527,7 +3548,7 @@ function Horario({ data, reservas, onGoNueva }){
   const salaInterna = esRecintoInterno(sala);
   const salaInfo = salaAcadInfo || (salaInterna ? { codigo:sala, nombre:nombreRecintoInterno(sala), tipo:sala.startsWith('EST-')?'Estacionamiento':'Recinto interno', capacidad:'—', responsable:'—' } : null);
   const todayIso = isoDate(new Date());
-  const modActivo = useMemo(()=> data.modulos.find(m => moduleRunningNow(m, now)), [data.modulos, now]);
+  const modActivo = useMemo(()=> data.modulos.find(m => moduleRunningNow(m, now, data.modulos)), [data.modulos, now]);
   const nowStr = `${String(Math.floor(now/60)).padStart(2,'0')}:${String(now%60).padStart(2,'0')}`;
 
   return (
@@ -3597,7 +3618,7 @@ function Horario({ data, reservas, onGoNueva }){
             );
           })}
           {data.modulos.map((mod, mi) => {
-            const modIsNow = moduleRunningNow(mod, now);
+            const modIsNow = moduleRunningNow(mod, now, data.modulos);
             return (
             <React.Fragment key={mod.num}>
               <div className={`mod ${modIsNow?'now':''}`}><b>Mód. {mod.num}</b>{mod.inicio}<br/>{mod.fin}</div>
@@ -3678,7 +3699,7 @@ function HorarioDocente({ data }){
   const monday = useMemo(()=> getMonday(fecha), [fecha]);
   const week = useMemo(()=> [0,1,2,3,4,5,6].map(i => addDays(monday, i)), [monday]);
 
-  const modActivo = useMemo(()=> data.modulos.find(m => moduleRunningNow(m, now)), [data.modulos, now]);
+  const modActivo = useMemo(()=> data.modulos.find(m => moduleRunningNow(m, now, data.modulos)), [data.modulos, now]);
   const nowStr = `${String(Math.floor(now/60)).padStart(2,'0')}:${String(now%60).padStart(2,'0')}`;
 
   // Sesiones del docente
@@ -3826,7 +3847,7 @@ function HorarioDocente({ data }){
                 {data.modulos.map((mod, mi) => {
                   const tieneAlgo = grid[mi].some(arr => arr.length>0);
                   if(!tieneAlgo) return null;
-                  const modIsNow = moduleRunningNow(mod, now);
+                  const modIsNow = moduleRunningNow(mod, now, data.modulos);
                   return (
                     <React.Fragment key={mod.num}>
                       <div className={`row-h ${modIsNow?'now':''}`}><b>M{mod.num}</b><br/>{mod.inicio}<br/>{mod.fin}</div>
@@ -7692,7 +7713,7 @@ function RecintosInternos({ data, reservas, user, db, toast, onCreate, onUpdateE
                   <div className="hh">Módulo</div>
                   {recintosColumnas.map(c => <div key={c.code} className="hh" title={c.code}>{c.label}</div>)}
                   {data.modulos.map((mod, mi) => {
-                    const modIsNow = moduleRunningNow(mod, now);
+                    const modIsNow = moduleRunningNow(mod, now, data.modulos);
                     const cellIsNow = isTodayIso(fechaH) && modIsNow;
                     return (
                       <React.Fragment key={mod.num}>
@@ -7731,7 +7752,7 @@ function RecintosInternos({ data, reservas, user, db, toast, onCreate, onUpdateE
                   return <div key={i} className={`hh ${isToday?'today':''}`}>{DIA_CORTO[i]}<small>{d.toLocaleDateString('es-CL',{day:'2-digit',month:'2-digit'})}</small></div>;
                 })}
                 {data.modulos.map((mod, mi) => {
-                  const modIsNow = moduleRunningNow(mod, now);
+                  const modIsNow = moduleRunningNow(mod, now, data.modulos);
                   return (
                     <React.Fragment key={mod.num}>
                       <div className={`mod ${modIsNow?'now':''}`}><b>Mód. {mod.num}</b>{mod.inicio}<br/>{mod.fin}</div>
@@ -8760,7 +8781,7 @@ function MapaCalor({ data, user }){
   const usaEventos = hasEventos(data);
   const sesiones = useMemo(()=> sesionesConsolidadas(data), [data.programacion, data.eventos]);
 
-  const modActivo = useMemo(()=> data.modulos.find(m => moduleRunningNow(m, now)), [data.modulos, now]);
+  const modActivo = useMemo(()=> data.modulos.find(m => moduleRunningNow(m, now, data.modulos)), [data.modulos, now]);
   const nowStr = `${String(Math.floor(now/60)).padStart(2,'0')}:${String(now%60).padStart(2,'0')}`;
 
   // Listas para selects (calculadas desde sesiones consolidadas)
@@ -9097,7 +9118,7 @@ function MapaCalor({ data, user }){
             </thead>
             <tbody>
               {data.modulos.map((mod, mi) => {
-                const modIsNow = moduleRunningNow(mod, now);
+                const modIsNow = moduleRunningNow(mod, now, data.modulos);
                 return (
                 <tr key={mod.num} className={modIsNow?'now-row':''}>
                   <td className="lab"><b>{mod.num}</b></td>

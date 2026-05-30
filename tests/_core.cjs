@@ -46,7 +46,7 @@ const sandbox = {
 const EXPORTS = [
   'toMin','isoDate','addDays','dowFromIso','fechaToDow','getMonday','fmtFecha',
   'DOW_LBL','dwLabel','reservaOcurreEn','ocurrenciasEntre','ocurrenciasMensuales','esRecurrente','recurrenciaLabel',
-  'rangeOverlapsModules','moduleInTimeRange','moduloInfo',
+  'rangeOverlapsModules','moduleInTimeRange','moduloInfo','moduleRunningNow','toMin',
   'estSpotCode','esRecintoInterno','nombreRecintoInterno','jefaturaDeAromos',
   'applyRecintosCfg','getRecintosCfg','buildAsignacionesJefaturas',
   'RECINTOS_INTERNOS_DEFAULT','ESTACIONAMIENTOS_DEFAULT','ASIGNACIONES_AROMOS_DEFAULT','AROMOS_LAYOUT',
