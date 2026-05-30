@@ -8434,14 +8434,118 @@ function Reportes({ data, reservas }){
       { key:'promInscritos', label:'Prom. inscritos' },
       { key:'avgUso',        label:'% uso promedio', value:(r)=> `${Math.round(r.avgUso*100)}%` },
     ],
+    reservas: [
+      { key:'fi',            label:'Fecha inicio' },
+      { key:'ff',            label:'Fecha fin' },
+      { key:'recurrencia',   label:'Recurrencia' },
+      { key:'r',             label:'Recinto' },
+      { key:'hi',            label:'Hora inicio' },
+      { key:'hf',            label:'Hora fin' },
+      { key:'mo',            label:'Motivo' },
+      { key:'do',            label:'Solicitante' },
+      { key:'co',            label:'Correo' },
+      { key:'es',            label:'Estado' },
+      { key:'creado_por',    label:'Creado por' },
+      { key:'creado_en',     label:'Fecha solicitud' },
+      { key:'decidido_por',  label:'Decidido por' },
+      { key:'decidido_en',   label:'Fecha decisión' },
+      { key:'slaMin',        label:'SLA (min)', value:(r)=> r.slaMin!=null ? r.slaMin : '' },
+    ],
+    recintos: [
+      { key:'codigo',        label:'Código' },
+      { key:'nombre',        label:'Nombre' },
+      { key:'tipo',          label:'Tipo' },
+      { key:'totalRes',      label:'Reservas' },
+      { key:'aprobadas',     label:'Aprobadas' },
+      { key:'pendientes',    label:'Pendientes' },
+      { key:'rechazadas',    label:'Rechazadas' },
+      { key:'recurrentes',   label:'Recurrentes' },
+      { key:'solicitantes',  label:'Solicitantes distintos' },
+    ],
   };
 
+  // === Reporte de reservas (académicas + internas) ===
+  // Aplica filtros globales (rango fechas + edificio cuando aplica). Calcula
+  // SLA por reserva y agrega por sala, por solicitante y por estado.
+  const reporteReservas = useMemo(()=>{
+    const items = (reservasFiltradas||[]).map(r => {
+      let slaMin = null;
+      if(r.creado_en && r.decidido_en){
+        const ms = new Date(r.decidido_en) - new Date(r.creado_en);
+        if(!isNaN(ms) && ms >= 0) slaMin = Math.round(ms/60000);
+      }
+      return { ...r, recurrencia: recurrenciaLabel(r) || 'Puntual', slaMin };
+    });
+    const porEstado = { pendiente:0, aprobada:0, rechazada:0 };
+    const porSala = new Map();
+    const porSolic = new Map();
+    let recurrentes = 0, slaSum = 0, slaN = 0;
+    for(const r of items){
+      porEstado[r.es] = (porEstado[r.es]||0) + 1;
+      if(esRecurrente(r)) recurrentes++;
+      const ksala = r.r || '(sin recinto)';
+      porSala.set(ksala, (porSala.get(ksala)||0) + 1);
+      const ksol = (r.do || r.creado_por || '(anónimo)').trim();
+      porSolic.set(ksol, (porSolic.get(ksol)||0) + 1);
+      if(r.slaMin != null){ slaSum += r.slaMin; slaN++; }
+    }
+    const decididas = porEstado.aprobada + porEstado.rechazada;
+    const topSalas = [...porSala.entries()].sort((a,b)=> b[1]-a[1]).slice(0,10).map(([k,v])=>({ codigo:k, total:v }));
+    const topSolic = [...porSolic.entries()].sort((a,b)=> b[1]-a[1]).slice(0,10).map(([k,v])=>({ nombre:k, total:v }));
+    return {
+      items, total: items.length, porEstado, recurrentes,
+      pctAprob: decididas ? Math.round(porEstado.aprobada/decididas*100) : 0,
+      slaProm: slaN ? Math.round(slaSum/slaN) : 0,
+      topSalas, topSolic,
+    };
+  }, [reservasFiltradas]);
+
+  // === Reporte de recintos internos === uso real del catálogo interno (salas,
+  // equipos y vehículo) y de cada espacio de estacionamiento.
+  const reporteRecintos = useMemo(()=>{
+    const internas = (reservasFiltradas||[]).filter(r => esRecintoInterno(r.r));
+    const m = new Map();
+    for(const r of internas){
+      if(!m.has(r.r)){
+        let tipo = 'Recinto interno';
+        if(r.r.startsWith('EST-')){
+          const lot = r.r.split('-')[1];
+          tipo = `🅿 ${ESTACIONAMIENTOS[lot]?.nombre || lot}`;
+        } else {
+          tipo = RECINTOS_INTERNOS_MAP.get(r.r)?.tipo || tipo;
+        }
+        m.set(r.r, { codigo:r.r, nombre:nombreRecintoInterno(r.r), tipo, totalRes:0, aprobadas:0, pendientes:0, rechazadas:0, recurrentes:0, solicitantesSet:new Set() });
+      }
+      const e = m.get(r.r);
+      e.totalRes++;
+      if(r.es==='aprobada') e.aprobadas++;
+      else if(r.es==='pendiente') e.pendientes++;
+      else if(r.es==='rechazada') e.rechazadas++;
+      if(esRecurrente(r)) e.recurrentes++;
+      const sol = (r.do || r.creado_por || '').trim(); if(sol) e.solicitantesSet.add(sol);
+    }
+    const rows = [...m.values()].map(e => ({ ...e, solicitantes:e.solicitantesSet.size })).sort((a,b)=> b.totalRes - a.totalRes);
+    // Totales por lote de estacionamiento (Frontis/Aromos/CTI) para gráfico.
+    const porLote = new Map();
+    for(const r of rows){
+      if(r.codigo.startsWith('EST-')){
+        const lot = r.codigo.split('-')[1];
+        const k = ESTACIONAMIENTOS[lot]?.nombre || lot;
+        porLote.set(k, (porLote.get(k)||0) + r.totalRes);
+      }
+    }
+    const lotes = [...porLote.entries()].map(([k,v])=>({ nombre:k, total:v })).sort((a,b)=> b.total - a.total);
+    return { rows, total: internas.length, lotes };
+  }, [reservasFiltradas]);
+
   const tabs = [
-    { key:'resumen', label:'📊 Resumen', count: resumen.sesiones },
-    { key:'escuela', label:'🏛 Por escuela', count: reporteEscuela.length },
-    { key:'docente', label:'👨‍🏫 Carga docente', count: reporteDocentes.length },
-    { key:'salas',   label:'🏫 Salas subutilizadas', count: reporteSalas.length },
-    { key:'semana',  label:'📅 Por semana', count: reporteSemanas?.semanas?.length || 0, disabled: !reporteSemanas },
+    { key:'resumen',  label:'📊 Resumen', count: resumen.sesiones },
+    { key:'escuela',  label:'🏛 Por escuela', count: reporteEscuela.length },
+    { key:'docente',  label:'👨‍🏫 Carga docente', count: reporteDocentes.length },
+    { key:'salas',    label:'🏫 Salas subutilizadas', count: reporteSalas.length },
+    { key:'semana',   label:'📅 Por semana', count: reporteSemanas?.semanas?.length || 0, disabled: !reporteSemanas },
+    { key:'reservas', label:'📋 Reservas', count: reporteReservas.total },
+    { key:'recintos', label:'🅿 Recintos internos', count: reporteRecintos.total },
   ];
 
   return (
@@ -8452,10 +8556,13 @@ function Reportes({ data, reservas }){
           <div>
             <div style={{fontSize:11,color:'#666',textTransform:'uppercase',letterSpacing:.6,fontWeight:700}}>Duoc UC · Sede Viña del Mar</div>
             <div style={{fontSize:20,fontWeight:800,color:'#003C82',marginTop:4}}>
+              {tab==='resumen' && 'Reporte · Resumen del período'}
               {tab==='escuela' && 'Reporte · Análisis por escuela'}
               {tab==='docente' && 'Reporte · Carga docente'}
               {tab==='salas'   && 'Reporte · Salas subutilizadas'}
               {tab==='semana'  && 'Reporte · Ocupación por semana del semestre'}
+              {tab==='reservas'&& 'Reporte · Reservas (académicas + internas)'}
+              {tab==='recintos'&& 'Reporte · Uso de recintos internos'}
             </div>
             <div style={{fontSize:11,color:'#888',marginTop:2}}>Portal de Salas · 2026·1</div>
           </div>
@@ -8686,6 +8793,122 @@ function Reportes({ data, reservas }){
                     <td className="lab" style={{textAlign:'right',fontWeight:700,color:'var(--primary)'}}>{reporteSemanas.totales[i].toLocaleString('es-CL')}</td>
                   </tr>
                 ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+
+      {tab==='reservas' && (
+        <div className="card no-print-actions">
+          <div className="card-header">
+            <div><h3>📋 Reservas en el período</h3><div className="sub">{reporteReservas.total} reserva{reporteReservas.total!==1?'s':''} · {reporteReservas.porEstado.pendiente} pendientes · {reporteReservas.recurrentes} recurrentes{algunFiltroActivo?' (con filtros aplicados)':''}</div></div>
+            <div className="row" style={{gap:8}}>
+              <button className="btn btn-ghost" style={{fontSize:12,padding:'6px 12px'}} onClick={()=>downloadXlsx('reservas', reporteReservas.items, HEADERS.reservas)}>📊 Excel</button>
+              <button className="btn btn-ghost" style={{fontSize:12,padding:'6px 12px'}} onClick={imprimir}>🖨 Imprimir</button>
+            </div>
+          </div>
+
+          <div className="grid grid-4" style={{gap:12,marginBottom:14}}>
+            <div className="kpi kpi-blue"><span className="label">Total</span><span className="value">{reporteReservas.total.toLocaleString('es-CL')}</span><span className="delta">{reporteReservas.recurrentes} recurrentes</span><div className="icon">📋</div></div>
+            <div className="kpi kpi-amber"><span className="label">Pendientes</span><span className="value">{reporteReservas.porEstado.pendiente}</span><span className="delta">por decidir</span><div className="icon">⏳</div></div>
+            <div className="kpi kpi-green"><span className="label">% Aprobación</span><span className="value">{reporteReservas.pctAprob}%</span><span className="delta">{reporteReservas.porEstado.aprobada} aprob. / {reporteReservas.porEstado.rechazada} rech.</span><div className="icon">✓</div></div>
+            <div className="kpi kpi-red"><span className="label">SLA promedio</span><span className="value" style={{fontSize:20}}>{reporteReservas.slaProm ? `${reporteReservas.slaProm} min` : '—'}</span><span className="delta">decisión de pendientes</span><div className="icon">⏱</div></div>
+          </div>
+
+          <div className="grid grid-2" style={{gap:14,marginBottom:14}}>
+            <div className="card" style={{padding:14}}>
+              <div className="card-header" style={{padding:0,marginBottom:10}}><div><h3>🏫 Top recintos reservados</h3></div></div>
+              {(()=>{
+                const max = Math.max(1, ...reporteReservas.topSalas.map(x=>x.total));
+                return <div className="stack" style={{gap:10}}>{reporteReservas.topSalas.map(x => (
+                  <div key={x.codigo}>
+                    <div className="row between" style={{marginBottom:4}}><span style={{fontWeight:600,fontSize:12.5}} title={x.codigo}>{esRecintoInterno(x.codigo)?nombreRecintoInterno(x.codigo):x.codigo}</span><span className="muted" style={{fontSize:12}}>{x.total}</span></div>
+                    <div style={{height:8,background:'var(--border-soft)',borderRadius:6,overflow:'hidden'}}><div style={{height:'100%',width:`${Math.max(2, Math.round(x.total/max*100))}%`,background:'linear-gradient(90deg,var(--primary),var(--primary-2))'}}/></div>
+                  </div>
+                ))}{reporteReservas.topSalas.length===0 && <div className="empty">Sin reservas en el período.</div>}</div>;
+              })()}
+            </div>
+            <div className="card" style={{padding:14}}>
+              <div className="card-header" style={{padding:0,marginBottom:10}}><div><h3>👤 Top solicitantes</h3></div></div>
+              {(()=>{
+                const max = Math.max(1, ...reporteReservas.topSolic.map(x=>x.total));
+                return <div className="stack" style={{gap:10}}>{reporteReservas.topSolic.map(x => (
+                  <div key={x.nombre}>
+                    <div className="row between" style={{marginBottom:4}}><span style={{fontWeight:600,fontSize:12.5,whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis',maxWidth:'78%'}} title={x.nombre}>{x.nombre}</span><span className="muted" style={{fontSize:12}}>{x.total}</span></div>
+                    <div style={{height:8,background:'var(--border-soft)',borderRadius:6,overflow:'hidden'}}><div style={{height:'100%',width:`${Math.max(2, Math.round(x.total/max*100))}%`,background:'linear-gradient(90deg,var(--success),#34c759)'}}/></div>
+                  </div>
+                ))}{reporteReservas.topSolic.length===0 && <div className="empty">Sin solicitantes.</div>}</div>;
+              })()}
+            </div>
+          </div>
+
+          <div className="tbl-scroll" style={{maxHeight:500}}>
+            <table className="tbl">
+              <thead><tr><th>Fecha</th><th>Recinto</th><th>Horario</th><th>Motivo</th><th>Solicitante</th><th>Estado</th><th style={{textAlign:'right'}}>SLA</th></tr></thead>
+              <tbody>
+                {reporteReservas.items.slice(0, 300).map((r,i) => (
+                  <tr key={i}>
+                    <td className="nowrap">{esRecurrente(r) ? <><span className="chip" style={{fontSize:9,padding:'1px 6px'}}>🔁 {recurrenciaLabel(r)}</span><div className="muted" style={{fontSize:11}}>{fmtFecha(r.fi)}{r.ff&&r.ff!==r.fi?' → '+fmtFecha(r.ff):''}</div></> : fmtFecha(r.fi)}</td>
+                    <td><b style={{color:'var(--primary)'}}>{esRecintoInterno(r.r) ? nombreRecintoInterno(r.r) : r.r}</b></td>
+                    <td className="nowrap">{r.hi}–{r.hf}<div className="muted" style={{fontSize:11}}>Mód. {r.mi}–{r.mf}</div></td>
+                    <td style={{maxWidth:260}}>{r.mo}</td>
+                    <td>{r.do || r.creado_por || '—'}</td>
+                    <td>{r.es==='aprobada' && <span className="chip success">Aprobada</span>}{r.es==='pendiente' && <span className="chip warn">Pendiente</span>}{r.es==='rechazada' && <span className="chip danger">Rechazada</span>}</td>
+                    <td style={{textAlign:'right',fontFamily:'monospace',fontSize:11}}>{r.slaMin!=null?`${r.slaMin} min`:'—'}</td>
+                  </tr>
+                ))}
+                {reporteReservas.items.length === 0 && <tr><td colSpan="7"><div className="empty"><span className="emoji">📭</span>Sin reservas en el período seleccionado.</div></td></tr>}
+              </tbody>
+            </table>
+          </div>
+          {reporteReservas.items.length > 300 && <div className="muted" style={{padding:10,textAlign:'center',fontSize:12}}>Mostrando 300 de {reporteReservas.items.length}. Exporta a Excel para el detalle completo.</div>}
+        </div>
+      )}
+
+      {tab==='recintos' && (
+        <div className="card no-print-actions">
+          <div className="card-header">
+            <div><h3>🅿 Uso de recintos internos</h3><div className="sub">{reporteRecintos.rows.length} recinto{reporteRecintos.rows.length!==1?'s':''} con reservas · {reporteRecintos.total} reservas totales{algunFiltroActivo?' (con filtros)':''}</div></div>
+            <div className="row" style={{gap:8}}>
+              <button className="btn btn-ghost" style={{fontSize:12,padding:'6px 12px'}} onClick={()=>downloadXlsx('recintos_internos', reporteRecintos.rows, HEADERS.recintos)}>📊 Excel</button>
+              <button className="btn btn-ghost" style={{fontSize:12,padding:'6px 12px'}} onClick={imprimir}>🖨 Imprimir</button>
+            </div>
+          </div>
+
+          {reporteRecintos.lotes.length > 0 && (
+            <div className="card" style={{padding:14,marginBottom:14}}>
+              <div className="card-header" style={{padding:0,marginBottom:10}}><div><h3>🅿 Reservas por estacionamiento</h3><div className="sub">Volumen por lote</div></div></div>
+              {(()=>{
+                const max = Math.max(1, ...reporteRecintos.lotes.map(x=>x.total));
+                return <div className="stack" style={{gap:10}}>{reporteRecintos.lotes.map(x => (
+                  <div key={x.nombre}>
+                    <div className="row between" style={{marginBottom:4}}><span style={{fontWeight:600,fontSize:12.5}}>{x.nombre}</span><span className="muted" style={{fontSize:12}}>{x.total}</span></div>
+                    <div style={{height:8,background:'var(--border-soft)',borderRadius:6,overflow:'hidden'}}><div style={{height:'100%',width:`${Math.max(2, Math.round(x.total/max*100))}%`,background:'linear-gradient(90deg,#ff9f0a,#ffb340)'}}/></div>
+                  </div>
+                ))}</div>;
+              })()}
+            </div>
+          )}
+
+          <div className="tbl-scroll" style={{maxHeight:560}}>
+            <table className="tbl">
+              <thead><tr>{HEADERS.recintos.map(h => <th key={h.key} style={{textAlign:h.key==='codigo'||h.key==='nombre'||h.key==='tipo'?'left':'right'}}>{h.label}</th>)}</tr></thead>
+              <tbody>
+                {reporteRecintos.rows.map((r,i) => (
+                  <tr key={i}>
+                    <td><b style={{color:'var(--primary)'}}>{r.codigo}</b></td>
+                    <td>{r.nombre}</td>
+                    <td>{r.tipo}</td>
+                    <td style={{textAlign:'right'}}><b>{r.totalRes}</b></td>
+                    <td style={{textAlign:'right',color:'var(--success-text)'}}>{r.aprobadas}</td>
+                    <td style={{textAlign:'right',color:'var(--warning-text)'}}>{r.pendientes}</td>
+                    <td style={{textAlign:'right',color:'var(--danger-text)'}}>{r.rechazadas}</td>
+                    <td style={{textAlign:'right'}}>{r.recurrentes}</td>
+                    <td style={{textAlign:'right'}}>{r.solicitantes}</td>
+                  </tr>
+                ))}
+                {reporteRecintos.rows.length === 0 && <tr><td colSpan="9"><div className="empty"><span className="emoji">📭</span>Sin reservas de recintos internos en el período.</div></td></tr>}
               </tbody>
             </table>
           </div>
