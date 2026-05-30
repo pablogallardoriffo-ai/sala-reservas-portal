@@ -1032,7 +1032,7 @@ const ROLES = {
 // aprobación la maneja el rol "reservador_interno" (+admin), no el reservador
 // académico. Los códigos NO colisionan con las salas académicas para poder
 // separar ambos mundos. Los estacionamientos se agregan aparte (con su mapa 2D).
-const RECINTOS_INTERNOS = [
+const RECINTOS_INTERNOS_DEFAULT = [
   { code:'INT-CN',   nombre:'Centro de negocios',            tipo:'Sala',              grupo:'Salas y espacios' },
   { code:'INT-LED',  nombre:'Pantalla LED',                  tipo:'Equipo',            grupo:'Salas y espacios' },
   { code:'INT-LACT', nombre:'Sala de lactancia',            tipo:'Sala',              grupo:'Salas y espacios' },
@@ -1043,11 +1043,10 @@ const RECINTOS_INTERNOS = [
   { code:'INT-FOL3', nombre:'FOL3',                          tipo:'Sala',              grupo:'FOL' },
   { code:'INT-VEH',  nombre:'Camioneta institucional',       tipo:'Vehículo',          grupo:'Vehículo de sede' },
 ];
-const RECINTOS_INTERNOS_MAP = new Map(RECINTOS_INTERNOS.map(r => [r.code, r]));
 // Estacionamientos con mapa 2D. Cada espacio se reserva con código
 // EST-<LOTE>-<NN>. cols define cuántos por fila; diagonal = plazas en ángulo
 // (frontis contra el edificio) vs perpendiculares (aromos en grilla).
-const ESTACIONAMIENTOS = {
+const ESTACIONAMIENTOS_DEFAULT = {
   FRONTIS: { nombre:'Frontis', n:8,  cols:8, diagonal:true,  desc:'Frente al edificio' },
   AROMOS:  { nombre:'Aromos',  n:37, layout:'aromos',        desc:'Los Aromos · 37 espacios' },
   CTI1:    { nombre:'CTI 1',   n:1,  cols:1, diagonal:false, desc:'Estacionamiento CTI 1' },
@@ -1103,10 +1102,32 @@ const AROMOS_LAYOUT = [
   // 37 al centro (antes bloqueado) — ahora habilitado para reserva
   { num:37, x:313, y:424, w:96, h:46 },
 ];
-const estSpotCode = (lotId, i) => `EST-${lotId}-${String(i+1).padStart(2,'0')}`;
+// Asignaciones de jefaturas por defecto (nº de espacio Aromos → nombre),
+// derivadas del plano. Sirven de respaldo si no hay configuración guardada.
+const ASIGNACIONES_AROMOS_DEFAULT = (() => {
+  const o = {}; for(const s of AROMOS_LAYOUT){ if(s.jefatura) o[s.num] = s.jefatura; } return o;
+})();
 
-// ¿Un código de recinto pertenece al mundo interno? (catálogo fijo o prefijo de
-// estacionamiento EST-...). Sirve para enrutar la aprobación y separar listados.
+// ===== ESTADO VIVO de los catálogos (editable desde la pestaña Configurar).
+// Arranca con los defaults y se hidrata desde app_settings (key recintos_cfg)
+// al iniciar la app. Son `let` para poder reemplazarlos en runtime. =====
+let RECINTOS_INTERNOS = RECINTOS_INTERNOS_DEFAULT.map(r => ({...r}));
+let ESTACIONAMIENTOS = JSON.parse(JSON.stringify(ESTACIONAMIENTOS_DEFAULT));
+let ASIGNACIONES_AROMOS = {...ASIGNACIONES_AROMOS_DEFAULT};
+let RECINTOS_INTERNOS_MAP = new Map(RECINTOS_INTERNOS.map(r => [r.code, r]));
+const rebuildRecintosDerived = () => { RECINTOS_INTERNOS_MAP = new Map(RECINTOS_INTERNOS.map(r => [r.code, r])); };
+const applyRecintosCfg = (cfg) => {
+  if(!cfg) return;
+  try { if(typeof cfg === 'string') cfg = JSON.parse(cfg); } catch(e){ return; }
+  if(Array.isArray(cfg.recintos)) RECINTOS_INTERNOS = cfg.recintos;
+  if(cfg.estacionamientos && typeof cfg.estacionamientos === 'object') ESTACIONAMIENTOS = cfg.estacionamientos;
+  if(cfg.asignaciones && typeof cfg.asignaciones === 'object') ASIGNACIONES_AROMOS = cfg.asignaciones;
+  rebuildRecintosDerived();
+};
+const getRecintosCfg = () => ({ recintos: RECINTOS_INTERNOS, estacionamientos: ESTACIONAMIENTOS, asignaciones: ASIGNACIONES_AROMOS });
+
+const estSpotCode = (lotId, i) => `EST-${lotId}-${String(i+1).padStart(2,'0')}`;
+// ¿Un código de recinto pertenece al mundo interno? (catálogo o prefijo EST-).
 const esRecintoInterno = (code) => !!code && (RECINTOS_INTERNOS_MAP.has(code) || /^EST-/.test(code));
 const nombreRecintoInterno = (code) => {
   if(RECINTOS_INTERNOS_MAP.has(code)) return RECINTOS_INTERNOS_MAP.get(code).nombre;
@@ -1114,35 +1135,31 @@ const nombreRecintoInterno = (code) => {
   if(m){ const lot = ESTACIONAMIENTOS[m[1]]; return `Estac. ${lot?lot.nombre:m[1]} · E${Number(m[2])}`; }
   return code;
 };
+const jefaturaDeAromos = (num) => ASIGNACIONES_AROMOS[num] || '';
 
 // Asignaciones fijas de estacionamientos a jefaturas: Lun-Vie 08:30–18:15
-// (módulos 1–14), todo el año 2026. Son reservas "del sistema" que ocupan
-// automáticamente los espacios nominativos del plano de Aromos. No se aprueban
-// ni se cancelan (representan la asignación permanente); se inyectan en la
-// vista de recintos internos para que el mapa, el horario y los conflictos las
-// consideren, sin necesidad de escribir en la base de datos.
-const ASIGNACIONES_JEFATURAS = (() => {
+// (módulos 1–14), todo 2026. Reservas "del sistema" que ocupan los espacios
+// nominativos de Aromos. Se reconstruye desde el estado vivo (editable).
+const buildAsignacionesJefaturas = () => {
   const out = [];
   for(const [lotId, cfg] of Object.entries(ESTACIONAMIENTOS)){
-    const layout = cfg.layout === 'aromos' ? AROMOS_LAYOUT : null;
-    if(!layout) continue;
-    for(const s of layout){
-      if(!s.jefatura) continue;
+    if(cfg.layout !== 'aromos') continue;
+    for(const s of AROMOS_LAYOUT){
+      const nombre = ASIGNACIONES_AROMOS[s.num];
+      if(!nombre) continue;
       out.push({
         id: `asig-${lotId}-${s.num}`,
         r: estSpotCode(lotId, s.num - 1),
         fi: '2026-01-01', ff: '2026-12-31',
-        dw: '1111100',            // Lun a Viernes
-        mi: 1, mf: 14, hi: '08:30', hf: '18:15',
-        mo: `Asignación fija · ${s.jefatura}`,
-        do: s.jefatura, co: '', ru: '',
-        es: 'aprobada', ts: 'SI',
-        creado_por: 'sistema', asignada: true,
+        dw: '1111100', mi: 1, mf: 14, hi: '08:30', hf: '18:15',
+        mo: `Asignación fija · ${nombre}`,
+        do: nombre, co: '', ru: '',
+        es: 'aprobada', ts: 'SI', creado_por: 'sistema', asignada: true,
       });
     }
   }
   return out;
-})();
+};
 const DEFAULT_USERS = [
   { id:1, username:'admin',      nombre:'Coordinación Docente · Jefe de Área', email:'admin@duoc.cl',    password:'010203', role:'admin',      activo:true },
   { id:2, username:'reservador', nombre:'Asistente de Coordinación Docente',   email:'reservas@duoc.cl', password:'010203', role:'reservador', activo:true },
@@ -6867,6 +6884,7 @@ function MapaAromos({ lotId, ocupados, seleccionado, onSelect }){
       {/* Espacios */}
       {AROMOS_LAYOUT.map(s => {
         const code = estSpotCode(lotId, s.num - 1);
+        const jef = jefaturaDeAromos(s.num);
         let estado;
         if(s.bloqueado) estado = 'bloqueado';
         else if(ocupados.has(code)) estado = 'ocupado';
@@ -6877,18 +6895,137 @@ function MapaAromos({ lotId, ocupados, seleccionado, onSelect }){
         const clickable = estado !== 'ocupado' && estado !== 'bloqueado';
         return (
           <g key={s.num} onClick={()=> clickable && onSelect(code)} style={{cursor: clickable?'pointer':'not-allowed'}}>
-            <title>{s.bloqueado ? `Espacio ${s.num} · bloqueado` : `Espacio ${s.num}${s.jefatura?` · ${s.jefatura}`:''}`}</title>
+            <title>{s.bloqueado ? `Espacio ${s.num} · bloqueado` : `Espacio ${s.num}${jef?` · ${jef}`:''}`}</title>
             <rect x={s.x} y={s.y} width={s.w} height={s.h} rx={3} fill={c.f} stroke={c.s} strokeWidth="2"/>
             {s.bloqueado && <>
               <line x1={s.x} y1={s.y} x2={s.x+s.w} y2={s.y+s.h} stroke={c.s} strokeWidth="2"/>
               <line x1={s.x+s.w} y1={s.y} x2={s.x} y2={s.y+s.h} stroke={c.s} strokeWidth="2"/>
             </>}
-            <text x={cx} y={cy + (s.jefatura?-2:4)} fontSize="12" fontWeight="700" textAnchor="middle" fill={c.t} style={{pointerEvents:'none'}}>{s.num}</text>
-            {s.jefatura && <text x={cx} y={cy + 11} fontSize="8" textAnchor="middle" fill={c.t} style={{pointerEvents:'none',opacity:.85}}>{s.jefatura.length>22?s.jefatura.slice(0,22)+'…':s.jefatura}</text>}
+            <text x={cx} y={cy + (jef?-2:4)} fontSize="12" fontWeight="700" textAnchor="middle" fill={c.t} style={{pointerEvents:'none'}}>{s.num}</text>
+            {jef && <text x={cx} y={cy + 11} fontSize="8" textAnchor="middle" fill={c.t} style={{pointerEvents:'none',opacity:.85}}>{jef.length>22?jef.slice(0,22)+'…':jef}</text>}
           </g>
         );
       })}
     </svg>
+  );
+}
+
+/* ========= ADMIN · CONFIGURAR RECINTOS INTERNOS (solo admin) =========
+   Edita los catálogos (recintos, estacionamientos y asignaciones de jefaturas)
+   sin tocar código. Se guardan en app_settings (key recintos_cfg). */
+function AdminRecintos({ db, toast, onSaved }){
+  const cfg0 = getRecintosCfg();
+  const [recintos, setRecintos] = useState(()=> cfg0.recintos.map(r=>({...r})));
+  const [estac, setEstac] = useState(()=> JSON.parse(JSON.stringify(cfg0.estacionamientos)));
+  const [asig, setAsig] = useState(()=> ({...cfg0.asignaciones}));
+  const [busy, setBusy] = useState(false);
+
+  const updRec = (i,k,v) => setRecintos(rs => rs.map((r,idx)=> idx===i?{...r,[k]:v}:r));
+  const delRec = (i) => setRecintos(rs => rs.filter((_,idx)=>idx!==i));
+  const addRec = () => setRecintos(rs => [...rs, { code:`INT-${Date.now().toString(36).toUpperCase().slice(-4)}`, nombre:'Nuevo recinto', tipo:'Sala', grupo:'Salas y espacios' }]);
+
+  const updEst = (id,k,v) => setEstac(e=>{
+    const cur = {...e[id]};
+    if(k==='n'){ const n=Math.max(1, Number(v)||1); cur.n=n; if(cur.layout!=='aromos') cur.cols=Math.min(n,8); }
+    else cur[k]=v;
+    return {...e, [id]:cur};
+  });
+  const delEst = (id) => { if(!window.confirm(`¿Eliminar el estacionamiento "${estac[id]?.nombre||id}"? Las reservas existentes quedarán huérfanas.`)) return; setEstac(e=>{ const n={...e}; delete n[id]; return n; }); };
+  const addEst = () => setEstac(e=>{ let i=1, id; do { id=`LOT${i}`; i++; } while(e[id]); return {...e, [id]:{ nombre:`Estacionamiento ${id}`, n:5, cols:5, diagonal:false, desc:'' }}; });
+
+  const updAsig = (num, nombre) => setAsig(a=>{ const n={...a}; if(String(nombre).trim()) n[num]=String(nombre).trim(); else delete n[num]; return n; });
+
+  const guardar = async () => {
+    const codes = recintos.map(r=>(r.code||'').trim());
+    if(codes.some(c=>!c)) return toast('Todos los recintos necesitan un código.');
+    if(new Set(codes).size !== codes.length) return toast('Hay códigos de recinto duplicados.');
+    if(recintos.some(r=>!(r.nombre||'').trim())) return toast('Todos los recintos necesitan un nombre.');
+    setBusy(true);
+    try {
+      const cfg = { recintos, estacionamientos:estac, asignaciones:asig };
+      if(db?.setSetting) await db.setSetting('recintos_cfg', JSON.stringify(cfg));
+      applyRecintosCfg(cfg);
+      toast(db?.isCloud ? 'Configuración guardada (compartida).' : 'Configuración guardada (local).');
+      onSaved && onSaved();
+    } catch(e){ toast('Error al guardar: '+e.message); }
+    finally { setBusy(false); }
+  };
+  const restaurar = async () => {
+    if(!window.confirm('¿Restaurar la configuración por defecto? Se descartan los cambios guardados.')) return;
+    setBusy(true);
+    try {
+      if(db?.setSetting) await db.setSetting('recintos_cfg', null);
+      const def = { recintos: RECINTOS_INTERNOS_DEFAULT.map(r=>({...r})), estacionamientos: JSON.parse(JSON.stringify(ESTACIONAMIENTOS_DEFAULT)), asignaciones: {...ASIGNACIONES_AROMOS_DEFAULT} };
+      applyRecintosCfg(def);
+      setRecintos(def.recintos); setEstac(def.estacionamientos); setAsig(def.asignaciones);
+      toast('Configuración restaurada a los valores por defecto.');
+      onSaved && onSaved();
+    } catch(e){ toast('Error: '+e.message); }
+    finally { setBusy(false); }
+  };
+
+  const aromosNums = AROMOS_LAYOUT.map(s=>s.num).sort((a,b)=>a-b);
+
+  return (
+    <div className="stack">
+      <div className="card" style={{padding:'10px 14px',background:'var(--info-bg)',border:'1px solid var(--border-soft)',fontSize:12.5}}>
+        ⚙ Edita aquí los catálogos sin tocar código. Los cambios se guardan en la nube y aplican para todos. Recuerda pulsar <b>Guardar cambios</b> al final.
+      </div>
+
+      {/* RECINTOS */}
+      <div className="card" style={{padding:0}}>
+        <div className="card-header" style={{padding:'12px 16px'}}><div><h3>Recintos internos</h3><div className="sub">Salas, equipos y vehículo. El código no debe chocar con salas académicas.</div></div><button className="btn btn-ghost btn-sm" onClick={addRec}>➕ Agregar</button></div>
+        <div className="tbl-scroll"><table className="tbl"><thead><tr><th>Código</th><th>Nombre</th><th>Tipo</th><th>Grupo</th><th></th></tr></thead><tbody>
+          {recintos.map((r,i)=>(
+            <tr key={i}>
+              <td><input value={r.code} onChange={e=>updRec(i,'code',e.target.value)} style={{width:110,fontFamily:'monospace',fontSize:12}}/></td>
+              <td><input value={r.nombre} onChange={e=>updRec(i,'nombre',e.target.value)} style={{minWidth:180}}/></td>
+              <td><input value={r.tipo} onChange={e=>updRec(i,'tipo',e.target.value)} style={{width:130}}/></td>
+              <td><input value={r.grupo} onChange={e=>updRec(i,'grupo',e.target.value)} style={{width:160}}/></td>
+              <td style={{textAlign:'right'}}><button className="btn btn-sm btn-ghost" style={{color:'var(--danger)'}} onClick={()=>delRec(i)}>{I.trash}</button></td>
+            </tr>
+          ))}
+          {recintos.length===0 && <tr><td colSpan="5"><div className="empty" style={{padding:16}}>Sin recintos. Agrega uno.</div></td></tr>}
+        </tbody></table></div>
+      </div>
+
+      {/* ESTACIONAMIENTOS */}
+      <div className="card" style={{padding:0}}>
+        <div className="card-header" style={{padding:'12px 16px'}}><div><h3>Estacionamientos</h3><div className="sub">Nombre y nº de espacios. Aromos usa un plano fijo (no se cambia el nº aquí).</div></div><button className="btn btn-ghost btn-sm" onClick={addEst}>➕ Agregar</button></div>
+        <div className="tbl-scroll"><table className="tbl"><thead><tr><th>ID</th><th>Nombre</th><th style={{textAlign:'right'}}>N° espacios</th><th>Tipo</th><th></th></tr></thead><tbody>
+          {Object.entries(estac).map(([id,c])=>{
+            const esAromos = c.layout==='aromos';
+            return (
+              <tr key={id}>
+                <td style={{fontFamily:'monospace',fontSize:12}}>{id}</td>
+                <td><input value={c.nombre} onChange={e=>updEst(id,'nombre',e.target.value)} style={{minWidth:160}}/></td>
+                <td style={{textAlign:'right'}}>{esAromos ? <span className="muted">{c.n} · plano fijo</span> : <input type="number" min="1" value={c.n} onChange={e=>updEst(id,'n',e.target.value)} style={{width:70,textAlign:'right'}}/>}</td>
+                <td>{esAromos ? <span className="chip info">Plano Aromos</span> : <span className="chip">{c.diagonal?'Diagonal':'Grilla'}</span>}</td>
+                <td style={{textAlign:'right'}}><button className="btn btn-sm btn-ghost" style={{color:'var(--danger)'}} onClick={()=>delEst(id)}>{I.trash}</button></td>
+              </tr>
+            );
+          })}
+        </tbody></table></div>
+      </div>
+
+      {/* ASIGNACIONES AROMOS */}
+      <div className="card" style={{padding:0}}>
+        <div className="card-header" style={{padding:'12px 16px'}}><div><h3>Asignaciones de jefaturas · Aromos</h3><div className="sub">Persona asignada a cada espacio (vacío = libre). Ocupan Lun-Vie 08:30–18:15.</div></div></div>
+        <div style={{padding:'12px 16px',display:'grid',gridTemplateColumns:'repeat(auto-fill,minmax(220px,1fr))',gap:8}}>
+          {aromosNums.map(num=>(
+            <div key={num} className="row" style={{gap:6}}>
+              <span style={{fontSize:11,fontWeight:700,minWidth:34,color:'var(--text-muted)'}}>E{num}</span>
+              <input value={asig[num]||''} onChange={e=>updAsig(num, e.target.value)} placeholder="(libre)" style={{flex:1,fontSize:12.5}}/>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      <div className="row" style={{justifyContent:'flex-end',gap:10,position:'sticky',bottom:0,background:'var(--bg)',padding:'10px 0'}}>
+        <button className="btn btn-ghost" onClick={restaurar} disabled={busy}>Restaurar por defecto</button>
+        <button className="btn btn-primary" onClick={guardar} disabled={busy}>{busy?'Guardando…':'💾 Guardar cambios'}</button>
+      </div>
+    </div>
   );
 }
 
@@ -6899,10 +7036,14 @@ function MapaAromos({ lotId, ocupados, seleccionado, onSelect }){
    salas académicas (se filtran por esRecintoInterno). */
 function RecintosInternos({ data, reservas, user, db, toast, onCreate, onUpdateEstado, onUpdateReserva, onDeleteReserva }){
   const canApprove = user.role==='admin' || user.role==='reservador_interno';
+  const esAdmin = user.role==='admin';
   const [tab, setTab] = useState('reservar');
+  // cfgRev: se incrementa al guardar la configuración (pestaña Configurar) para
+  // forzar el re-cálculo de los memos que leen los catálogos vivos.
+  const [cfgRev, setCfgRev] = useState(0);
   // Reservas reales de recintos internos + asignaciones fijas de jefaturas
   // (estas últimas son sintéticas: ocupan los espacios nominativos Lun-Vie).
-  const internas = useMemo(()=> [...ASIGNACIONES_JEFATURAS, ...reservas.filter(r => esRecintoInterno(r.r))], [reservas]);
+  const internas = useMemo(()=> [...buildAsignacionesJefaturas(), ...reservas.filter(r => esRecintoInterno(r.r))], [reservas, cfgRev]);
 
   const [f, setF] = useState({
     recinto:'', fi: isoDate(new Date()), mi:1, mf:2,
@@ -6930,7 +7071,7 @@ function RecintosInternos({ data, reservas, user, db, toast, onCreate, onUpdateE
     const g = new Map();
     for(const r of RECINTOS_INTERNOS){ if(!g.has(r.grupo)) g.set(r.grupo, []); g.get(r.grupo).push(r); }
     return [...g.entries()];
-  },[]);
+  },[cfgRev]);
 
   // Estacionamiento seleccionado en el mapa + ocupación de sus espacios para
   // la fecha/módulos elegidos (rojo en el plano).
@@ -6965,7 +7106,7 @@ function RecintosInternos({ data, reservas, user, db, toast, onCreate, onUpdateE
       grupos.push([`🅿 ${cfg.nombre}`, items]);
     }
     return grupos;
-  },[]);
+  },[cfgRev]);
   // Categorías para el modo Día (filtrar las columnas que se ven a la vez).
   const CAT_HORARIO = [
     { id:'salas',           label:'Salas y reuniones', match:r => r.grupo==='Salas y espacios' || r.grupo==='Salas de reuniones' },
@@ -6989,7 +7130,7 @@ function RecintosInternos({ data, reservas, user, db, toast, onCreate, onUpdateE
     const cat = CAT_HORARIO.find(c=>c.id===catH);
     if(!cat) return [];
     return RECINTOS_INTERNOS.filter(cat.match).map(r=>({ code:r.code, label:r.nombre }));
-  },[catH]);
+  },[catH, cfgRev]);
   const [vistaH, setVistaH] = useState('dia'); // 'dia' | 'semana'
   const [recintoH, setRecintoH] = useState(RECINTOS_INTERNOS[0]?.code || '');
   const [fechaH, setFechaH] = useState(isoDate(new Date()));
@@ -7124,6 +7265,7 @@ function RecintosInternos({ data, reservas, user, db, toast, onCreate, onUpdateE
         <button className={tab==='horario'?'on':''} onClick={()=>setTab('horario')}>📅 Horario semanal</button>
         <button className={tab==='solicitudes'?'on':''} onClick={()=>setTab('solicitudes')}>📋 Solicitudes{canApprove && pendientes>0 ? ` (${pendientes})` : ''}</button>
         {canApprove && <button className={tab==='historial'?'on':''} onClick={()=>setTab('historial')}>📜 Historial</button>}
+        {esAdmin && <button className={tab==='config'?'on':''} onClick={()=>setTab('config')}>⚙ Configurar</button>}
       </div>
 
       {tab==='reservar' && (
@@ -7360,6 +7502,8 @@ function RecintosInternos({ data, reservas, user, db, toast, onCreate, onUpdateE
       )}
 
       {tab==='historial' && canApprove && <HistorialReservas db={db} soloInterno={true}/>}
+
+      {tab==='config' && esAdmin && <AdminRecintos db={db} toast={toast} onSaved={()=>setCfgRev(v=>v+1)}/>}
 
       {editando && <ModalEditarReserva reserva={editando} modulos={data.modulos} onClose={()=>setEditando(null)} onSave={(id,patch)=>onUpdateReserva(id,patch)}/>}
     </div>
@@ -9754,6 +9898,9 @@ function App(){
     (async ()=>{
       setLoading(true); setLoadError(null);
       try {
+        // Hidrata los catálogos de recintos internos desde app_settings (si hay
+        // configuración guardada) antes de renderizar; sino quedan los defaults.
+        try { const rcfg = await db.getSetting?.('recintos_cfg'); if(rcfg) applyRecintosCfg(rcfg); } catch(e){ console.warn('recintos_cfg:', e.message); }
         const out = await db.loadAll();
         if(cancelled) return;
         setData({
