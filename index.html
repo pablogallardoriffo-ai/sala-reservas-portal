@@ -3700,6 +3700,10 @@ const GESTIONES_PASSWORD_KEY = 'sr_gestiones_pw_v1';   // localStorage (override
 const GESTIONES_CFG_KEY = 'sr_gestiones_cfg_v1';
 const GESTIONES_AUTH_KEY = 'sr_gestiones_auth_v1'; // sessionStorage
 const GESTIONES_LOCK_MIN_KEY = 'sr_gestiones_lock_min_v1';
+// Clave de Gestión Docente (mismo esquema compartido que Gestiones).
+const GD_PASSWORD = '010203';
+const GD_PASSWORD_KEY = 'sr_gd_pw_v1';
+const GD_AUTH_KEY = 'sr_gd_auth_v1';
 
 // Hash simple (FNV-1a 32-bit) — no es criptográfico pero alcanza para no
 // guardar la contraseña en texto plano en localStorage. La PW real sigue
@@ -5387,7 +5391,23 @@ const GD_DESC_AFP_PCT       = 11.5;   // AFP + comisión promedio (referencial)
 const GD_DESC_SALUD_PCT     = 7;      // Fonasa / Isapre (cotización legal mínima)
 const GD_DESC_CESANTIA_PCT  = 0.6;    // Seguro de cesantía (aporte trabajador)
 
-function GestionDocente(){
+function GestionDocente({ db, user, toast }){
+  // === Bloqueo por contraseña (mismo esquema compartido que Gestiones) ===
+  const [unlocked, setUnlocked] = useState(()=> sessionStorage.getItem(GD_AUTH_KEY)==='1');
+  const [pw, setPw] = useState('');
+  const [pwErr, setPwErr] = useState(false);
+  const [showPwChange, setShowPwChange] = useState(false);
+  const [storedHash, setStoredHash] = useState(()=> localStorage.getItem(GD_PASSWORD_KEY) || null);
+  const hashReady = useSharedPwHash(db, GD_PASSWORD_KEY, storedHash, setStoredHash, user);
+  const tryUnlock = (e) => {
+    if(e) e.preventDefault();
+    if(!hashReady) return;
+    if(verifyAgainstHash(pw, storedHash, GD_PASSWORD)){
+      sessionStorage.setItem(GD_AUTH_KEY, '1'); setUnlocked(true); setPw(''); setPwErr(false);
+    } else { setPwErr(true); }
+  };
+  const lock = () => { sessionStorage.removeItem(GD_AUTH_KEY); setUnlocked(false); };
+
   const [horaInput, setHoraInput]   = useState('');
   const [horasInput, setHorasInput] = useState('');
   const [pensionado, setPensionado] = useState(false);
@@ -5395,6 +5415,28 @@ function GestionDocente(){
   const [saludPct, setSaludPct] = useState(GD_DESC_SALUD_PCT);
   const [cesPct, setCesPct]   = useState(GD_DESC_CESANTIA_PCT);
   const [showAdvanced, setShowAdvanced] = useState(false);
+
+  if(!unlocked){
+    return (
+      <div className="stack">
+        <div className="card" style={{maxWidth:520,margin:'40px auto',padding:'30px 28px'}}>
+          <div style={{textAlign:'center',marginBottom:16}}>
+            <div style={{fontSize:42,marginBottom:6}}>🔒</div>
+            <h3 style={{fontSize:18}}>Acceso restringido</h3>
+            <div className="sub" style={{marginTop:6}}>Gestión Docente · Solo personal autorizado con contraseña asignada.</div>
+          </div>
+          <form onSubmit={tryUnlock} className="stack" style={{gap:12}}>
+            <div className="field">
+              <label>Contraseña</label>
+              <input type="password" value={pw} onChange={e=>{ setPw(e.target.value); setPwErr(false); }} placeholder="●●●●●●" autoFocus style={pwErr?{borderColor:'var(--danger)'}:{}}/>
+              {pwErr && <div style={{color:'var(--danger)',fontSize:12,marginTop:4}}>Contraseña incorrecta.</div>}
+            </div>
+            <button type="submit" className="btn btn-primary btn-block" disabled={!hashReady}>{hashReady ? 'Ingresar' : 'Conectando…'}</button>
+          </form>
+        </div>
+      </div>
+    );
+  }
 
   const fmtCLP = (n) => '$ '+Math.round(Number(n)||0).toLocaleString('es-CL');
   const fmtNum = (n, d=1) => (Number(n)||0).toLocaleString('es-CL', {minimumFractionDigits:d, maximumFractionDigits:d});
@@ -5418,6 +5460,11 @@ function GestionDocente(){
 
   return (
     <>
+      <div className="row" style={{justifyContent:'flex-end',gap:8}}>
+        <button className="btn btn-ghost" style={{fontSize:12,padding:'6px 12px'}} onClick={()=>setShowPwChange(true)}>🔑 Cambiar contraseña</button>
+        <button className="btn btn-ghost" style={{fontSize:12,padding:'6px 12px'}} onClick={lock}>🔒 Bloquear</button>
+      </div>
+      {showPwChange && <ModalCambioPwGenerico onClose={()=>setShowPwChange(false)} toast={toast} storageKey={GD_PASSWORD_KEY} defaultPw={GD_PASSWORD} db={db} user={user} storedHash={storedHash} onSaved={setStoredHash}/>}
       <div className="card">
         <div className="card-header">
           <div>
@@ -6708,37 +6755,49 @@ function NuevaReserva({ data, reservas, user, toast, goReservas, prefill, onCrea
           <div className="empty"><span className="emoji">🚫</span>No hay salas libres con esos criterios.<br/>Cambia el horario, día o filtros, o activa "Mostrar ocupadas" para ver por qué.</div>
         )}
 
-        {(evaluacion.libres.length>0 || filtros.mostrarTodas) && (
-          <div className="grid" style={{gridTemplateColumns:'repeat(auto-fill,minmax(200px,1fr))',gap:10}}>
-            {evaluacion.libres.map(s => (
-              <div key={s.codigo}
-                className={`sala-pick ${f.sala===s.codigo?'sel':''}`}
-                onClick={()=>setF({...f,sala:s.codigo})}>
-                <div className="top">
-                  <div className="code">{s.codigo}</div>
-                  <span className="chip success">Libre</span>
-                </div>
-                <div className="name">{(s.nombre||'').slice(0,60)}</div>
-                <div className="meta">
-                  <span className="chip">{s.tipo}</span>
-                  <span className="chip">Cap. {s.capacidad}</span>
-                </div>
+        {(evaluacion.libres.length>0 || filtros.mostrarTodas) && (() => {
+          const haySel = f.sala && evaluacion.libres.some(s=>s.codigo===f.sala);
+          const libresMostradas = haySel ? evaluacion.libres.filter(s=>s.codigo===f.sala) : evaluacion.libres;
+          return (
+          <>
+            {haySel && (
+              <div className="row" style={{marginBottom:10,gap:10,flexWrap:'wrap'}}>
+                <button className="btn btn-ghost btn-sm" onClick={()=>setF({...f,sala:''})}>← Ver todas las salas disponibles ({evaluacion.libres.length})</button>
+                <span className="muted" style={{fontSize:12}}>Mostrando solo tu selección — click en la tarjeta o en el botón para cambiar.</span>
               </div>
-            ))}
-            {filtros.mostrarTodas && evaluacion.ocupadas.map(({sala:s, motivo, tipo, esPendiente, esPropia}) => (
-              <div key={s.codigo} className={`sala-pick ocupada ${esPendiente?'pendiente':''}`} title={motivo}>
-                <div className="top">
-                  <div className="code" style={{color:'var(--text-muted)'}}>{s.codigo}</div>
-                  <span className={`chip ${esPendiente?'warn':'danger'}`}>
-                    {tipo==='académica' ? 'Clase' : (esPendiente ? '⏳ Pendiente' : '📌 Reserva')}
-                  </span>
+            )}
+            <div className="grid" style={{gridTemplateColumns:'repeat(auto-fill,minmax(200px,1fr))',gap:10}}>
+              {libresMostradas.map(s => (
+                <div key={s.codigo}
+                  className={`sala-pick ${f.sala===s.codigo?'sel':''}`}
+                  onClick={()=>setF({...f,sala: f.sala===s.codigo ? '' : s.codigo})}>
+                  <div className="top">
+                    <div className="code">{s.codigo}</div>
+                    <span className="chip success">{f.sala===s.codigo?'✓ Elegida':'Libre'}</span>
+                  </div>
+                  <div className="name">{(s.nombre||'').slice(0,60)}</div>
+                  <div className="meta">
+                    <span className="chip">{s.tipo}</span>
+                    <span className="chip">Cap. {s.capacidad}</span>
+                  </div>
                 </div>
-                <div className="name">{(s.nombre||'').slice(0,60)}</div>
-                <div className="meta" style={{fontSize:10.5,color:'var(--text-soft)'}}>{motivo.slice(0,70)}{esPropia ? ' · tuya' : ''}</div>
-              </div>
-            ))}
-          </div>
-        )}
+              ))}
+              {!haySel && filtros.mostrarTodas && evaluacion.ocupadas.map(({sala:s, motivo, tipo, esPendiente, esPropia}) => (
+                <div key={s.codigo} className={`sala-pick ocupada ${esPendiente?'pendiente':''}`} title={motivo}>
+                  <div className="top">
+                    <div className="code" style={{color:'var(--text-muted)'}}>{s.codigo}</div>
+                    <span className={`chip ${esPendiente?'warn':'danger'}`}>
+                      {tipo==='académica' ? 'Clase' : (esPendiente ? '⏳ Pendiente' : '📌 Reserva')}
+                    </span>
+                  </div>
+                  <div className="name">{(s.nombre||'').slice(0,60)}</div>
+                  <div className="meta" style={{fontSize:10.5,color:'var(--text-soft)'}}>{motivo.slice(0,70)}{esPropia ? ' · tuya' : ''}</div>
+                </div>
+              ))}
+            </div>
+          </>
+          );
+        })()}
 
         <div className="field" style={{marginTop:14,maxWidth:520}}>
           <label>O elige por código (incluso si está ocupada — el admin/reservador podrá forzar)</label>
@@ -10304,7 +10363,7 @@ function App(){
         {view==='repDoc'    && <ReporteDocente data={data}/>}
         {view==='recintos'  && <RecintosInternos data={data} reservas={reservas} user={user} db={db} toast={setToast} onCreate={createReserva} onUpdateEstado={updateReservaEstado} onUpdateReserva={updateReserva} onDeleteReserva={deleteReserva}/>}
         {view==='gestiones' && <Gestiones data={data} user={user} db={db} toast={setToast}/>}
-        {view==='gestDoc'   && <GestionDocente/>}
+        {view==='gestDoc'   && <GestionDocente db={db} user={user} toast={setToast}/>}
         {view==='mapa'      && <MapaCalor data={data} user={user}/>}
       </Shell>
       {toast && <div className="toast">{toast}</div>}
