@@ -1939,6 +1939,38 @@ function createDb({ mode, supabase }){
     return st.auditorias_log || [];
   };
 
+  // Trazabilidad de reservas (crear/modificar/aprobar/rechazar/eliminar).
+  const logReserva = async (entry) => {
+    const row = {
+      reserva_id: entry.reserva_id ?? null,
+      recinto:    entry.recinto || null,
+      accion:     entry.accion,
+      usuario:    entry.usuario || null,
+      anterior:   entry.anterior ? JSON.stringify(entry.anterior) : null,
+      nuevo:      entry.nuevo ? JSON.stringify(entry.nuevo) : null,
+      detalle:    entry.detalle || null,
+      created_at: new Date().toISOString(),
+    };
+    if(isCloud){
+      try {
+        const { data, error } = await supabase.from('reservas_log').insert(row).select().single();
+        if(error){ console.warn('logReserva (¿falta tabla reservas_log?):', error.message); return null; }
+        return data;
+      } catch(e){ console.warn('logReserva:', e.message); return null; }
+    }
+    const st = loadStore();
+    const lista = st.reservas_log || [];
+    row.id = Date.now() + Math.floor(Math.random()*999);
+    lista.push(row);
+    saveStore({ ...st, reservas_log:lista });
+    return row;
+  };
+  const loadReservasLog = async () => {
+    if(isCloud) return await fetchAllSafe('reservas_log', { order:'id' });
+    const st = loadStore();
+    return st.reservas_log || [];
+  };
+
 
   return {
     isCloud, mode,
@@ -1951,6 +1983,7 @@ function createDb({ mode, supabase }){
     subscribe, getStats, fetchAll, fetchAllSafe,
     loadAuditorias, saveAuditoria, deleteAuditoria,
     logAuditoria, loadAuditoriasLog,
+    logReserva, loadReservasLog,
     getSetting, setSetting,
   };
 }
@@ -5821,6 +5854,63 @@ function Countdown({ creadoEn, sla = SLA_MS, compact = false }){
   );
 }
 
+/* ========= HISTORIAL DE CAMBIOS DE RESERVAS (trazabilidad) ========= */
+function HistorialReservas({ db, soloInterno }){
+  const [log, setLog] = useState(null);
+  const [loading, setLoading] = useState(false);
+  const cargar = async () => {
+    if(!db) return;
+    setLoading(true);
+    try {
+      const all = await db.loadReservasLog();
+      const filt = (all||[]).filter(e => soloInterno ? esRecintoInterno(e.recinto) : !esRecintoInterno(e.recinto));
+      filt.sort((a,b)=> (b.created_at||'').localeCompare(a.created_at||'') || (Number(b.id)||0)-(Number(a.id)||0));
+      setLog(filt);
+    } catch(e){ console.error('cargar log reservas:', e); setLog([]); }
+    finally { setLoading(false); }
+  };
+  useEffect(()=>{ cargar(); }, [db, soloInterno]);
+  const ACC = {
+    crear:    { label:'Creó',             cls:'info' },
+    modificar:{ label:'Modificó',         cls:'warn' },
+    aprobar:  { label:'Aprobó',           cls:'success' },
+    rechazar: { label:'Rechazó/Liberó',   cls:'danger' },
+    eliminar: { label:'Eliminó',          cls:'danger' },
+  };
+  const fmtTs = (iso) => { if(!iso) return '—'; const d=new Date(iso); return d.toLocaleString('es-CL',{day:'2-digit',month:'short',year:'numeric',hour:'2-digit',minute:'2-digit'}); };
+  const recintoNom = (c) => esRecintoInterno(c) ? nombreRecintoInterno(c) : (c||'—');
+  return (
+    <div className="card" style={{padding:0}}>
+      <div className="card-header" style={{padding:'14px 18px'}}>
+        <div><h3>📜 Historial de cambios</h3><div className="sub">Trazabilidad: quién creó, modificó, aprobó o eliminó cada reserva{soloInterno?' interna':''}.</div></div>
+        <button className="btn btn-ghost btn-sm" onClick={cargar} disabled={loading}>{loading?'Cargando…':'↻ Actualizar'}</button>
+      </div>
+      <div className="tbl-scroll" style={{maxHeight:560}}>
+        <table className="tbl">
+          <thead><tr><th>Fecha y hora</th><th>Acción</th><th>Recinto</th><th>Usuario</th><th>Detalle</th></tr></thead>
+          <tbody>
+            {(log||[]).map((e,i)=>{
+              const a = ACC[e.accion] || { label:e.accion, cls:'' };
+              return (
+                <tr key={e.id||i}>
+                  <td className="nowrap" style={{fontSize:12}}>{fmtTs(e.created_at)}</td>
+                  <td><span className={`chip ${a.cls}`}>{a.label}</span></td>
+                  <td style={{fontSize:12.5}}>{recintoNom(e.recinto)}</td>
+                  <td style={{fontSize:12.5}}><b>{e.usuario||'—'}</b></td>
+                  <td style={{fontSize:12,maxWidth:360}}>{e.detalle||'—'}</td>
+                </tr>
+              );
+            })}
+            {log && log.length===0 && <tr><td colSpan="5"><div className="empty"><span className="emoji">📭</span>Sin registros de cambios todavía.</div></td></tr>}
+            {!log && <tr><td colSpan="5"><div className="loader"><div className="spinner"/><div>Cargando historial…</div></div></td></tr>}
+          </tbody>
+        </table>
+      </div>
+      <div className="muted" style={{fontSize:11,padding:'8px 16px'}}>El historial se guarda en la tabla <code>reservas_log</code>. Si está vacío y esperabas registros, corre la migración SQL.</div>
+    </div>
+  );
+}
+
 /* ========= MODAL · EDITAR RESERVA (académica o interna) ========= */
 function ModalEditarReserva({ reserva, modulos, onSave, onClose }){
   const [fi, setFi]   = useState(reserva.fi || '');
@@ -5891,7 +5981,7 @@ function ModalEditarReserva({ reserva, modulos, onSave, onClose }){
 }
 
 /* ========= RESERVAS ========= */
-function Reservas({ reservas, data, user, toast, onGoNueva, onUpdateEstado, onUpdateReserva, onDeleteReserva }){
+function Reservas({ reservas, data, user, db, toast, onGoNueva, onUpdateEstado, onUpdateReserva, onDeleteReserva }){
   const [tab, setTab] = useState('lista');
   const [q, setQ] = useState('');
   const canApprove = user.role==='admin' || user.role==='reservador';
@@ -5983,8 +6073,9 @@ function Reservas({ reservas, data, user, toast, onGoNueva, onUpdateEstado, onUp
     } catch(e){ console.error('cambiar estado reserva:', e); toast(`No se pudo actualizar la reserva: ${e.message}`); }
   };
   const eliminarReserva = async (r) => {
-    if(!window.confirm(`¿Eliminar definitivamente esta reserva?\n${r.r} · ${fmtFecha(r.fi)} · ${r.mo||''}\n\nEsta acción no se puede deshacer.`)) return;
-    try { await onDeleteReserva(r.id); } catch(e){ /* el toast lo maneja App */ }
+    const motivo = window.prompt(`Eliminar definitivamente esta reserva:\n${r.r} · ${fmtFecha(r.fi)} · ${r.mo||''}\n\nIndica el motivo (queda registrado en el historial). Pulsa Cancelar para no eliminar:`, '');
+    if(motivo===null) return;
+    try { await onDeleteReserva(r.id, motivo); } catch(e){ /* el toast lo maneja App */ }
   };
 
   const fmtRel = (iso) => {
@@ -6019,6 +6110,7 @@ function Reservas({ reservas, data, user, toast, onGoNueva, onUpdateEstado, onUp
         <div className="seg">
           <button className={tab==='lista'?'on':''} onClick={()=>setTab('lista')}>Listado de reservas</button>
           {canApprove && <button className={tab==='resumen'?'on':''} onClick={()=>setTab('resumen')}>📊&nbsp;Dashboard</button>}
+          {canApprove && <button className={tab==='historial'?'on':''} onClick={()=>setTab('historial')}>📜&nbsp;Historial</button>}
           <button className={tab==='libres'?'on':''} onClick={()=>setTab('libres')}>{I.search}&nbsp;Buscar espacios libres</button>
         </div>
         {tab==='lista' && (
@@ -6129,6 +6221,8 @@ function Reservas({ reservas, data, user, toast, onGoNueva, onUpdateEstado, onUp
       </>}
 
       {tab==='resumen' && canApprove && <ResumenReservas reservas={reservas} data={data}/>}
+
+      {tab==='historial' && canApprove && <HistorialReservas db={db} soloInterno={false}/>}
 
       {tab==='libres' && <BuscarLibres data={data} reservas={reservas} onGoNueva={onGoNueva}/>}
 
@@ -6803,7 +6897,7 @@ function MapaAromos({ lotId, ocupados, seleccionado, onSelect }){
    aprobación la maneja el rol reservador_interno (+admin), separado del
    reservador académico. Las reservas internas no aparecen en la pestaña de
    salas académicas (se filtran por esRecintoInterno). */
-function RecintosInternos({ data, reservas, user, toast, onCreate, onUpdateEstado, onUpdateReserva, onDeleteReserva }){
+function RecintosInternos({ data, reservas, user, db, toast, onCreate, onUpdateEstado, onUpdateReserva, onDeleteReserva }){
   const canApprove = user.role==='admin' || user.role==='reservador_interno';
   const [tab, setTab] = useState('reservar');
   // Reservas reales de recintos internos + asignaciones fijas de jefaturas
@@ -6973,8 +7067,9 @@ function RecintosInternos({ data, reservas, user, toast, onCreate, onUpdateEstad
     } catch(e){ console.error('decidir reserva interna:', e); toast(`No se pudo actualizar: ${e.message}`); }
   };
   const eliminarInterna = async (r) => {
-    if(!window.confirm(`¿Eliminar definitivamente esta reserva?\n${nombreRecintoInterno(r.r)} · ${fmtFecha(r.fi)} · ${r.mo||''}\n\nEsta acción no se puede deshacer.`)) return;
-    try { await onDeleteReserva(r.id); } catch(e){ /* toast en App */ }
+    const motivo = window.prompt(`Eliminar definitivamente esta reserva:\n${nombreRecintoInterno(r.r)} · ${fmtFecha(r.fi)} · ${r.mo||''}\n\nIndica el motivo (queda registrado en el historial). Pulsa Cancelar para no eliminar:`, '');
+    if(motivo===null) return;
+    try { await onDeleteReserva(r.id, motivo); } catch(e){ /* toast en App */ }
   };
 
   // Bloque común a "Reservar recinto" y al panel del mapa de estacionamiento:
@@ -7028,6 +7123,7 @@ function RecintosInternos({ data, reservas, user, toast, onCreate, onUpdateEstad
         <button className={tab==='estacion'?'on':''} onClick={()=>setTab('estacion')}>🅿 Estacionamientos</button>
         <button className={tab==='horario'?'on':''} onClick={()=>setTab('horario')}>📅 Horario semanal</button>
         <button className={tab==='solicitudes'?'on':''} onClick={()=>setTab('solicitudes')}>📋 Solicitudes{canApprove && pendientes>0 ? ` (${pendientes})` : ''}</button>
+        {canApprove && <button className={tab==='historial'?'on':''} onClick={()=>setTab('historial')}>📜 Historial</button>}
       </div>
 
       {tab==='reservar' && (
@@ -7262,6 +7358,8 @@ function RecintosInternos({ data, reservas, user, toast, onCreate, onUpdateEstad
           </div>
         </div>
       )}
+
+      {tab==='historial' && canApprove && <HistorialReservas db={db} soloInterno={true}/>}
 
       {editando && <ModalEditarReserva reserva={editando} modulos={data.modulos} onClose={()=>setEditando(null)} onSave={(id,patch)=>onUpdateReserva(id,patch)}/>}
     </div>
@@ -9772,32 +9870,42 @@ function App(){
     clearCloudConfig(); setModeState(null); setData(null); setSupabase(null); setDbState(null);
   };
 
+  // Snapshot compacto de una reserva para el log de trazabilidad.
+  const snapReserva = (r) => r ? { fi:r.fi, ff:r.ff, dw:r.dw, r:r.r, mi:r.mi, mf:r.mf, hi:r.hi, hf:r.hf, mo:r.mo, do:r.do, co:r.co, es:r.es } : null;
   const createReserva = async (r) => {
     try {
       const saved = await db.createReserva(r);
       setReservas(prev => [saved, ...prev]);
+      db.logReserva?.({ reserva_id:saved.id, recinto:saved.r, accion:'crear', usuario:user?.username, nuevo:snapReserva(saved), detalle:`Creó la reserva (${saved.es})` });
       return saved;
     } catch(e){ setToast('Error al crear reserva: '+e.message); throw e; }
   };
   const updateReservaEstado = async (id, patch) => {
+    const prev = reservas.find(r => r.id===id);
     try {
       const saved = await db.updateReservaEstado(id, patch);
-      setReservas(prev => prev.map(r => r.id===id ? {...r, ...saved} : r));
+      setReservas(p => p.map(r => r.id===id ? {...r, ...saved} : r));
+      const accion = patch.es==='aprobada' ? 'aprobar' : patch.es==='rechazada' ? 'rechazar' : 'modificar';
+      db.logReserva?.({ reserva_id:id, recinto:prev?.r, accion, usuario:user?.username, anterior:snapReserva(prev), nuevo:snapReserva({...prev, ...saved}), detalle:`Cambió estado a ${patch.es}` });
       return saved;
     } catch(e){ setToast('Error al actualizar reserva: '+e.message); throw e; }
   };
   const updateReserva = async (id, patch) => {
+    const prev = reservas.find(r => r.id===id);
     try {
       const saved = await db.updateReserva(id, patch);
-      setReservas(prev => prev.map(r => r.id===id ? {...r, ...saved} : r));
+      setReservas(p => p.map(r => r.id===id ? {...r, ...saved} : r));
+      db.logReserva?.({ reserva_id:id, recinto:saved.r||prev?.r, accion:'modificar', usuario:user?.username, anterior:snapReserva(prev), nuevo:snapReserva({...prev, ...saved}), detalle:'Editó la reserva' });
       setToast('Reserva actualizada.');
       return saved;
     } catch(e){ setToast('Error al actualizar reserva: '+e.message); throw e; }
   };
-  const deleteReserva = async (id) => {
+  const deleteReserva = async (id, motivo) => {
+    const prev = reservas.find(r => r.id===id);
     try {
       await db.deleteReserva(id);
-      setReservas(prev => prev.filter(r => r.id!==id));
+      setReservas(p => p.filter(r => r.id!==id));
+      db.logReserva?.({ reserva_id:id, recinto:prev?.r, accion:'eliminar', usuario:user?.username, anterior:snapReserva(prev), detalle: motivo ? `Eliminó · motivo: ${motivo}` : 'Eliminó la reserva' });
       setToast('Reserva eliminada.');
     } catch(e){ setToast('Error al eliminar reserva: '+e.message); throw e; }
   };
@@ -9998,7 +10106,7 @@ function App(){
         pendientes={(reservas||[]).filter(r => r.es==='pendiente').length}>
         {view==='dashboard' && <Dashboard data={data} reservas={reservas} user={user} db={db} onGoView={setView} onGoNuevaPrefill={goNueva}/>}
         {view==='horario'   && <Horario data={data} reservas={reservas} onGoNueva={goNueva}/>}
-        {view==='reservas'  && <Reservas reservas={reservas} data={data} user={user} toast={setToast} onGoNueva={goNueva} onUpdateEstado={updateReservaEstado} onUpdateReserva={updateReserva} onDeleteReserva={deleteReserva}/>}
+        {view==='reservas'  && <Reservas reservas={reservas} data={data} user={user} db={db} toast={setToast} onGoNueva={goNueva} onUpdateEstado={updateReservaEstado} onUpdateReserva={updateReserva} onDeleteReserva={deleteReserva}/>}
         {view==='nueva'     && <NuevaReserva data={data} reservas={reservas} user={user} toast={setToast} goReservas={()=>setView('reservas')} prefill={prefillNueva} onCreate={createReserva}/>}
         {view==='importar'  && <ImportarDatos data={data} toast={setToast} db={db} user={user}
           onReplaceSabana={replaceProgramacionOp}
@@ -10015,7 +10123,7 @@ function App(){
         {view==='usuarios'  && <Usuarios users={users} toast={setToast} onCreate={createUser} onUpdate={updateUser} onDelete={deleteUser}/>}
         {view==='reportes'  && <Reportes data={data} reservas={reservas}/>}
         {view==='repDoc'    && <ReporteDocente data={data}/>}
-        {view==='recintos'  && <RecintosInternos data={data} reservas={reservas} user={user} toast={setToast} onCreate={createReserva} onUpdateEstado={updateReservaEstado} onUpdateReserva={updateReserva} onDeleteReserva={deleteReserva}/>}
+        {view==='recintos'  && <RecintosInternos data={data} reservas={reservas} user={user} db={db} toast={setToast} onCreate={createReserva} onUpdateEstado={updateReservaEstado} onUpdateReserva={updateReserva} onDeleteReserva={deleteReserva}/>}
         {view==='gestiones' && <Gestiones data={data} user={user} db={db} toast={setToast}/>}
         {view==='gestDoc'   && <GestionDocente/>}
         {view==='mapa'      && <MapaCalor data={data} user={user}/>}

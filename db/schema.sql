@@ -144,6 +144,24 @@ CREATE TABLE IF NOT EXISTS auditorias_log (
   created_at  TIMESTAMPTZ DEFAULT NOW()
 );
 CREATE INDEX IF NOT EXISTS idx_audit_log_audit_id ON auditorias_log(audit_id);
+
+-- LOG DE CAMBIOS de RESERVAS (trazabilidad: quién creó/modificó/aprobó/eliminó)
+CREATE TABLE IF NOT EXISTS reservas_log (
+  id          BIGSERIAL PRIMARY KEY,
+  reserva_id  BIGINT,            -- id de la reserva (puede ya no existir si fue eliminada)
+  recinto     TEXT,              -- código del recinto/sala/espacio
+  accion      TEXT NOT NULL,     -- 'crear'|'modificar'|'aprobar'|'rechazar'|'eliminar'
+  usuario     TEXT,              -- username que hizo el cambio
+  anterior    JSONB,             -- snapshot previo
+  nuevo       JSONB,             -- snapshot nuevo
+  detalle     TEXT,              -- nota / motivo
+  created_at  TIMESTAMPTZ DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_reservas_log_reserva ON reservas_log(reserva_id);
+CREATE INDEX IF NOT EXISTS idx_reservas_log_usuario ON reservas_log(usuario);
+ALTER TABLE reservas_log ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS allow_all ON reservas_log;
+CREATE POLICY allow_all ON reservas_log FOR ALL USING (true) WITH CHECK (true);
 CREATE INDEX IF NOT EXISTS idx_audit_log_usuario  ON auditorias_log(usuario);
 
 -- RESERVAS
