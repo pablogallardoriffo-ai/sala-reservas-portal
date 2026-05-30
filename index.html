@@ -1114,6 +1114,9 @@ const ASIGNACIONES_AROMOS_DEFAULT = (() => {
 let RECINTOS_INTERNOS = RECINTOS_INTERNOS_DEFAULT.map(r => ({...r}));
 let ESTACIONAMIENTOS = JSON.parse(JSON.stringify(ESTACIONAMIENTOS_DEFAULT));
 let ASIGNACIONES_AROMOS = {...ASIGNACIONES_AROMOS_DEFAULT};
+// Liberaciones temporales de espacios asignados (licencias, ausencias):
+// [{ num, desde, hasta, motivo }]. Durante ese rango el espacio queda libre.
+let LIBERACIONES_AROMOS = [];
 let RECINTOS_INTERNOS_MAP = new Map(RECINTOS_INTERNOS.map(r => [r.code, r]));
 const rebuildRecintosDerived = () => { RECINTOS_INTERNOS_MAP = new Map(RECINTOS_INTERNOS.map(r => [r.code, r])); };
 const applyRecintosCfg = (cfg) => {
@@ -1122,9 +1125,10 @@ const applyRecintosCfg = (cfg) => {
   if(Array.isArray(cfg.recintos)) RECINTOS_INTERNOS = cfg.recintos;
   if(cfg.estacionamientos && typeof cfg.estacionamientos === 'object') ESTACIONAMIENTOS = cfg.estacionamientos;
   if(cfg.asignaciones && typeof cfg.asignaciones === 'object') ASIGNACIONES_AROMOS = cfg.asignaciones;
+  LIBERACIONES_AROMOS = Array.isArray(cfg.liberaciones) ? cfg.liberaciones : [];
   rebuildRecintosDerived();
 };
-const getRecintosCfg = () => ({ recintos: RECINTOS_INTERNOS, estacionamientos: ESTACIONAMIENTOS, asignaciones: ASIGNACIONES_AROMOS });
+const getRecintosCfg = () => ({ recintos: RECINTOS_INTERNOS, estacionamientos: ESTACIONAMIENTOS, asignaciones: ASIGNACIONES_AROMOS, liberaciones: LIBERACIONES_AROMOS });
 
 const estSpotCode = (lotId, i) => `EST-${lotId}-${String(i+1).padStart(2,'0')}`;
 // ¿Un código de recinto pertenece al mundo interno? (catálogo o prefijo EST-).
@@ -1147,6 +1151,7 @@ const buildAsignacionesJefaturas = () => {
     for(const s of AROMOS_LAYOUT){
       const nombre = ASIGNACIONES_AROMOS[s.num];
       if(!nombre) continue;
+      const libera = LIBERACIONES_AROMOS.filter(L => Number(L.num) === s.num && L.desde);
       out.push({
         id: `asig-${lotId}-${s.num}`,
         r: estSpotCode(lotId, s.num - 1),
@@ -1155,6 +1160,7 @@ const buildAsignacionesJefaturas = () => {
         mo: `Asignación fija · ${nombre}`,
         do: nombre, co: '', ru: '',
         es: 'aprobada', ts: 'SI', creado_por: 'sistema', asignada: true,
+        libera,
       });
     }
   }
@@ -1385,7 +1391,9 @@ const reservaOcurreEn = (r, iso) => {
   if(!r || !iso || !r.fi) return false;
   const ff = r.ff || r.fi;
   if(iso < r.fi || iso > ff) return false;
-  if(r.dw && /1/.test(r.dw)) return r.dw[dowFromIso(iso)] === '1';
+  if(r.dw && /1/.test(r.dw) && r.dw[dowFromIso(iso)] !== '1') return false;
+  // Liberaciones (licencias/excepciones): la asignación NO ocupa en esas fechas.
+  if(r.libera && r.libera.some(L => iso >= L.desde && iso <= (L.hasta||L.desde))) return false;
   return true;
 };
 
@@ -6918,6 +6926,7 @@ function AdminRecintos({ db, toast, onSaved }){
   const [recintos, setRecintos] = useState(()=> cfg0.recintos.map(r=>({...r})));
   const [estac, setEstac] = useState(()=> JSON.parse(JSON.stringify(cfg0.estacionamientos)));
   const [asig, setAsig] = useState(()=> ({...cfg0.asignaciones}));
+  const [libera, setLibera] = useState(()=> (cfg0.liberaciones||[]).map(l=>({...l})));
   const [busy, setBusy] = useState(false);
 
   const updRec = (i,k,v) => setRecintos(rs => rs.map((r,idx)=> idx===i?{...r,[k]:v}:r));
@@ -6935,14 +6944,20 @@ function AdminRecintos({ db, toast, onSaved }){
 
   const updAsig = (num, nombre) => setAsig(a=>{ const n={...a}; if(String(nombre).trim()) n[num]=String(nombre).trim(); else delete n[num]; return n; });
 
+  const updLib = (i,k,v) => setLibera(ls => ls.map((l,idx)=> idx===i?{...l,[k]:v}:l));
+  const delLib = (i) => setLibera(ls => ls.filter((_,idx)=>idx!==i));
+  const addLib = () => { const asignados = Object.keys(asig).map(Number).sort((a,b)=>a-b); setLibera(ls => [...ls, { num: asignados[0]||1, desde: isoDate(new Date()), hasta:'', motivo:'Licencia' }]); };
+
   const guardar = async () => {
     const codes = recintos.map(r=>(r.code||'').trim());
     if(codes.some(c=>!c)) return toast('Todos los recintos necesitan un código.');
     if(new Set(codes).size !== codes.length) return toast('Hay códigos de recinto duplicados.');
     if(recintos.some(r=>!(r.nombre||'').trim())) return toast('Todos los recintos necesitan un nombre.');
+    const libValidas = libera.filter(l=>l.num && l.desde);
+    if(libValidas.some(l => l.hasta && l.hasta < l.desde)) return toast('Una liberación tiene "hasta" anterior a "desde".');
     setBusy(true);
     try {
-      const cfg = { recintos, estacionamientos:estac, asignaciones:asig };
+      const cfg = { recintos, estacionamientos:estac, asignaciones:asig, liberaciones: libValidas.map(l=>({ num:Number(l.num), desde:l.desde, hasta:l.hasta||l.desde, motivo:l.motivo||'' })) };
       if(db?.setSetting) await db.setSetting('recintos_cfg', JSON.stringify(cfg));
       applyRecintosCfg(cfg);
       toast(db?.isCloud ? 'Configuración guardada (compartida).' : 'Configuración guardada (local).');
@@ -6951,13 +6966,13 @@ function AdminRecintos({ db, toast, onSaved }){
     finally { setBusy(false); }
   };
   const restaurar = async () => {
-    if(!window.confirm('¿Restaurar la configuración por defecto? Se descartan los cambios guardados.')) return;
+    if(!window.confirm('¿Restaurar la configuración por defecto? Se descartan los cambios guardados (incluidas las liberaciones).')) return;
     setBusy(true);
     try {
       if(db?.setSetting) await db.setSetting('recintos_cfg', null);
-      const def = { recintos: RECINTOS_INTERNOS_DEFAULT.map(r=>({...r})), estacionamientos: JSON.parse(JSON.stringify(ESTACIONAMIENTOS_DEFAULT)), asignaciones: {...ASIGNACIONES_AROMOS_DEFAULT} };
+      const def = { recintos: RECINTOS_INTERNOS_DEFAULT.map(r=>({...r})), estacionamientos: JSON.parse(JSON.stringify(ESTACIONAMIENTOS_DEFAULT)), asignaciones: {...ASIGNACIONES_AROMOS_DEFAULT}, liberaciones: [] };
       applyRecintosCfg(def);
-      setRecintos(def.recintos); setEstac(def.estacionamientos); setAsig(def.asignaciones);
+      setRecintos(def.recintos); setEstac(def.estacionamientos); setAsig(def.asignaciones); setLibera([]);
       toast('Configuración restaurada a los valores por defecto.');
       onSaved && onSaved();
     } catch(e){ toast('Error: '+e.message); }
@@ -7019,6 +7034,23 @@ function AdminRecintos({ db, toast, onSaved }){
             </div>
           ))}
         </div>
+      </div>
+
+      {/* LIBERACIONES TEMPORALES (licencias / ausencias) */}
+      <div className="card" style={{padding:0}}>
+        <div className="card-header" style={{padding:'12px 16px'}}><div><h3>Liberaciones temporales · Aromos</h3><div className="sub">Libera un espacio asignado por un rango de fechas (licencia, ausencia). Durante ese período queda disponible para reservar; la asignación vuelve después.</div></div><button className="btn btn-ghost btn-sm" onClick={addLib} disabled={Object.keys(asig).length===0}>➕ Agregar</button></div>
+        <div className="tbl-scroll"><table className="tbl"><thead><tr><th>Espacio (jefatura)</th><th>Desde</th><th>Hasta</th><th>Motivo</th><th></th></tr></thead><tbody>
+          {libera.map((l,i)=>(
+            <tr key={i}>
+              <td><select value={l.num} onChange={e=>updLib(i,'num',Number(e.target.value))}>{Object.keys(asig).map(Number).sort((a,b)=>a-b).map(num=> <option key={num} value={num}>E{num} · {asig[num]}</option>)}</select></td>
+              <td><input type="date" value={l.desde||''} onChange={e=>updLib(i,'desde',e.target.value)}/></td>
+              <td><input type="date" value={l.hasta||''} min={l.desde||''} onChange={e=>updLib(i,'hasta',e.target.value)}/></td>
+              <td><input value={l.motivo||''} onChange={e=>updLib(i,'motivo',e.target.value)} placeholder="Licencia médica…" style={{minWidth:160}}/></td>
+              <td style={{textAlign:'right'}}><button className="btn btn-sm btn-ghost" style={{color:'var(--danger)'}} onClick={()=>delLib(i)}>{I.trash}</button></td>
+            </tr>
+          ))}
+          {libera.length===0 && <tr><td colSpan="5"><div className="empty" style={{padding:16}}>Sin liberaciones. Agrega una para liberar un espacio por licencia o ausencia.</div></td></tr>}
+        </tbody></table></div>
       </div>
 
       <div className="row" style={{justifyContent:'flex-end',gap:10,position:'sticky',bottom:0,background:'var(--bg)',padding:'10px 0'}}>
