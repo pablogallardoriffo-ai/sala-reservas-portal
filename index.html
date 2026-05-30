@@ -1524,6 +1524,23 @@ function createDb({ mode, supabase }){
     }
     return { id, ...patch };
   };
+  // Edición general de una reserva (fecha, módulos, motivo, estado, etc.).
+  const updateReserva = async (id, patch) => {
+    const clean = {...patch}; delete clean.id;
+    if(isCloud){
+      const { data, error } = await supabase.from('reservas').update(clean).eq('id', id).select().single();
+      if(error) throw new Error(error.message);
+      return data;
+    }
+    return { id, ...clean };
+  };
+  const deleteReserva = async (id) => {
+    if(isCloud){
+      const { error } = await supabase.from('reservas').delete().eq('id', id);
+      if(error) throw new Error(error.message);
+    }
+    return true;
+  };
 
   /* ----- SALAS ----- */
   const createSala = async (s) => {
@@ -1844,7 +1861,7 @@ function createDb({ mode, supabase }){
   return {
     isCloud, mode,
     loadAll, login,
-    createReserva, updateReservaEstado,
+    createReserva, updateReservaEstado, updateReserva, deleteReserva,
     createSala, updateSala, deleteSala,
     createUser, updateUser, deleteUser,
     replaceProgramacion, replaceEventos, replaceJefes, seedFromBundle,
@@ -5722,8 +5739,77 @@ function Countdown({ creadoEn, sla = SLA_MS, compact = false }){
   );
 }
 
+/* ========= MODAL · EDITAR RESERVA (académica o interna) ========= */
+function ModalEditarReserva({ reserva, modulos, onSave, onClose }){
+  const [fi, setFi]   = useState(reserva.fi || '');
+  const [ff, setFf]   = useState(reserva.ff || '');
+  const [mi, setMi]   = useState(Number(reserva.mi)||1);
+  const [mf, setMf]   = useState(Number(reserva.mf)||1);
+  const [mo, setMo]   = useState(reserva.mo || '');
+  const [doc, setDoc] = useState(reserva.do || '');
+  const [co, setCo]   = useState(reserva.co || '');
+  const [obs, setObs] = useState(reserva.observacion || '');
+  const [es, setEs]   = useState(reserva.es || 'pendiente');
+  const recurrente = !!(reserva.dw && /1/.test(reserva.dw));
+  const [dw, setDw]   = useState(reserva.dw || '');
+  const [err, setErr] = useState('');
+  const guardar = () => {
+    if(!fi) return setErr('Indica la fecha.');
+    if(Number(mi) > Number(mf)) return setErr('El módulo inicio debe ser ≤ módulo fin.');
+    if(recurrente && !/1/.test(dw)) return setErr('Marca al menos un día de la semana.');
+    const mIni = modulos.find(m=>m.num===Number(mi)), mFin = modulos.find(m=>m.num===Number(mf));
+    const patch = {
+      fi, ff: ff||fi, mi:Number(mi), mf:Number(mf),
+      hi: mIni?.inicio||'', hf: mFin?.fin||'',
+      mo, do: doc, co, observacion: obs, es,
+    };
+    if(recurrente) patch.dw = dw;
+    onSave(reserva.id, patch);
+    onClose();
+  };
+  return (
+    <Modal title="✏️ Editar reserva" onClose={onClose} onSave={guardar}>
+      <div className="stack" style={{gap:10}}>
+        <div className="muted" style={{fontSize:12}}>Recinto: <b>{esRecintoInterno(reserva.r)?nombreRecintoInterno(reserva.r):reserva.r}</b> <span style={{opacity:.7}}>(no se cambia aquí; si necesitas otro recinto, elimina y crea una nueva)</span></div>
+        <div className="col-2">
+          <div className="field"><label>{recurrente?'Primera fecha':'Fecha'}</label><input type="date" value={fi} onChange={e=>{setFi(e.target.value); setErr('');}}/></div>
+          <div className="field"><label>Estado</label>
+            <select value={es} onChange={e=>setEs(e.target.value)}>
+              <option value="pendiente">Pendiente</option>
+              <option value="aprobada">Aprobada</option>
+              <option value="rechazada">Rechazada</option>
+            </select>
+          </div>
+        </div>
+        <div className="col-2">
+          <div className="field"><label>Módulo inicio</label><select value={mi} onChange={e=>{setMi(Number(e.target.value)); setErr('');}}>{modulos.map(m=> <option key={m.num} value={m.num}>Mód. {m.num} ({m.inicio})</option>)}</select></div>
+          <div className="field"><label>Módulo fin</label><select value={mf} onChange={e=>{setMf(Number(e.target.value)); setErr('');}}>{modulos.map(m=> <option key={m.num} value={m.num}>Mód. {m.num} ({m.fin})</option>)}</select></div>
+        </div>
+        {recurrente && (
+          <div className="stack" style={{gap:8}}>
+            <div>
+              <div className="muted" style={{fontSize:11,marginBottom:5}}>Días (recurrente)</div>
+              <div className="row" style={{gap:6,flexWrap:'wrap'}}>
+                {DOW_LBL.map((lbl,i)=>{ const on=(dw||'')[i]==='1'; return <button key={i} type="button" className={on?'btn btn-sm btn-primary':'btn btn-sm btn-ghost'} style={{padding:'4px 12px'}} onClick={()=>{const arr=[...(dw||'0000000')];arr[i]=on?'0':'1';setDw(arr.join(''));}}>{lbl}</button>; })}
+              </div>
+            </div>
+            <div className="field" style={{maxWidth:220}}><label>Repetir hasta</label><input type="date" value={ff} min={fi} onChange={e=>setFf(e.target.value)}/></div>
+          </div>
+        )}
+        <div className="col-2">
+          <div className="field"><label>Responsable</label><input value={doc} onChange={e=>setDoc(e.target.value)}/></div>
+          <div className="field"><label>Correo</label><input type="email" value={co} onChange={e=>setCo(e.target.value)}/></div>
+        </div>
+        <div className="field"><label>Motivo</label><input value={mo} onChange={e=>setMo(e.target.value)}/></div>
+        <div className="field"><label>Observación</label><textarea value={obs} onChange={e=>setObs(e.target.value)}/></div>
+        {err && <div style={{color:'var(--danger)',fontSize:12.5,padding:'8px 10px',background:'var(--danger-bg)',borderRadius:6}}>⚠ {err}</div>}
+      </div>
+    </Modal>
+  );
+}
+
 /* ========= RESERVAS ========= */
-function Reservas({ reservas, data, user, toast, onGoNueva, onUpdateEstado }){
+function Reservas({ reservas, data, user, toast, onGoNueva, onUpdateEstado, onUpdateReserva, onDeleteReserva }){
   const [tab, setTab] = useState('lista');
   const [q, setQ] = useState('');
   const canApprove = user.role==='admin' || user.role==='reservador';
@@ -5807,11 +5893,16 @@ function Reservas({ reservas, data, user, toast, onGoNueva, onUpdateEstado }){
     });
   },[ownArr, q, estado, sortKey, sortDir, salaTipoMap]);
 
+  const [editando, setEditando] = useState(null);
   const setEstadoReserva = async (id, nuevo) => {
     try {
       await onUpdateEstado(id, { es:nuevo, decidido_por:user.username, decidido_en:new Date().toISOString() });
       toast(`Reserva ${nuevo==='aprobada'?'aprobada':'rechazada'}.`);
     } catch(e){ console.error('cambiar estado reserva:', e); toast(`No se pudo actualizar la reserva: ${e.message}`); }
+  };
+  const eliminarReserva = async (r) => {
+    if(!window.confirm(`¿Eliminar definitivamente esta reserva?\n${r.r} · ${fmtFecha(r.fi)} · ${r.mo||''}\n\nEsta acción no se puede deshacer.`)) return;
+    try { await onDeleteReserva(r.id); } catch(e){ /* el toast lo maneja App */ }
   };
 
   const fmtRel = (iso) => {
@@ -5925,7 +6016,11 @@ function Reservas({ reservas, data, user, toast, onGoNueva, onUpdateEstado }){
                     <td className="nowrap" style={{textAlign:'right'}}>
                       {canApprove && r.es==='pendiente' && <>
                         <button className="btn btn-sm btn-success" onClick={()=>setEstadoReserva(r.id,'aprobada')}>{I.check}Aprobar</button>{' '}
-                        <button className="btn btn-sm btn-danger" onClick={()=>setEstadoReserva(r.id,'rechazada')}>{I.x}Rechazar</button>
+                        <button className="btn btn-sm btn-danger" onClick={()=>setEstadoReserva(r.id,'rechazada')}>{I.x}Rechazar</button>{' '}
+                      </>}
+                      {canApprove && <>
+                        <button className="btn btn-sm btn-ghost" title="Modificar reserva" onClick={()=>setEditando(r)}>{I.edit}</button>{' '}
+                        <button className="btn btn-sm btn-ghost" title="Eliminar reserva" style={{color:'var(--danger)'}} onClick={()=>eliminarReserva(r)}>{I.trash}</button>
                       </>}
                       {!canApprove && r.es==='pendiente' && (r.creado_por===user.username || r.co===user.email) && (
                         <button className="btn btn-sm btn-ghost" onClick={()=>{
@@ -5946,6 +6041,8 @@ function Reservas({ reservas, data, user, toast, onGoNueva, onUpdateEstado }){
       {tab==='resumen' && canApprove && <ResumenReservas reservas={reservas} data={data}/>}
 
       {tab==='libres' && <BuscarLibres data={data} reservas={reservas} onGoNueva={onGoNueva}/>}
+
+      {editando && <ModalEditarReserva reserva={editando} modulos={data.modulos} onClose={()=>setEditando(null)} onSave={(id,patch)=>onUpdateReserva(id,patch)}/>}
     </div>
   );
 }
@@ -6616,7 +6713,7 @@ function MapaAromos({ lotId, ocupados, seleccionado, onSelect }){
    aprobación la maneja el rol reservador_interno (+admin), separado del
    reservador académico. Las reservas internas no aparecen en la pestaña de
    salas académicas (se filtran por esRecintoInterno). */
-function RecintosInternos({ data, reservas, user, toast, onCreate, onUpdateEstado }){
+function RecintosInternos({ data, reservas, user, toast, onCreate, onUpdateEstado, onUpdateReserva, onDeleteReserva }){
   const canApprove = user.role==='admin' || user.role==='reservador_interno';
   const [tab, setTab] = useState('reservar');
   // Reservas reales de recintos internos + asignaciones fijas de jefaturas
@@ -6778,11 +6875,16 @@ function RecintosInternos({ data, reservas, user, toast, onCreate, onUpdateEstad
   },[internas, canApprove, user]);
   const pendientes = internas.filter(r => r.es==='pendiente').length;
 
+  const [editando, setEditando] = useState(null);
   const decidir = async (id, nuevo) => {
     try {
       await onUpdateEstado(id, { es:nuevo, decidido_por:user.username, decidido_en:new Date().toISOString() });
       toast(`Reserva ${nuevo==='aprobada'?'aprobada':'rechazada'}.`);
     } catch(e){ console.error('decidir reserva interna:', e); toast(`No se pudo actualizar: ${e.message}`); }
+  };
+  const eliminarInterna = async (r) => {
+    if(!window.confirm(`¿Eliminar definitivamente esta reserva?\n${nombreRecintoInterno(r.r)} · ${fmtFecha(r.fi)} · ${r.mo||''}\n\nEsta acción no se puede deshacer.`)) return;
+    try { await onDeleteReserva(r.id); } catch(e){ /* toast en App */ }
   };
 
   // Bloque común a "Reservar recinto" y al panel del mapa de estacionamiento:
@@ -7055,9 +7157,11 @@ function RecintosInternos({ data, reservas, user, toast, onCreate, onUpdateEstad
                     {canApprove && <td className="nowrap" style={{textAlign:'right'}}>
                       {r.es==='pendiente' && <>
                         <button className="btn btn-sm btn-success" onClick={()=>decidir(r.id,'aprobada')}>{I.check}</button>{' '}
-                        <button className="btn btn-sm btn-danger" onClick={()=>decidir(r.id,'rechazada')}>{I.x}</button>
+                        <button className="btn btn-sm btn-danger" onClick={()=>decidir(r.id,'rechazada')}>{I.x}</button>{' '}
                       </>}
-                      {r.es==='aprobada' && <button className="btn btn-sm btn-ghost" title="Liberar el espacio (anula esta reserva)" onClick={()=>{ if(window.confirm(`¿Liberar "${nombreRecintoInterno(r.r)}"? La reserva quedará anulada y el espacio disponible.`)) decidir(r.id,'rechazada'); }}>Liberar</button>}
+                      {r.es==='aprobada' && <><button className="btn btn-sm btn-ghost" title="Liberar el espacio (anula esta reserva)" onClick={()=>{ if(window.confirm(`¿Liberar "${nombreRecintoInterno(r.r)}"? La reserva quedará anulada y el espacio disponible.`)) decidir(r.id,'rechazada'); }}>Liberar</button>{' '}</>}
+                      <button className="btn btn-sm btn-ghost" title="Modificar reserva" onClick={()=>setEditando(r)}>{I.edit}</button>{' '}
+                      <button className="btn btn-sm btn-ghost" title="Eliminar reserva" style={{color:'var(--danger)'}} onClick={()=>eliminarInterna(r)}>{I.trash}</button>
                     </td>}
                   </tr>
                 ))}
@@ -7067,6 +7171,8 @@ function RecintosInternos({ data, reservas, user, toast, onCreate, onUpdateEstad
           </div>
         </div>
       )}
+
+      {editando && <ModalEditarReserva reserva={editando} modulos={data.modulos} onClose={()=>setEditando(null)} onSave={(id,patch)=>onUpdateReserva(id,patch)}/>}
     </div>
   );
 }
@@ -9582,6 +9688,21 @@ function App(){
       return saved;
     } catch(e){ setToast('Error al actualizar reserva: '+e.message); throw e; }
   };
+  const updateReserva = async (id, patch) => {
+    try {
+      const saved = await db.updateReserva(id, patch);
+      setReservas(prev => prev.map(r => r.id===id ? {...r, ...saved} : r));
+      setToast('Reserva actualizada.');
+      return saved;
+    } catch(e){ setToast('Error al actualizar reserva: '+e.message); throw e; }
+  };
+  const deleteReserva = async (id) => {
+    try {
+      await db.deleteReserva(id);
+      setReservas(prev => prev.filter(r => r.id!==id));
+      setToast('Reserva eliminada.');
+    } catch(e){ setToast('Error al eliminar reserva: '+e.message); throw e; }
+  };
 
   const createSala = async (s) => {
     try {
@@ -9779,7 +9900,7 @@ function App(){
         pendientes={(reservas||[]).filter(r => r.es==='pendiente').length}>
         {view==='dashboard' && <Dashboard data={data} reservas={reservas} user={user} db={db} onGoView={setView} onGoNuevaPrefill={goNueva}/>}
         {view==='horario'   && <Horario data={data} reservas={reservas} onGoNueva={goNueva}/>}
-        {view==='reservas'  && <Reservas reservas={reservas} data={data} user={user} toast={setToast} onGoNueva={goNueva} onUpdateEstado={updateReservaEstado}/>}
+        {view==='reservas'  && <Reservas reservas={reservas} data={data} user={user} toast={setToast} onGoNueva={goNueva} onUpdateEstado={updateReservaEstado} onUpdateReserva={updateReserva} onDeleteReserva={deleteReserva}/>}
         {view==='nueva'     && <NuevaReserva data={data} reservas={reservas} user={user} toast={setToast} goReservas={()=>setView('reservas')} prefill={prefillNueva} onCreate={createReserva}/>}
         {view==='importar'  && <ImportarDatos data={data} toast={setToast} db={db} user={user}
           onReplaceSabana={replaceProgramacionOp}
@@ -9796,7 +9917,7 @@ function App(){
         {view==='usuarios'  && <Usuarios users={users} toast={setToast} onCreate={createUser} onUpdate={updateUser} onDelete={deleteUser}/>}
         {view==='reportes'  && <Reportes data={data} reservas={reservas}/>}
         {view==='repDoc'    && <ReporteDocente data={data}/>}
-        {view==='recintos'  && <RecintosInternos data={data} reservas={reservas} user={user} toast={setToast} onCreate={createReserva} onUpdateEstado={updateReservaEstado}/>}
+        {view==='recintos'  && <RecintosInternos data={data} reservas={reservas} user={user} toast={setToast} onCreate={createReserva} onUpdateEstado={updateReservaEstado} onUpdateReserva={updateReserva} onDeleteReserva={deleteReserva}/>}
         {view==='gestiones' && <Gestiones data={data} user={user} db={db} toast={setToast}/>}
         {view==='gestDoc'   && <GestionDocente/>}
         {view==='mapa'      && <MapaCalor data={data} user={user}/>}
