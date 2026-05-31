@@ -270,6 +270,13 @@
       box-shadow:0 0 0 3px rgba(0,60,130,.12);
     }
     .field textarea{min-height:80px;resize:vertical}
+    /* Accesibilidad: foco visible para navegación por teclado. :focus-visible
+       solo se activa con teclado, no al hacer click con mouse. */
+    a:focus-visible, button:focus-visible, .btn:focus-visible, .btn-icon:focus-visible,
+    .seg button:focus-visible, .state-chip:focus-visible, [tabindex]:focus-visible,
+    input:focus-visible, select:focus-visible, textarea:focus-visible{
+      outline:2px solid var(--accent); outline-offset:2px; border-radius:6px;
+    }
 
     .btn{
       display:inline-flex;align-items:center;justify-content:center;gap:8px;
@@ -10849,7 +10856,7 @@ function Modal({ title, children, onClose, onSave, saveLabel='Guardar', wide=fal
   return (
     <div className="modal-back" onClick={onClose}>
       <div className={`modal ${wide?'modal-wide':''}`} onClick={e=>e.stopPropagation()}>
-        <div className="modal-h"><h3>{title}</h3><button className="btn-icon" onClick={onClose}>{I.x}</button></div>
+        <div className="modal-h"><h3>{title}</h3><button className="btn-icon" aria-label="Cerrar" title="Cerrar" onClick={onClose}>{I.x}</button></div>
         <div className="modal-b">{children}</div>
         <div className="modal-f">
           <button className="btn btn-ghost" onClick={onClose}>{onSave?'Cancelar':'Cerrar'}</button>
