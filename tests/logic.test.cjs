@@ -156,6 +156,57 @@ test('agregar recinto nuevo se reconoce como interno', () => {
   core.applyRecintosCfg({ recintos: core.RECINTOS_INTERNOS_DEFAULT, estacionamientos: core.ESTACIONAMIENTOS_DEFAULT, asignaciones: core.ASIGNACIONES_AROMOS_DEFAULT, liberaciones: [] });
 });
 
+// ---------- Reportes: lógica pura ----------
+test('computeReservasReport: estados, SLA y rankings', () => {
+  const reservas = [
+    { r:'A-1', es:'aprobada',  creado_en:'2026-06-01T10:00:00Z', decidido_en:'2026-06-01T10:30:00Z', do:'Ana' },   // SLA 30
+    { r:'A-1', es:'aprobada',  creado_en:'2026-06-02T10:00:00Z', decidido_en:'2026-06-02T11:00:00Z', do:'Ana' },   // SLA 60
+    { r:'B-2', es:'rechazada', creado_en:'2026-06-03T10:00:00Z', decidido_en:'2026-06-03T10:20:00Z', do:'Luis' },  // SLA 20
+    { r:'B-2', es:'pendiente', creado_en:'2026-06-04T10:00:00Z', do:'Luis' },
+    { r:'B-2', es:'aprobada',  dw:'1010100', do:'Eva' },  // recurrente, sin SLA
+  ];
+  const rep = core.computeReservasReport(reservas);
+  assert.strictEqual(rep.total, 5);
+  assert.strictEqual(rep.porEstado.aprobada, 3);
+  assert.strictEqual(rep.porEstado.pendiente, 1);
+  assert.strictEqual(rep.porEstado.rechazada, 1);
+  assert.strictEqual(rep.recurrentes, 1);
+  // % aprobación = 3 aprob / (3+1 rech... =4 decididas) = 75
+  assert.strictEqual(rep.pctAprob, 75);
+  // SLA promedio = (30+60+20)/3 = 36.67 → 37
+  assert.strictEqual(rep.slaProm, 37);
+  assert.strictEqual(rep.topSalas[0].codigo, 'B-2'); // 3 reservas
+  assert.strictEqual(rep.topSalas[0].total, 3);
+});
+
+test('computeAnomalias: sobreaforo, sin alumnos, choque docente', () => {
+  const salas = [
+    { codigo:'S1', capacidad:30 }, { codigo:'S2', capacidad:20 },
+    { codigo:'VIRT', capacidad:0, nombre:'Sala VIRTUAL' },
+  ];
+  const sesiones = [
+    { s:'S1', sc:'X-1', d:'Ana', hi:'08:01', hf:'08:40', fi:'2026-06-08', i:35 }, // sobreaforo +5
+    { s:'S2', sc:'X-2', d:'Luis', hi:'08:01', hf:'08:40', fi:'2026-06-08', i:0 },  // sin alumnos
+    { s:'VIRT', sc:'X-3', d:'Eva', hi:'09:31', hf:'10:10', fi:'2026-06-08', i:12 },// sala virtual
+    // Choque: Ana en S1 y S2 a la misma hora/fecha
+    { s:'S2', sc:'X-9', d:'Ana', hi:'08:01', hf:'08:40', fi:'2026-06-08', i:10 },
+  ];
+  const an = core.computeAnomalias(sesiones, salas);
+  assert.strictEqual(an.sobreaforo.length, 1);
+  assert.strictEqual(an.sobreaforo[0].exceso, 5);
+  assert.strictEqual(an.sinAlumnos.length, 1);
+  assert.strictEqual(an.salaVirtual.length, 1);
+  assert.strictEqual(an.choqueDocente.length, 1);
+  assert.deepStrictEqual(an.choqueDocente[0].salas.sort(), ['S1','S2']);
+});
+
+test('pctDelta: variación porcentual', () => {
+  assert.strictEqual(core.pctDelta(120, 100), 20);
+  assert.strictEqual(core.pctDelta(80, 100), -20);
+  assert.strictEqual(core.pctDelta(5, 0), 100);  // desde 0
+  assert.strictEqual(core.pctDelta(0, 0), 0);
+});
+
 test('liberación en config libera la asignación esos días', () => {
   const cfg = core.getRecintosCfg();
   core.applyRecintosCfg({ ...cfg, liberaciones: [{ num: 5, desde: '2026-07-01', hasta: '2026-07-10', motivo: 'Licencia' }] });

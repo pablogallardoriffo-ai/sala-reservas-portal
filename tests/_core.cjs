@@ -49,6 +49,7 @@ const EXPORTS = [
   'rangeOverlapsModules','moduleInTimeRange','moduloInfo','moduleRunningNow','toMin',
   'estSpotCode','esRecintoInterno','nombreRecintoInterno','jefaturaDeAromos',
   'applyRecintosCfg','getRecintosCfg','buildAsignacionesJefaturas',
+  'computeReservasReport','computeAnomalias','pctDelta','isSalaVirtual',
   'RECINTOS_INTERNOS_DEFAULT','ESTACIONAMIENTOS_DEFAULT','ASIGNACIONES_AROMOS_DEFAULT','AROMOS_LAYOUT',
 ];
 const footer = '\n;return {' + EXPORTS.map(n => `${n}: (typeof ${n}!=="undefined"?${n}:undefined)`).join(',') + '};\n';

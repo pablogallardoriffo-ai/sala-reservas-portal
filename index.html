@@ -8071,6 +8071,79 @@ function ResumenReportes({ data, resumen, reporteEscuela, reporteDocentes, repor
   );
 }
 
+/* ===== Lógica pura de reportes (extraída para poder testearla aparte) ===== */
+// Agrega un arreglo de reservas: estados, SLA de decisión, recurrentes y
+// rankings por recinto y por solicitante.
+function computeReservasReport(reservasArr){
+  const items = (reservasArr||[]).map(r => {
+    let slaMin = null;
+    if(r.creado_en && r.decidido_en){
+      const ms = new Date(r.decidido_en) - new Date(r.creado_en);
+      if(!isNaN(ms) && ms >= 0) slaMin = Math.round(ms/60000);
+    }
+    return { ...r, recurrencia: recurrenciaLabel(r) || 'Puntual', slaMin };
+  });
+  const porEstado = { pendiente:0, aprobada:0, rechazada:0 };
+  const porSala = new Map();
+  const porSolic = new Map();
+  let recurrentes = 0, slaSum = 0, slaN = 0;
+  for(const r of items){
+    porEstado[r.es] = (porEstado[r.es]||0) + 1;
+    if(esRecurrente(r)) recurrentes++;
+    const ksala = r.r || '(sin recinto)';
+    porSala.set(ksala, (porSala.get(ksala)||0) + 1);
+    const ksol = (r.do || r.creado_por || '(anónimo)').trim();
+    porSolic.set(ksol, (porSolic.get(ksol)||0) + 1);
+    if(r.slaMin != null){ slaSum += r.slaMin; slaN++; }
+  }
+  const decididas = porEstado.aprobada + porEstado.rechazada;
+  const topSalas = [...porSala.entries()].sort((a,b)=> b[1]-a[1]).slice(0,10).map(([k,v])=>({ codigo:k, total:v }));
+  const topSolic = [...porSolic.entries()].sort((a,b)=> b[1]-a[1]).slice(0,10).map(([k,v])=>({ nombre:k, total:v }));
+  return {
+    items, total: items.length, porEstado, recurrentes,
+    pctAprob: decididas ? Math.round(porEstado.aprobada/decididas*100) : 0,
+    slaProm: slaN ? Math.round(slaSum/slaN) : 0,
+    topSalas, topSolic,
+  };
+}
+
+// Detecta anomalías en las sesiones: sobreaforo, sin alumnos, sala virtual con
+// clase presencial, y choque de docente (dos salas a la misma hora/fecha).
+function computeAnomalias(sesiones, salas){
+  const capBySala = new Map((salas||[]).map(s => [s.codigo, s.capacidad||0]));
+  const infoSala = new Map((salas||[]).map(s => [s.codigo, s]));
+  const sobreaforo = [], sinAlumnos = [], salaVirtual = [], choqueDocente = [];
+  const porDocenteSlot = new Map();
+  const seenInstance = new Set();
+  for(const s of (sesiones||[])){
+    const k = `${s.s||''}|${s.sc||''}|${s.hi}|${s.hf}|${s.fi||s.dw||''}`;
+    if(seenInstance.has(k)) continue;
+    seenInstance.add(k);
+    const cap = capBySala.get(s.s) || 0;
+    const ins = Number(s.i) || 0;
+    const sInfo = infoSala.get(s.s);
+    if(cap > 0 && ins > cap) sobreaforo.push({ ...s, cap, exceso: ins - cap });
+    if(s.sc && ins === 0) sinAlumnos.push(s);
+    if(sInfo && isSalaVirtual(sInfo) && ins > 0) salaVirtual.push({ ...s, capacidad: cap });
+    if(s.d && s.fi){
+      const k2 = `${s.d}|${s.fi}|${s.hi}|${s.hf}`;
+      if(!porDocenteSlot.has(k2)) porDocenteSlot.set(k2, []);
+      porDocenteSlot.get(k2).push(s);
+    }
+  }
+  for(const [k, arr] of porDocenteSlot){
+    if(arr.length > 1){
+      const salasDup = [...new Set(arr.map(x => x.s))];
+      if(salasDup.length > 1) choqueDocente.push({ docente: arr[0].d, fi: arr[0].fi, hi: arr[0].hi, hf: arr[0].hf, salas: salasDup, sesiones: arr });
+    }
+  }
+  sobreaforo.sort((a,b)=> b.exceso - a.exceso);
+  return { sobreaforo, sinAlumnos, salaVirtual, choqueDocente, total: sobreaforo.length+sinAlumnos.length+salaVirtual.length+choqueDocente.length };
+}
+
+// Variación porcentual entre dos valores (para comparativas).
+function pctDelta(a, b){ return b === 0 ? (a > 0 ? 100 : 0) : Math.round(((a - b) / b) * 100); }
+
 function Reportes({ data, reservas }){
   const [tab, setTab] = useState('resumen');
   const usaEventos = hasEventos(data);
@@ -8467,75 +8540,10 @@ function Reportes({ data, reservas }){
   // === Reporte de reservas (académicas + internas) ===
   // Aplica filtros globales (rango fechas + edificio cuando aplica). Calcula
   // SLA por reserva y agrega por sala, por solicitante y por estado.
-  const reporteReservas = useMemo(()=>{
-    const items = (reservasFiltradas||[]).map(r => {
-      let slaMin = null;
-      if(r.creado_en && r.decidido_en){
-        const ms = new Date(r.decidido_en) - new Date(r.creado_en);
-        if(!isNaN(ms) && ms >= 0) slaMin = Math.round(ms/60000);
-      }
-      return { ...r, recurrencia: recurrenciaLabel(r) || 'Puntual', slaMin };
-    });
-    const porEstado = { pendiente:0, aprobada:0, rechazada:0 };
-    const porSala = new Map();
-    const porSolic = new Map();
-    let recurrentes = 0, slaSum = 0, slaN = 0;
-    for(const r of items){
-      porEstado[r.es] = (porEstado[r.es]||0) + 1;
-      if(esRecurrente(r)) recurrentes++;
-      const ksala = r.r || '(sin recinto)';
-      porSala.set(ksala, (porSala.get(ksala)||0) + 1);
-      const ksol = (r.do || r.creado_por || '(anónimo)').trim();
-      porSolic.set(ksol, (porSolic.get(ksol)||0) + 1);
-      if(r.slaMin != null){ slaSum += r.slaMin; slaN++; }
-    }
-    const decididas = porEstado.aprobada + porEstado.rechazada;
-    const topSalas = [...porSala.entries()].sort((a,b)=> b[1]-a[1]).slice(0,10).map(([k,v])=>({ codigo:k, total:v }));
-    const topSolic = [...porSolic.entries()].sort((a,b)=> b[1]-a[1]).slice(0,10).map(([k,v])=>({ nombre:k, total:v }));
-    return {
-      items, total: items.length, porEstado, recurrentes,
-      pctAprob: decididas ? Math.round(porEstado.aprobada/decididas*100) : 0,
-      slaProm: slaN ? Math.round(slaSum/slaN) : 0,
-      topSalas, topSolic,
-    };
-  }, [reservasFiltradas]);
+  const reporteReservas = useMemo(()=> computeReservasReport(reservasFiltradas), [reservasFiltradas]);
 
-  // === Anomalías detectadas en la programación cargada ===
-  // - sobreaforo: clases con más inscritos que la capacidad de la sala
-  // - sin_alumnos: clases con 0 inscritos (¿sección cancelada o sin registrar?)
-  // - sala_virtual: clase asignada a una sala marcada como VIRTUAL (no presencial)
-  // - choque_docente: el mismo docente con clase paralela en distinto recinto
-  const reporteAnomalias = useMemo(()=>{
-    const capBySala = new Map(data.salas.map(s => [s.codigo, s.capacidad||0]));
-    const infoSala = new Map(data.salas.map(s => [s.codigo, s]));
-    const sobreaforo = [], sinAlumnos = [], salaVirtual = [], choqueDocente = [];
-    const porDocenteSlot = new Map();        // d|fi|hi → array de sesiones
-    const seenInstance = new Set();
-    for(const s of sesiones){
-      const k = `${s.s||''}|${s.sc||''}|${s.hi}|${s.hf}|${s.fi||s.dw||''}`;
-      if(seenInstance.has(k)) continue;
-      seenInstance.add(k);
-      const cap = capBySala.get(s.s) || 0;
-      const ins = Number(s.i) || 0;
-      const sInfo = infoSala.get(s.s);
-      if(cap > 0 && ins > cap) sobreaforo.push({ ...s, cap, exceso: ins - cap });
-      if(s.sc && ins === 0) sinAlumnos.push(s);
-      if(sInfo && isSalaVirtual(sInfo) && ins > 0) salaVirtual.push({ ...s, capacidad: cap });
-      if(s.d && s.fi){
-        const k2 = `${s.d}|${s.fi}|${s.hi}|${s.hf}`;
-        if(!porDocenteSlot.has(k2)) porDocenteSlot.set(k2, []);
-        porDocenteSlot.get(k2).push(s);
-      }
-    }
-    for(const [k, arr] of porDocenteSlot){
-      if(arr.length > 1){
-        const salas = [...new Set(arr.map(x => x.s))];
-        if(salas.length > 1) choqueDocente.push({ docente: arr[0].d, fi: arr[0].fi, hi: arr[0].hi, hf: arr[0].hf, salas, sesiones: arr });
-      }
-    }
-    sobreaforo.sort((a,b)=> b.exceso - a.exceso);
-    return { sobreaforo, sinAlumnos, salaVirtual, choqueDocente, total: sobreaforo.length+sinAlumnos.length+salaVirtual.length+choqueDocente.length };
-  }, [sesiones, data.salas]);
+  // === Anomalías detectadas en la programación cargada (lógica en computeAnomalias) ===
+  const reporteAnomalias = useMemo(()=> computeAnomalias(sesiones, data.salas), [sesiones, data.salas]);
 
   // === Comparativa con período anterior === se compara con el mismo número
   // de días previos al rango filtrado. Sin rango, no se calcula.
@@ -8572,17 +8580,16 @@ function Reportes({ data, reservas }){
     };
     const actual = metrics(filt.desde, filt.hasta);
     const prev   = metrics(prevFi, prevFf);
-    const delta = (a,b) => b===0 ? (a>0?100:0) : Math.round(((a-b)/b)*100);
     return {
       periodoActual: { fi: filt.desde, ff: filt.hasta, dias },
       periodoPrev:   { fi: prevFi,     ff: prevFf },
       actual, prev,
       deltas: {
-        sesiones: delta(actual.sesiones, prev.sesiones),
-        alumnos:  delta(actual.alumnos,  prev.alumnos),
-        docentes: delta(actual.docentes, prev.docentes),
-        salas:    delta(actual.salas,    prev.salas),
-        reservas: delta(actual.reservas, prev.reservas),
+        sesiones: pctDelta(actual.sesiones, prev.sesiones),
+        alumnos:  pctDelta(actual.alumnos,  prev.alumnos),
+        docentes: pctDelta(actual.docentes, prev.docentes),
+        salas:    pctDelta(actual.salas,    prev.salas),
+        reservas: pctDelta(actual.reservas, prev.reservas),
       },
     };
   }, [filt, sesionesAll, reservas, edifBySala]);
